@@ -184,23 +184,7 @@ Run the application locally:
 streamlit run main.py
 ```
 
----
 
-### Streamlit Community Cloud Deployment
-
-This app is optimized to fit within Streamlit Community Cloud's 1GB resource limits by executing embeddings on the CPU and offloading LLM inference to Groq.
-
-1. Push your repository to GitHub.
-2. Log into [share.streamlit.io](https://share.streamlit.io/) and click **Deploy an app**.
-3. Select your repository, branch, and `main.py` as the main file path.
-4. Click **Advanced settings** (or go to App Settings -> Secrets after deploying).
-5. Add your Groq API key to the Secrets TOML text box:
-   ```toml
-   GROQ_API_KEY = "gsk_your_groq_key_here"
-   ```
-6. Click **Deploy!** Streamlit will read your `requirements.txt` and boot up the application.
-
----
 
 ## Usage
 
