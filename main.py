@@ -87,7 +87,7 @@ def save_uploaded_pdf(uploaded_file) -> str:
 
 with st.sidebar:
     st.markdown("## 📄 RAG Assistant")
-    st.markdown("Ask questions about any PDF — Fast Groq Deployment Mode or Fully Local Mode.")
+    st.markdown("Ask questions about any PDF using Groq's lightning fast inference API.")
     st.divider()
 
     # Model loading
@@ -95,8 +95,7 @@ with st.sidebar:
     st.markdown("#### Model")
     with st.status("Initializing AI Assistant...", expanded=True) as model_status:
         ai_model = load_ai_model()
-        mode_label = "Deployment (Groq)" if ai_model.mode == "groq" else "Local (HuggingFace)"
-        model_status.update(label=f"LLM ready — {mode_label}", state="complete", expanded=False)
+        model_status.update(label=f"LLM ready — Groq Cloud", state="complete", expanded=False)
 
     st.divider()
 
@@ -173,10 +172,7 @@ with st.sidebar:
         st.info("Upload a PDF to get started.")
 
     st.divider()
-    if ai_model.mode == "groq":
-        st.caption(f"Powered by **Groq ({ai_model.model_name})** + **MiniLM-L6-v2**")
-    else:
-        st.caption(f"Powered by **{ai_model.model_name}** + **MiniLM-L6-v2** · runs entirely on your machine")
+    st.caption(f"Powered by **Groq ({ai_model.model_name})** + **MiniLM-L6-v2**")
 
 
 # ------------------------------------------------------------------
