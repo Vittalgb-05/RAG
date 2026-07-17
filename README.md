@@ -4,6 +4,8 @@
 >
 > **Deployment**: Uses Groq API for lightning fast Llama 3 generation, built perfectly for Streamlit Community Cloud.
 
+🚀 **Live Demo:** [rag1818.streamlit.app](https://rag1818.streamlit.app/)
+
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![Groq](https://img.shields.io/badge/Groq-Cloud_Inference-f97316)](https://groq.com/)
