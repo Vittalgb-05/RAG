@@ -15,7 +15,10 @@ class AiModel():
         '''
         print("running checks to make sure everything is good...")
         
-        self.model_name = os.environ.get("GROQ_MODEL_NAME", "llama-3.1-8b-instant")
+        self.model_name = os.environ.get(
+    "GROQ_MODEL_NAME",
+    "openai/gpt-oss-20b"
+)
         if not Groq:
             raise ImportError("groq package is missing. Please run `pip install groq`.")
             
