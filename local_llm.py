@@ -14,23 +14,21 @@ class AiModel():
             Initializes the AI model using the Groq API.
         '''
         print("running checks to make sure everything is good...")
-        
-        self.model_name = os.environ.get(
-    "GROQ_MODEL_NAME",
-    "openai/gpt-oss-20b"
-)
+
+        self.model_name = "openai/gpt-oss-20b"
+
         if not Groq:
             raise ImportError("groq package is missing. Please run `pip install groq`.")
-            
+
         # Try to get API key from Streamlit Secrets (for deployment), fallback to .env (for local development)
         try:
             api_key = st.secrets["GROQ_API_KEY"]
         except (KeyError, FileNotFoundError):
             api_key = os.environ.get("GROQ_API_KEY")
-            
+
         if not api_key:
             raise ValueError("GROQ_API_KEY is not set. Please add it to your Streamlit secrets or .env file.")
-        
+
         print(f"Initializing Groq client for fast inference using {self.model_name}...")
         self.groq_client = Groq(api_key=api_key)
 
@@ -54,8 +52,8 @@ class AiModel():
                 search_query = f"{last_user_msgs[-1]} {prompt}"
 
         relevant_sections = local_embedding.get_context(search_query, k=10)
-        
-        system_content = f"""You are a helpful AI assistant. Answer the user's question based *only* on the provided Document Text and the Conversation History. 
+
+        system_content = f"""You are a helpful AI assistant. Answer the user's question based *only* on the provided Document Text and the Conversation History.
 If the answer is not found in the document or history, say "The document does not contain information on this topic." Do not use any prior knowledge.
 
 Document Text:
@@ -64,11 +62,11 @@ Document Text:
 ---"""
 
         messages = [{"role": "system", "content": system_content}]
-        
+
         if chat_history:
             for msg in chat_history:
                 messages.append({"role": msg["role"], "content": msg["content"]})
-                
+
         messages.append({"role": "user", "content": prompt})
 
         # Deployment Mode: Groq Cloud Inference
@@ -78,6 +76,7 @@ Document Text:
             stream=True,
             max_tokens=1024,
         )
+
         for chunk in stream:
             if chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
