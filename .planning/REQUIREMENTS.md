@@ -129,9 +129,9 @@ Which phases cover which requirements. Populated during roadmap creation.
 | UI-03 | Phase 5 | Pending |
 | UI-04 | Phase 7 | Pending |
 | QUAL-01 | Phase 6 | Pending |
-| QUAL-02 | Phase 0 & Phase 8 | Pending |
-| QUAL-03 | Phase 0 through 8 | Pending |
-| QUAL-04 | Phase 0 through 8 | Pending |
+| QUAL-02 | Phase 0 & Phase 8 | Complete (Phase 0 verified) |
+| QUAL-03 | Phase 0 through 8 | In Progress (Phase 0 verified) |
+| QUAL-04 | Phase 0 through 8 | In Progress (Phase 0 verified) |
 
 **Coverage:**
 - v1 requirements: 33 total
