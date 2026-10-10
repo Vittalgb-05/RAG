@@ -1,8 +1,10 @@
+from pathlib import Path
 import re
 import pypdf
 
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from models import Chunk
 
 
 class PdfReader:
@@ -15,8 +17,8 @@ class PdfReader:
         # default to the basename of the path if no filename is provided
         if filename:
             self.filename = filename
-        elif isinstance(file_or_path, str):
-            self.filename = file_or_path.split("/")[-1].split("\\")[-1]
+        elif isinstance(file_or_path, (str, Path)):
+            self.filename = Path(file_or_path).name
         else:
             self.filename = getattr(file_or_path, "name", "unknown.pdf")
         self.pages_text = ""
@@ -48,9 +50,15 @@ class PdfReader:
                 chunks = text_splitter.split_text(pdf_text)
                 for j, p in enumerate(chunks):
                     chunk_id = f"{self.filename}_p{page_num}_{j}"
-                    self.page_chunks.append(
-                        {"content": p.strip(), "filename": self.filename, "page": page_num, "chunk_id": chunk_id}
+                    chunk_model = Chunk(
+                        content=p.strip(),
+                        filename=self.filename,
+                        page=page_num,
+                        chunk_id=chunk_id,
+                        doc_id=f"doc_{self.filename}",
+                        extraction="pypdf",
                     )
+                    self.page_chunks.append(chunk_model.model_dump())
 
         # Join the text from all pages for backward compatibility
         self.pages_text = "\n".join(all_pages_text)
