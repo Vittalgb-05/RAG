@@ -10,8 +10,8 @@ This roadmap transforms an existing in-memory Streamlit RAG prototype into a loc
 - Integer phases (0, 1, 2...): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
-- [ ] **Phase 0: Baseline and Audit** - Benchmark existing brownfield pipeline, assemble test corpus, and verify initial test/CI setup
-- [ ] **Phase 1: Canonical Document Models & Storage Foundation** - Implement Pydantic data models, SQLite metadata store, and robust file validation
+- [x] **Phase 0: Baseline and Audit** - Benchmark existing brownfield pipeline, assemble test corpus, and verify initial test/CI setup
+- [x] **Phase 1: Canonical Document Models & Storage Foundation** - Implement Pydantic data models, SQLite metadata store, and robust file validation
 - [ ] **Phase 2: Local Inference Pipeline** - Deploy llama-server runtime with Qwen3-VL 2B GGUF, provider abstraction, and streaming support
 - [ ] **Phase 3: Multimodal Ingestion & Conditional OCR** - Integrate Docling layout parser, conditional RapidOCR, and selective visual element analysis
 - [ ] **Phase 4: Persistent Hybrid Retrieval** - Integrate LanceDB with local dense embeddings (CPU-pinned) and BM25 full-text search
@@ -33,8 +33,8 @@ This roadmap transforms an existing in-memory Streamlit RAG prototype into a loc
 **Plans**: 2 plans
 
 Plans:
-- [ ] 00-01: Audit codebase entry points, inventory bugs, and create representative test corpus
-- [ ] 00-02: Setup Pytest test harness, establish baseline performance benchmarks, and configure CI pipeline
+- [x] 00-01: Audit codebase entry points, inventory bugs, and create representative test corpus
+- [x] 00-02: Setup Pytest test harness, establish baseline performance benchmarks, and configure CI pipeline
 
 ### Phase 1: Canonical Document Models & Storage Foundation
 **Goal**: Introduce typed Pydantic schemas, persistent SQLite metadata storage, and server-side upload validation to eliminate data loss and memory blowup risks.  
@@ -47,8 +47,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: Implement canonical Pydantic schemas (Document, Page, EvidenceElement, Chunk) and SQLite metadata store
-- [ ] 01-02: Implement robust upload validation, SHA-256 deduplication, and Streamlit ingestion progress UI
+- [x] 01-01: Implement canonical Pydantic schemas (Document, Page, EvidenceElement, Chunk) and SQLite metadata store
+- [x] 01-02: Implement robust upload validation, SHA-256 deduplication, and Streamlit ingestion progress UI
 
 ### Phase 2: Local Inference Pipeline
 **Goal**: Establish the local LLM/VLM inference engine using llama-server (llama.cpp) with Qwen3-VL 2B GGUF without cloud dependencies.  

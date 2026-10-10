@@ -98,14 +98,14 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INGEST-01 | Phase 1 | Pending |
-| INGEST-02 | Phase 1 | Pending |
+| INGEST-01 | Phase 1 | Complete (Phase 1 verified) |
+| INGEST-02 | Phase 1 | Complete (Phase 1 verified) |
 | INGEST-03 | Phase 3 | Pending |
 | INGEST-04 | Phase 3 | Pending |
-| INGEST-05 | Phase 1 | Pending |
-| STORE-01 | Phase 1 | Pending |
-| STORE-02 | Phase 1 | Pending |
-| STORE-03 | Phase 1 | Pending |
+| INGEST-05 | Phase 1 | Complete (Phase 1 verified) |
+| STORE-01 | Phase 1 | Complete (Phase 1 verified) |
+| STORE-02 | Phase 1 | Complete (Phase 1 verified) |
+| STORE-03 | Phase 1 | Complete (Phase 1 verified) |
 | INF-01 | Phase 2 | Pending |
 | INF-02 | Phase 2 | Pending |
 | INF-03 | Phase 2 | Pending |
@@ -124,14 +124,14 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SUMM-01 | Phase 5 | Pending |
 | SUMM-02 | Phase 5 | Pending |
 | SUMM-03 | Phase 5 | Pending |
-| UI-01 | Phase 1 | Pending |
+| UI-01 | Phase 1 | Complete (Phase 1 verified) |
 | UI-02 | Phase 5 | Pending |
 | UI-03 | Phase 5 | Pending |
 | UI-04 | Phase 7 | Pending |
 | QUAL-01 | Phase 6 | Pending |
 | QUAL-02 | Phase 0 & Phase 8 | Complete (Phase 0 verified) |
-| QUAL-03 | Phase 0 through 8 | In Progress (Phase 0 verified) |
-| QUAL-04 | Phase 0 through 8 | In Progress (Phase 0 verified) |
+| QUAL-03 | Phase 0 through 8 | In Progress (Phase 0 & 1 verified) |
+| QUAL-04 | Phase 0 through 8 | In Progress (Phase 0 & 1 verified) |
 
 **Coverage:**
 - v1 requirements: 33 total
