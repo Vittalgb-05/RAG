@@ -4,7 +4,7 @@ import pypdf
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from models import Chunk
+from models import Chunk, Page
 
 
 class PdfReader:
@@ -23,12 +23,14 @@ class PdfReader:
             self.filename = getattr(file_or_path, "name", "unknown.pdf")
         self.pages_text = ""
         self.page_chunks = []
+        self.page_records: list[Page] = []
 
     # extracting from pdf to text
-    def extract_text(self):
+    def extract_text(self, doc_id: str | None = None, sha12: str | None = None):
         """
         extracting the pages of the pdf into a string that we can later use as we wish,
         while building a list of chunk dictionaries that track page number and filename.
+        Supports page fault isolation and hash-based chunk ID prefixes.
         """
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
@@ -36,29 +38,71 @@ class PdfReader:
             length_function=len,
         )
 
+        effective_doc_id = doc_id or f"doc_{self.filename}"
+        chunk_prefix = sha12 if sha12 else self.filename
+
+        self.page_chunks = []
+        self.page_records = []
         all_pages_text = []
+
         for i, page in enumerate(self.reader.pages):
             page_num = i + 1
-            page_text = page.extract_text()
-            if page_text:
-                # Clean up multiple spaces and weird newlines first
-                pdf_text = re.sub(r" +", " ", page_text)
-
-                all_pages_text.append(pdf_text)
-
-                # Split into chunks using langchain and store with metadata
-                chunks = text_splitter.split_text(pdf_text)
-                for j, p in enumerate(chunks):
-                    chunk_id = f"{self.filename}_p{page_num}_{j}"
-                    chunk_model = Chunk(
-                        content=p.strip(),
-                        filename=self.filename,
-                        page=page_num,
-                        chunk_id=chunk_id,
-                        doc_id=f"doc_{self.filename}",
-                        extraction="pypdf",
+            try:
+                page_text = page.extract_text()
+            except Exception as err:
+                self.page_records.append(
+                    Page(
+                        doc_id=effective_doc_id,
+                        page_num=page_num,
+                        status="failed",
+                        char_count=0,
+                        error=str(err),
+                        num_chunks=0,
                     )
-                    self.page_chunks.append(chunk_model.model_dump())
+                )
+                continue
+
+            if not page_text or not page_text.strip():
+                self.page_records.append(
+                    Page(
+                        doc_id=effective_doc_id,
+                        page_num=page_num,
+                        status="empty",
+                        char_count=0,
+                        error=None,
+                        num_chunks=0,
+                    )
+                )
+                continue
+
+            # Clean up multiple spaces and weird newlines first
+            pdf_text = re.sub(r" +", " ", page_text)
+            all_pages_text.append(pdf_text)
+
+            # Split into chunks using langchain and store with metadata
+            chunks = text_splitter.split_text(pdf_text)
+            for j, p in enumerate(chunks):
+                chunk_id = f"{chunk_prefix}_p{page_num}_{j}"
+                chunk_model = Chunk(
+                    content=p.strip(),
+                    filename=self.filename,
+                    page=page_num,
+                    chunk_id=chunk_id,
+                    doc_id=effective_doc_id,
+                    extraction="pypdf",
+                )
+                self.page_chunks.append(chunk_model.model_dump())
+
+            self.page_records.append(
+                Page(
+                    doc_id=effective_doc_id,
+                    page_num=page_num,
+                    status="ok",
+                    char_count=len(pdf_text),
+                    error=None,
+                    num_chunks=len(chunks),
+                )
+            )
 
         # Join the text from all pages for backward compatibility
         self.pages_text = "\n".join(all_pages_text)
@@ -81,6 +125,14 @@ class PdfReader:
         if not self.page_chunks:
             self.extract_text()
         return self.page_chunks
+
+    def get_page_records(self) -> list[Page]:
+        """
+        returns a list of Page record models tracking extraction status per page.
+        """
+        if not self.page_records and self.reader.pages:
+            self.extract_text()
+        return self.page_records
 
 
 ###############
