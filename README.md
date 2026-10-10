@@ -236,3 +236,8 @@ Streamlit will print a local URL (default `http://localhost:8501`). Open it in y
 - **Persistent index** — serialize `VectorIndex.vectors` and `.documents` to disk so documents do not need to be re-embedded on every startup.
 - **ANN indexing** — replace linear scan with an approximate nearest-neighbour structure (e.g. HNSW) for sub-linear search at scale.
 - **Embedding progress bar** — show per-paragraph indexing progress during PDF ingestion rather than a single blocking wait.
+
+### Document Identity & State Migration
+- **Hash-based Identity:** Documents are identified by content SHA-256 (`doc_<sha16>`) instead of volatile filenames.
+- **Session State Note:** The legacy filename-keyed `indexed_files` set is replaced by content-hash tracking in SQLite (`DocStore`). On first launch after upgrade, prior in-memory session sets are cleared and documents re-indexed cleanly under canonical hash IDs.
+
