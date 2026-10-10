@@ -136,3 +136,67 @@ def test_pdf_reader_chart_diagram():
     assert "System Workflow Diagram" in text
     assert "Hybrid Search" in text
     assert "Local VLM" in text
+
+
+def test_page_failure_isolated(monkeypatch):
+    """
+    Verify that an extraction failure on page 2 does not abort remaining 19 pages (INGEST-05).
+    Verifies that get_page_records() tracks the failed page with error message.
+    """
+    pdf_path = CORPUS_DIR / "clean_digital.pdf"
+    reader = PdfReader(str(pdf_path))
+
+    # Monkeypatch page index 1 (page 2) to raise an error
+    def mock_broken_extract():
+        raise RuntimeError("Corrupted font streams on page 2")
+
+    monkeypatch.setattr(reader.reader.pages[1], "extract_text", mock_broken_extract)
+
+    chunks = reader.get_paragraphs()
+    records = reader.get_page_records()
+
+    # Total 20 pages: 19 succeeded, 1 failed
+    assert len(records) == 20
+    assert records[1].page_num == 2
+    assert records[1].status == "failed"
+    assert "Corrupted font streams" in (records[1].error or "")
+
+    # Pages 1 and 3 are ok
+    assert records[0].status == "ok"
+    assert records[2].status == "ok"
+
+    # Chunks from other pages still processed
+    assert len(chunks) >= 19
+    chunk_pages = {c["page"] for c in chunks}
+    assert 2 not in chunk_pages
+    assert 1 in chunk_pages
+    assert 3 in chunk_pages
+
+
+def test_hash_chunk_ids_stable_across_rename():
+    """
+    Verify chunk_id stability across renames when sha12 prefix is provided (INGEST-02).
+    Without sha12, preserves legacy filename-based prefix.
+    """
+    pdf_path = CORPUS_DIR / "clean_digital.pdf"
+    reader_a = PdfReader(str(pdf_path), filename="doc_alpha.pdf")
+    reader_b = PdfReader(str(pdf_path), filename="doc_beta_renamed.pdf")
+
+    # With sha12: chunk IDs are identical
+    sha12 = "123456abcdef"
+    reader_a.extract_text(doc_id="doc_1", sha12=sha12)
+    reader_b.extract_text(doc_id="doc_1", sha12=sha12)
+
+    chunks_a = reader_a.get_paragraphs()
+    chunks_b = reader_b.get_paragraphs()
+
+    ids_a = [c["chunk_id"] for c in chunks_a]
+    ids_b = [c["chunk_id"] for c in chunks_b]
+    assert ids_a == ids_b
+    assert ids_a[0].startswith("123456abcdef_p1_")
+
+    # Without sha12: legacy filename prefix is preserved
+    reader_legacy = PdfReader(str(pdf_path), filename="legacy.pdf")
+    reader_legacy.extract_text()
+    legacy_chunks = reader_legacy.get_paragraphs()
+    assert legacy_chunks[0]["chunk_id"].startswith("legacy.pdf_p1_")

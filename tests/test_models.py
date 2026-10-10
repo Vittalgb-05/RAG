@@ -204,3 +204,27 @@ def test_tracer_chunk_to_store_roundtrip(tmp_path, sample_pdf_path):
     retrieved_chunks = store.get_chunks_for_doc(doc_id)
     assert len(retrieved_chunks) == 1
     assert retrieved_chunks[0] == chunk
+
+
+def test_chunk_backward_compat_read():
+    """
+    Verify that legacy dictionaries can be adapted to Chunk without crashing,
+    and that Chunk.model_dump() retains content equivalence.
+    """
+    legacy_data = {
+        "content": "Legacy content string.",
+        "filename": "old_file.pdf",
+        "page": 1,
+        "chunk_id": "old_file.pdf_p1_0",
+    }
+    # Using producer pattern: supply fallback doc_id and extraction
+    chunk = Chunk(
+        doc_id="doc_legacy",
+        extraction="pypdf",
+        **legacy_data,
+    )
+    dumped = chunk.model_dump()
+    assert dumped["content"] == legacy_data["content"]
+    assert dumped["filename"] == legacy_data["filename"]
+    assert dumped["page"] == legacy_data["page"]
+    assert dumped["chunk_id"] == legacy_data["chunk_id"]
