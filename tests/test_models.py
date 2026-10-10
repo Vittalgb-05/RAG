@@ -150,3 +150,57 @@ def test_config_version_and_cache_dir_helper():
     base = Path(".cache")
     cache_path = cache_dir_for(base, sha)
     assert cache_path == base / sha / "chunker-1000-200-pypdf"
+
+
+def test_tracer_chunk_to_store_roundtrip(tmp_path, sample_pdf_path):
+    """
+    Tracer slice test:
+    Construct a Chunk from real PdfReader.get_paragraphs() output on clean_digital.pdf ->
+    verify model_dump() retains legacy keys ->
+    insert parent Document and Chunk into SQLite via DocStore ->
+    read back Document and Chunk and verify round-trip.
+    """
+    from pdf_reader import PdfReader
+    from doc_store import DocStore
+
+    reader = PdfReader(sample_pdf_path)
+    paragraphs = reader.get_paragraphs()
+    assert len(paragraphs) > 0
+
+    first_para = paragraphs[0]
+    doc_id = "doc_tracer12345678"
+    chunk = Chunk(
+        content=first_para["content"],
+        filename=first_para["filename"],
+        page=first_para["page"],
+        chunk_id=first_para["chunk_id"],
+        doc_id=doc_id,
+        extraction="pypdf",
+    )
+    dumped = chunk.model_dump()
+    assert dumped["content"] == first_para["content"]
+    assert dumped["filename"] == first_para["filename"]
+    assert dumped["page"] == first_para["page"]
+    assert dumped["chunk_id"] == first_para["chunk_id"]
+
+    db_path = tmp_path / "tracer.db"
+    store = DocStore(db_path)
+    doc = Document(
+        doc_id=doc_id,
+        filename=first_para["filename"],
+        sha256="c" * 64,
+        size_bytes=12345,
+        num_pages=20,
+        status="indexed",
+        upload_time="2026-10-11T01:10:00Z",
+        num_chunks=len(paragraphs),
+    )
+    store.upsert_document(doc)
+    store.record_chunks([chunk])
+
+    retrieved_doc = store.get_document(doc_id)
+    assert retrieved_doc == doc
+
+    retrieved_chunks = store.get_chunks_for_doc(doc_id)
+    assert len(retrieved_chunks) == 1
+    assert retrieved_chunks[0] == chunk
