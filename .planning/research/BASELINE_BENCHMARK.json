@@ -1,0 +1,55 @@
+{
+  "timestamp": "2026-10-10T19:41:55Z",
+  "phase": "00-baseline-and-audit",
+  "hardware": {
+    "cpu_cores": 12,
+    "total_system_ram_gb": 23.34,
+    "target_gpu": "NVIDIA RTX 3050 Laptop GPU (4 GB VRAM)"
+  },
+  "extraction_pypdf": {
+    "pages": 20,
+    "characters": 11934,
+    "total_duration_seconds": 0.0739,
+    "latency_ms_per_page": 3.7
+  },
+  "chunking": {
+    "total_chunks": 20,
+    "duration_ms": 0.0
+  },
+  "embeddings_cpu": {
+    "model": "all-MiniLM-L6-v2",
+    "model_load_seconds": 14.73,
+    "model_memory_mb": 46.39,
+    "batches": {
+      "batch_10": {
+        "count": 10,
+        "duration_seconds": 0.2071,
+        "ms_per_chunk": 20.71
+      },
+      "batch_20": {
+        "count": 20,
+        "duration_seconds": 0.2628,
+        "ms_per_chunk": 13.14
+      }
+    }
+  },
+  "vector_search_linear_scan": {
+    "vectors_100": {
+      "count": 100,
+      "search_latency_ms": 8.248
+    },
+    "vectors_500": {
+      "count": 500,
+      "search_latency_ms": 37.011
+    },
+    "vectors_1000": {
+      "count": 1000,
+      "search_latency_ms": 51.914
+    }
+  },
+  "memory_profile": {
+    "initial_rss_mb": 52.83,
+    "peak_rss_mb": 818.41,
+    "total_growth_mb": 765.59
+  }
+}

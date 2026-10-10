@@ -1,0 +1,40 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Lint & Test Suite (Python 3.11)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Runtime & Test Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-mock reportlab ruff psutil
+
+      - name: Run Ruff Linter
+        run: |
+          ruff check .
+
+      - name: Generate Synthetic Test Corpus
+        run: |
+          python tests/data/corpus/generate_corpus.py
+
+      - name: Run Pytest Test Suite
+        run: |
+          pytest tests/ -v

@@ -11,7 +11,6 @@ PDF upload → PdfReader (text extraction) → LocalEmbedding (indexing)
 → st.write_stream (live token rendering in the browser)
 """
 
-import os
 import tempfile
 import datetime
 
@@ -95,13 +94,13 @@ with st.sidebar:
     st.markdown("#### Model")
     with st.status("Initializing AI Assistant...", expanded=True) as model_status:
         ai_model = load_ai_model()
-        model_status.update(label=f"LLM ready — Groq Cloud", state="complete", expanded=False)
+        model_status.update(label="LLM ready — Groq Cloud", state="complete", expanded=False)
 
     st.divider()
 
     # Document upload
     st.markdown("#### Document")
-    
+
     col1, col2 = st.columns([2, 1])
     with col2:
         if st.button("Clear All", use_container_width=True):
@@ -127,23 +126,23 @@ with st.sidebar:
                 if uploaded_file.name not in st.session_state.indexed_files:
                     new_pdf_uploaded = True
                     st.write(f"Extracting text from {uploaded_file.name}…")
-                    
+
                     import io
                     pdf_stream = io.BytesIO(uploaded_file.getvalue())
-                    
+
                     try:
                         pdf_reader = PdfReader(pdf_stream, filename=uploaded_file.name)
                         paragraphs = pdf_reader.get_paragraphs()
                     except Exception as e:
                         st.error(f"Failed to parse `{uploaded_file.name}`. The file may be corrupted, empty, or not a valid PDF. (Error: {e})")
                         continue
-                    
+
                     if st.session_state.local_embedding is None:
                         st.session_state.local_embedding = LocalEmbedding()
-                    
+
                     st.write(f"Building index for {uploaded_file.name} ({len(paragraphs)} chunks)…")
                     st.session_state.local_embedding.build_index(paragraphs)
-                    
+
                     st.session_state.indexed_files.add(uploaded_file.name)
                     st.session_state.document_metadata[uploaded_file.name] = {
                         "upload_time": datetime.datetime.now().strftime("%H:%M:%S"),
@@ -225,11 +224,11 @@ if prompt:
     with st.chat_message("assistant"):
         if sources:
             st.info(f"**Sources used:** {', '.join(sources)}", icon="ℹ️")
-            
+
         # Pass conversation history (excluding the current prompt just appended)
         # Limit to the last 10 messages (5 exchanges)
         history_to_pass = st.session_state.chat_history[:-1][-10:]
-            
+
         response_stream = ai_model.ask_a_question_from_pdf_stream(
             pdf_path="", # ignored because local_embedding is provided
             prompt=prompt,
@@ -239,7 +238,7 @@ if prompt:
         full_response = st.write_stream(response_stream)
 
     st.session_state.chat_history.append({
-        "role": "assistant", 
+        "role": "assistant",
         "content": full_response,
         "sources": list(sources)
     })
