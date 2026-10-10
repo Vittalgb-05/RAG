@@ -5,7 +5,7 @@ import pypdf
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 class PdfReader:
-    
+
     # initializing our pdf reader class
     def __init__(self, file_or_path, filename=None):
         '''
@@ -33,17 +33,17 @@ class PdfReader:
             chunk_overlap=200,
             length_function=len,
         )
-        
+
         all_pages_text = []
         for i, page in enumerate(self.reader.pages):
             page_num = i + 1
             page_text = page.extract_text()
-            if page_text:  
+            if page_text:
                 # Clean up multiple spaces and weird newlines first
                 pdf_text = re.sub(r' +', ' ', page_text)
-                
+
                 all_pages_text.append(pdf_text)
-                
+
                 # Split into chunks using langchain and store with metadata
                 chunks = text_splitter.split_text(pdf_text)
                 for j, p in enumerate(chunks):
@@ -65,17 +65,17 @@ class PdfReader:
             showing a portion of the book to allow the user to see what it looks like
         '''
         if self.pages_text == "":
-            self.extract_text() 
+            self.extract_text()
         return self.pages_text[min:max]
-    
-    def get_paragraphs(self):                                                       
+
+    def get_paragraphs(self):
         '''                                                                         
             returns a list of dictionaries (with chunk metadata) extracted from the pdf text.               
             call extract_text() first before using this method.                     
         '''
         if not self.page_chunks:
-            self.extract_text()                                                                         
-        return self.page_chunks 
+            self.extract_text()
+        return self.page_chunks
 
 
 ###############
