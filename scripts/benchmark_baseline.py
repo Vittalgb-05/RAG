@@ -45,7 +45,7 @@ def run_benchmark():
     total_pages = len(reader.reader.pages)
     text = reader.extract_text()
     extraction_duration_s = time.perf_counter() - t0
-    extraction_ms_per_page = (extraction_duration_s / total_pages) * 1000.0
+    extraction_ms_per_page = (extraction_duration_s / max(1, total_pages)) * 1000.0
     total_chars = len(text)
 
     print(f"  Pages: {total_pages}")
@@ -72,11 +72,14 @@ def run_benchmark():
     after_model_rss = get_current_rss_mb()
     model_rss_delta_mb = after_model_rss - before_model_rss
     print(f"  Model load time: {model_load_duration_s:.2f} s")
-    print(f"  Memory increase from embedding model: {model_rss_delta_mb:.2f} MB (Current RSS: {after_model_rss:.2f} MB)")
+    print(
+        f"  Memory increase from embedding model: {model_rss_delta_mb:.2f} MB (Current RSS: {after_model_rss:.2f} MB)"
+    )
 
-    # Sample chunk texts for embedding latency
+    # Sample chunk texts for embedding latency (deduplicating batches to avoid key collisions)
     chunk_texts = [c["content"] for c in chunks]
-    batch_sizes = [min(10, len(chunk_texts)), min(20, len(chunk_texts)), len(chunk_texts)]
+    raw_batches = [5, 10, min(20, len(chunk_texts)), len(chunk_texts)]
+    batch_sizes = sorted(list({b for b in raw_batches if 0 < b <= len(chunk_texts)}))
     batch_latencies = {}
 
     for b in batch_sizes:
@@ -87,7 +90,7 @@ def run_benchmark():
         batch_latencies[f"batch_{b}"] = {
             "count": b,
             "duration_seconds": round(dur_s, 4),
-            "ms_per_chunk": round((dur_s / b) * 1000, 2),
+            "ms_per_chunk": round((dur_s / b) * 1000, 2) if b > 0 else 0.0,
         }
         print(f"  Batch {b} chunks: {dur_s:.3f} s ({(dur_s / b) * 1000:.2f} ms/chunk)")
 

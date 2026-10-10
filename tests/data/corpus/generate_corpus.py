@@ -3,7 +3,6 @@
 # Generates 6 representative synthetic PDFs for testing and benchmarking
 # ------------------------------------------------------------------
 
-import os
 from pathlib import Path
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -15,7 +14,7 @@ from reportlab.platypus import (
     TableStyle,
     PageBreak,
 )
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
 

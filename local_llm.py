@@ -8,11 +8,12 @@ try:
 except ImportError:
     Groq = None
 
-class AiModel():
+
+class AiModel:
     def __init__(self):
-        '''
-            Initializes the AI model using the Groq API.
-        '''
+        """
+        Initializes the AI model using the Groq API.
+        """
         print("running checks to make sure everything is good...")
 
         self.model_name = "openai/gpt-oss-20b"
@@ -32,12 +33,13 @@ class AiModel():
         print(f"Initializing Groq client for fast inference using {self.model_name}...")
         self.groq_client = Groq(api_key=api_key)
 
-
-    def ask_a_question_from_pdf_stream(self, pdf_path: str, prompt: str = "tell me what is this pdf about", local_embedding=None, chat_history=None):
-        '''
-            Streaming variant of ask_a_question_from_pdf.
-            Yields decoded text chunks in real time.
-        '''
+    def ask_a_question_from_pdf_stream(
+        self, pdf_path: str, prompt: str = "tell me what is this pdf about", local_embedding=None, chat_history=None
+    ):
+        """
+        Streaming variant of ask_a_question_from_pdf.
+        Yields decoded text chunks in real time.
+        """
         if local_embedding is None:
             pdf_reader = PdfReader(pdf_path)
             pdf_paragraphs = pdf_reader.get_paragraphs()

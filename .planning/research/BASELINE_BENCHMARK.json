@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-10T19:41:55Z",
+  "timestamp": "2026-10-10T20:15:48Z",
   "phase": "00-baseline-and-audit",
   "hardware": {
     "cpu_cores": 12,
@@ -9,8 +9,8 @@
   "extraction_pypdf": {
     "pages": 20,
     "characters": 11934,
-    "total_duration_seconds": 0.0739,
-    "latency_ms_per_page": 3.7
+    "total_duration_seconds": 0.0376,
+    "latency_ms_per_page": 1.88
   },
   "chunking": {
     "total_chunks": 20,
@@ -18,38 +18,43 @@
   },
   "embeddings_cpu": {
     "model": "all-MiniLM-L6-v2",
-    "model_load_seconds": 14.73,
-    "model_memory_mb": 46.39,
+    "model_load_seconds": 3.92,
+    "model_memory_mb": 25.42,
     "batches": {
+      "batch_5": {
+        "count": 5,
+        "duration_seconds": 1.3609,
+        "ms_per_chunk": 272.19
+      },
       "batch_10": {
         "count": 10,
-        "duration_seconds": 0.2071,
-        "ms_per_chunk": 20.71
+        "duration_seconds": 0.4682,
+        "ms_per_chunk": 46.82
       },
       "batch_20": {
         "count": 20,
-        "duration_seconds": 0.2628,
-        "ms_per_chunk": 13.14
+        "duration_seconds": 0.7512,
+        "ms_per_chunk": 37.56
       }
     }
   },
   "vector_search_linear_scan": {
     "vectors_100": {
       "count": 100,
-      "search_latency_ms": 8.248
+      "search_latency_ms": 9.077
     },
     "vectors_500": {
       "count": 500,
-      "search_latency_ms": 37.011
+      "search_latency_ms": 49.488
     },
     "vectors_1000": {
       "count": 1000,
-      "search_latency_ms": 51.914
+      "search_latency_ms": 108.937
     }
   },
   "memory_profile": {
-    "initial_rss_mb": 52.83,
-    "peak_rss_mb": 818.41,
-    "total_growth_mb": 765.59
+    "initial_rss_mb": 52.96,
+    "peak_rss_mb": 799.64,
+    "total_growth_mb": 746.68
   }
 }

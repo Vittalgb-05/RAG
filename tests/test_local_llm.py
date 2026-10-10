@@ -14,12 +14,13 @@ def test_ai_model_missing_key_raises(monkeypatch):
     Documents and asserts Risk 1 handling from CONCERNS.md.
     """
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
     with pytest.raises(ValueError, match="GROQ_API_KEY is not set"):
         AiModel()
 
 
 def test_ai_model_prompt_assembly(fake_env_groq_key, mock_groq_client):
-    """Verify prompt formatting and context inclusion."""
+    """Verify prompt formatting, context inclusion, and strict grounding instructions."""
     model = AiModel()
     assert model.model_name == "openai/gpt-oss-20b"
 
@@ -31,7 +32,7 @@ def test_ai_model_prompt_assembly(fake_env_groq_key, mock_groq_client):
         {"role": "assistant", "content": "Local Multimodal PDF Intelligence."},
     ]
 
-    tokens = list(
+    list(
         model.ask_a_question_from_pdf_stream(
             pdf_path="",
             prompt="What is the latency target?",
@@ -52,6 +53,8 @@ def test_ai_model_prompt_assembly(fake_env_groq_key, mock_groq_client):
     system_msg = messages[0]["content"]
     assert "Document Text:" in system_msg
     assert "Retrieved document text context line." in system_msg
+    assert "Conversation History" in system_msg
+    assert "does not contain information" in system_msg
 
     # Verify conversation history passed
     assert messages[1]["role"] == "user"

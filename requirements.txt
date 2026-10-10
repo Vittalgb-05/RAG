@@ -4,3 +4,5 @@ python-dotenv==1.0.1
 langchain-text-splitters==0.3.6
 groq==0.15.0
 sentence-transformers==3.4.1
+numpy>=1.26.0,<3.0.0
+

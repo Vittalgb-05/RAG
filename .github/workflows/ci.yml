@@ -25,11 +25,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-mock reportlab ruff psutil
+          pip install -r requirements-test.txt
 
-      - name: Run Ruff Linter
+      - name: Run Ruff Linter & Formatter Check
         run: |
           ruff check .
+          ruff format --check .
 
       - name: Generate Synthetic Test Corpus
         run: |

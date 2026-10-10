@@ -3,7 +3,7 @@
 # Tests embedding generation, batch index building, and context retrieval
 # ------------------------------------------------------------------
 
-import pytest
+from unittest.mock import patch
 from local_embedding import LocalEmbedding
 
 
@@ -29,7 +29,7 @@ def test_local_embedding_build_index(mock_sentence_transformer):
 
 
 def test_local_embedding_get_context(mock_sentence_transformer):
-    """Verify get_context retrieves and formats top-k chunks with delimiters."""
+    """Verify get_context retrieves top-k chunks with delimiters and respects k parameter."""
     embedding = LocalEmbedding()
     chunks = [
         {"content": "Primary architectural specification for local RAG.", "page": 1},
@@ -37,6 +37,9 @@ def test_local_embedding_get_context(mock_sentence_transformer):
     ]
     embedding.build_index(chunks)
 
-    context = embedding.get_context("memory management", k=2)
-    assert "---" in context
-    assert "management" in context
+    # Verify get_context with explicit k=10 forwards k=10 to search (00-02-PLAN Task 2 requirement)
+    with patch.object(embedding, "search", wraps=embedding.search) as spy_search:
+        context = embedding.get_context("memory management", k=10)
+        spy_search.assert_called_once_with("memory management", k=10)
+        assert "\n\n---\n\n" in context
+        assert "management" in context

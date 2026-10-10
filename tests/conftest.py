@@ -3,7 +3,6 @@
 # Allows 100% offline unit testing without GPU allocation or API calls
 # ------------------------------------------------------------------
 
-import os
 from pathlib import Path
 from unittest.mock import MagicMock
 import numpy as np
@@ -13,7 +12,7 @@ import pytest
 @pytest.fixture
 def fake_env_groq_key(monkeypatch):
     """Sets a mock GROQ_API_KEY in the environment for tests."""
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_mock_test_key_1234567890abcdef")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key-not-a-secret-mock-value")
 
 
 @pytest.fixture
@@ -44,6 +43,7 @@ def mock_groq_client(monkeypatch):
     mock_client.chat.completions.create.side_effect = mock_create
 
     import local_llm
+
     monkeypatch.setattr(local_llm, "Groq", lambda api_key=None: mock_client)
     return mock_client
 
@@ -59,7 +59,6 @@ def mock_sentence_transformer(monkeypatch):
     def mock_encode(texts, normalize_embeddings=True, **kwargs):
         if isinstance(texts, str):
             texts = [texts]
-        n = len(texts)
         # Create deterministic pseudo-embeddings based on text length
         vectors = []
         for i, t in enumerate(texts):
@@ -77,6 +76,7 @@ def mock_sentence_transformer(monkeypatch):
     mock_model.encode.side_effect = mock_encode
 
     import local_embedding
+
     monkeypatch.setattr(local_embedding, "SentenceTransformer", lambda model_name: mock_model)
     return mock_model
 

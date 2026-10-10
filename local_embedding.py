@@ -9,7 +9,6 @@ from vector_index import VectorIndex
 
 
 class LocalEmbedding:
-
     def __init__(self, model_name: str = "all-MiniLM-L6-v2", distance_metric: str = "cosine"):
         """
         Initialise the embedding model and an empty vector index.

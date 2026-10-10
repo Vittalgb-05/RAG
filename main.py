@@ -42,10 +42,10 @@ st.set_page_config(
 # within a single browser session.
 
 for key, default in [
-    ("indexed_files", set()),       # set of filenames we have already indexed
-    ("document_metadata", {}),      # dict mapping filename -> metadata dict
-    ("local_embedding", None),      # unified index spanning all uploaded documents
-    ("chat_history", []),           # list of {"role": ..., "content": ..., "sources": ...} dicts
+    ("indexed_files", set()),  # set of filenames we have already indexed
+    ("document_metadata", {}),  # dict mapping filename -> metadata dict
+    ("local_embedding", None),  # unified index spanning all uploaded documents
+    ("chat_history", []),  # list of {"role": ..., "content": ..., "sources": ...} dicts
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -55,25 +55,26 @@ for key, default in [
 # Cached helpers
 # ------------------------------------------------------------------
 
+
 @st.cache_resource(show_spinner=False)
 def load_ai_model() -> AiModel:
-    '''
-        Loads AiModel exactly once for the lifetime of the Streamlit server process.
-        @st.cache_resource returns the same instance on every subsequent call,
-        so the LLM is never loaded more than once regardless of reruns.
-    '''
-    load_dotenv()    # make HF_TOKEN available before AiModel.__init__ reads it
+    """
+    Loads AiModel exactly once for the lifetime of the Streamlit server process.
+    @st.cache_resource returns the same instance on every subsequent call,
+    so the LLM is never loaded more than once regardless of reruns.
+    """
+    load_dotenv()  # make HF_TOKEN available before AiModel.__init__ reads it
     return AiModel()
 
 
 def save_uploaded_pdf(uploaded_file) -> str:
-    '''
-        Writes the uploaded PDF bytes to a NamedTemporaryFile on disk
-        and returns the absolute path to that file.
+    """
+    Writes the uploaded PDF bytes to a NamedTemporaryFile on disk
+    and returns the absolute path to that file.
 
-        delete=False is required because PdfReader must open the file
-        by path after this function returns — it cannot accept raw bytes.
-    '''
+    delete=False is required because PdfReader must open the file
+    by path after this function returns — it cannot accept raw bytes.
+    """
     suffix = f"_{uploaded_file.name}"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.getvalue())
@@ -115,7 +116,7 @@ with st.sidebar:
         type=["pdf"],
         help="Drag and drop PDFs here, or click Browse files.",
         label_visibility="collapsed",
-        accept_multiple_files=True
+        accept_multiple_files=True,
     )
 
     if uploaded_files:
@@ -128,13 +129,16 @@ with st.sidebar:
                     st.write(f"Extracting text from {uploaded_file.name}…")
 
                     import io
+
                     pdf_stream = io.BytesIO(uploaded_file.getvalue())
 
                     try:
                         pdf_reader = PdfReader(pdf_stream, filename=uploaded_file.name)
                         paragraphs = pdf_reader.get_paragraphs()
                     except Exception as e:
-                        st.error(f"Failed to parse `{uploaded_file.name}`. The file may be corrupted, empty, or not a valid PDF. (Error: {e})")
+                        st.error(
+                            f"Failed to parse `{uploaded_file.name}`. The file may be corrupted, empty, or not a valid PDF. (Error: {e})"
+                        )
                         continue
 
                     if st.session_state.local_embedding is None:
@@ -147,7 +151,7 @@ with st.sidebar:
                     st.session_state.document_metadata[uploaded_file.name] = {
                         "upload_time": datetime.datetime.now().strftime("%H:%M:%S"),
                         "pages": paragraphs[-1]["page"] if paragraphs else 0,
-                        "chunks": len(paragraphs)
+                        "chunks": len(paragraphs),
                     }
 
             if new_pdf_uploaded:
@@ -164,8 +168,7 @@ with st.sidebar:
         for filename in st.session_state.indexed_files:
             meta = st.session_state.document_metadata[filename]
             st.success(
-                f"**{filename}**\n\n"
-                f"{meta['pages']} pages · {meta['chunks']} chunks · Indexed at {meta['upload_time']}"
+                f"**{filename}**\n\n{meta['pages']} pages · {meta['chunks']} chunks · Indexed at {meta['upload_time']}"
             )
     else:
         st.info("Upload a PDF to get started.")
@@ -185,8 +188,7 @@ if st.session_state.local_embedding is None:
 else:
     total_chunks = sum(meta["chunks"] for meta in st.session_state.document_metadata.values())
     st.markdown(
-        f"Chatting across **{len(st.session_state.indexed_files)} documents** · "
-        f"{total_chunks} total chunks indexed"
+        f"Chatting across **{len(st.session_state.indexed_files)} documents** · {total_chunks} total chunks indexed"
     )
 
 st.divider()
@@ -230,18 +232,14 @@ if prompt:
         history_to_pass = st.session_state.chat_history[:-1][-10:]
 
         response_stream = ai_model.ask_a_question_from_pdf_stream(
-            pdf_path="", # ignored because local_embedding is provided
+            pdf_path="",  # ignored because local_embedding is provided
             prompt=prompt,
             local_embedding=st.session_state.local_embedding,
-            chat_history=history_to_pass
+            chat_history=history_to_pass,
         )
         full_response = st.write_stream(response_stream)
 
-    st.session_state.chat_history.append({
-        "role": "assistant",
-        "content": full_response,
-        "sources": list(sources)
-    })
+    st.session_state.chat_history.append({"role": "assistant", "content": full_response, "sources": list(sources)})
 
 
 ###############

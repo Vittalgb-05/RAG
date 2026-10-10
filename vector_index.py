@@ -13,7 +13,6 @@ from typing import Optional, Any, List, Dict, Tuple
 
 
 class VectorIndex:
-
     def __init__(self, distance_metric: str = "cosine", embedding_fn=None):
         """
         Create an empty vector index.
@@ -74,9 +73,7 @@ class VectorIndex:
             vector:   List of floats representing the document embedding.
             document: Dict that must contain a 'content' key.
         """
-        if not isinstance(vector, list) or not all(
-            isinstance(x, (int, float)) for x in vector
-        ):
+        if not isinstance(vector, list) or not all(isinstance(x, (int, float)) for x in vector):
             raise TypeError("Vector must be a list of numbers.")
         if not isinstance(document, dict):
             raise TypeError("Document must be a dictionary.")
@@ -87,9 +84,7 @@ class VectorIndex:
         if not self.vectors:
             self._vector_dim = len(vector)
         elif len(vector) != self._vector_dim:
-            raise ValueError(
-                f"Inconsistent vector dimension. Expected {self._vector_dim}, got {len(vector)}"
-            )
+            raise ValueError(f"Inconsistent vector dimension. Expected {self._vector_dim}, got {len(vector)}")
 
         self.vectors.append(list(vector))
         self.documents.append(document)
@@ -124,9 +119,7 @@ class VectorIndex:
             return []
 
         if len(query_vector) != self._vector_dim:
-            raise ValueError(
-                f"Query vector dimension mismatch. Expected {self._vector_dim}, got {len(query_vector)}"
-            )
+            raise ValueError(f"Query vector dimension mismatch. Expected {self._vector_dim}, got {len(query_vector)}")
 
         if k <= 0:
             raise ValueError("k must be a positive integer.")
@@ -136,8 +129,7 @@ class VectorIndex:
 
         # compute distance to every stored vector, then sort ascending
         distances = [
-            (dist_func(query_vector, stored_vector), self.documents[i])
-            for i, stored_vector in enumerate(self.vectors)
+            (dist_func(query_vector, stored_vector), self.documents[i]) for i, stored_vector in enumerate(self.vectors)
         ]
         distances.sort(key=lambda item: item[0])
 
@@ -225,12 +217,12 @@ class VectorIndex:
 # Example usage
 ###############
 
-#index = VectorIndex(distance_metric="cosine")
+# index = VectorIndex(distance_metric="cosine")
 #
-#index.add_vector([1.0, 0.0, 0.0], {"content": "red"})
-#index.add_vector([0.0, 1.0, 0.0], {"content": "green"})
-#index.add_vector([0.0, 0.0, 1.0], {"content": "blue"})
+# index.add_vector([1.0, 0.0, 0.0], {"content": "red"})
+# index.add_vector([0.0, 1.0, 0.0], {"content": "green"})
+# index.add_vector([0.0, 0.0, 1.0], {"content": "blue"})
 #
-#results = index.search([1.0, 0.1, 0.0], k=2)
-#for doc, distance in results:
+# results = index.search([1.0, 0.1, 0.0], k=2)
+# for doc, distance in results:
 #    print(f"Distance: {distance:.4f}  |  Content: {doc['content']}")

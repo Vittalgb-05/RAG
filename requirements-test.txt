@@ -1,0 +1,5 @@
+# Test & benchmarking dependencies
+pytest>=8.3.0
+reportlab>=4.2.0
+ruff>=0.9.0
+psutil>=6.1.0
