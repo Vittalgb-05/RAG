@@ -8,6 +8,7 @@ conversion failures.
 
 from collections import defaultdict
 import io
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from models import Chunk, Page
 from pdf_reader import PdfReader
+
+logger = logging.getLogger(__name__)
 
 try:
     from docling.datamodel.base_models import DocumentStream, InputFormat
@@ -90,7 +93,7 @@ class DoclingReader:
         chunk_prefix = sha12 if sha12 else self.filename
 
         if not self._has_docling:
-            print(f"[DoclingReader] docling package missing; using PdfReader fallback for {self.filename}.")
+            logger.info("docling package missing; using PdfReader fallback for %s.", self.filename)
             self.pages_text = self._fallback_reader.extract_text(doc_id=effective_doc_id, sha12=chunk_prefix)
             self.page_chunks = self._fallback_reader.get_paragraphs()
             self.page_records = self._fallback_reader.get_page_records()
@@ -112,37 +115,57 @@ class DoclingReader:
             conv_res = self._converter.convert(stream)
             docling_doc = conv_res.document
 
-            # Group items by page
+            # Group items by page preserving sequential reading order (CR-03)
             page_items: dict[int, list[str]] = defaultdict(list)
 
-            # Extract markdown tables and items
+            # Extract items in natural document sequence
+            if hasattr(docling_doc, "iterate_items"):
+                for item, _level in docling_doc.iterate_items():
+                    page_no = 1
+                    if hasattr(item, "prov") and item.prov:
+                        page_no = getattr(item.prov[0], "page_no", 1)
+
+                    # Check if item is a TableItem with markdown export
+                    if hasattr(item, "export_to_markdown"):
+                        try:
+                            table_md = item.export_to_markdown()
+                            if table_md and table_md.strip():
+                                page_items[page_no].append(table_md.strip())
+                                continue
+                        except Exception:
+                            pass
+                    elif "table" in str(getattr(item, "label", "")).lower():
+                        table_exported = False
+                        if hasattr(docling_doc, "tables"):
+                            for t in docling_doc.tables:
+                                t_page = getattr(t.prov[0], "page_no", 1) if hasattr(t, "prov") and t.prov else 1
+                                if t_page == page_no and hasattr(t, "export_to_markdown"):
+                                    t_md = t.export_to_markdown()
+                                    if t_md and t_md.strip() and t_md.strip() not in page_items[page_no]:
+                                        page_items[page_no].append(t_md.strip())
+                                        table_exported = True
+                                        break
+                        if table_exported:
+                            continue
+
+                    text = getattr(item, "text", "")
+                    if text and text.strip():
+                        page_items[page_no].append(text.strip())
+
+            # Ensure any tables in docling_doc.tables not yet captured are appended
             if hasattr(docling_doc, "tables"):
                 for table in docling_doc.tables:
                     page_no = 1
                     if hasattr(table, "prov") and table.prov:
                         page_no = getattr(table.prov[0], "page_no", 1)
                     table_md = table.export_to_markdown() if hasattr(table, "export_to_markdown") else ""
-                    if table_md.strip():
+                    if table_md and table_md.strip() and table_md.strip() not in page_items[page_no]:
                         page_items[page_no].append(table_md.strip())
 
-            # Extract text elements and headings
-            if hasattr(docling_doc, "iterate_items"):
-                for item, _level in docling_doc.iterate_items():
-                    item_type = getattr(item, "label", "")
-                    if "table" in str(item_type).lower():
-                        # Already handled via tables
-                        continue
-                    text = getattr(item, "text", "")
-                    if not text:
-                        continue
-                    page_no = 1
-                    if hasattr(item, "prov") and item.prov:
-                        page_no = getattr(item.prov[0], "page_no", 1)
-                    page_items[page_no].append(text.strip())
-            else:
-                # Fallback to export_to_markdown if iterate_items is unavailable
-                md_full = docling_doc.export_to_markdown() if hasattr(docling_doc, "export_to_markdown") else ""
-                if md_full.strip():
+            # Fallback to export_to_markdown if iterate_items was absent
+            if not page_items and hasattr(docling_doc, "export_to_markdown"):
+                md_full = docling_doc.export_to_markdown()
+                if md_full and md_full.strip():
                     page_items[1].append(md_full.strip())
 
             # Text splitter for prose within pages
@@ -158,7 +181,10 @@ class DoclingReader:
 
             # If no items were extracted, fallback
             if not page_items:
-                print(f"[DoclingReader] No items extracted by docling for {self.filename}; falling back to PdfReader.")
+                logger.info(
+                    "No items extracted by docling for %s; falling back to PdfReader.",
+                    self.filename,
+                )
                 self.pages_text = self._fallback_reader.extract_text(doc_id=effective_doc_id, sha12=chunk_prefix)
                 self.page_chunks = self._fallback_reader.get_paragraphs()
                 self.page_records = self._fallback_reader.get_page_records()
@@ -187,7 +213,15 @@ class DoclingReader:
 
                 page_chunks_added = 0
                 chunk_index = 0
+                current_offset = 0
+
                 for item in items:
+                    item_start = page_text.find(item, current_offset)
+                    if item_start == -1:
+                        item_start = current_offset
+                    item_end = item_start + len(item)
+                    current_offset = item_end
+
                     # If item is a markdown table (starts with |), keep intact if reasonable length
                     if item.startswith("|") and len(item) <= 2000:
                         chunk_id = f"{chunk_prefix}_p{page_num}_{chunk_index:04d}"
@@ -197,6 +231,8 @@ class DoclingReader:
                             page=page_num,
                             chunk_id=chunk_id,
                             doc_id=effective_doc_id,
+                            char_start=item_start,
+                            char_end=item_end,
                             extraction="docling",
                         )
                         self.page_chunks.append(chunk_model.model_dump())
@@ -204,10 +240,17 @@ class DoclingReader:
                         chunk_index += 1
                     else:
                         sub_chunks = text_splitter.split_text(item)
+                        sub_offset = item_start
                         for sc in sub_chunks:
                             content = sc.strip()
                             if not content:
                                 continue
+                            sc_start = page_text.find(content, sub_offset)
+                            if sc_start == -1:
+                                sc_start = sub_offset
+                            sc_end = sc_start + len(content)
+                            sub_offset = sc_end
+
                             chunk_id = f"{chunk_prefix}_p{page_num}_{chunk_index:04d}"
                             chunk_model = Chunk(
                                 content=content,
@@ -215,6 +258,8 @@ class DoclingReader:
                                 page=page_num,
                                 chunk_id=chunk_id,
                                 doc_id=effective_doc_id,
+                                char_start=sc_start,
+                                char_end=sc_end,
                                 extraction="docling",
                             )
                             self.page_chunks.append(chunk_model.model_dump())
@@ -233,13 +278,15 @@ class DoclingReader:
                 )
 
             self.pages_text = "\n\n".join(all_pages_text)
-            print(
-                f"[DoclingReader] Successfully extracted structured text from {self.filename}. Chunks: {len(self.page_chunks)}"
+            logger.info(
+                "Successfully extracted structured text from %s. Chunks: %d",
+                self.filename,
+                len(self.page_chunks),
             )
             return self.pages_text
 
         except Exception as err:
-            print(f"[DoclingReader] Conversion error ({err}); falling back to PdfReader.")
+            logger.warning("Conversion error (%s); falling back to PdfReader.", err)
             self.pages_text = self._fallback_reader.extract_text(doc_id=effective_doc_id, sha12=chunk_prefix)
             self.page_chunks = self._fallback_reader.get_paragraphs()
             self.page_records = self._fallback_reader.get_page_records()

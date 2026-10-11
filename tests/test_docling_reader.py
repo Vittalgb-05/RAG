@@ -166,3 +166,109 @@ def test_docling_reader_input_types():
     r2 = DoclingReader(io.BytesIO(raw_bytes), filename="clean_digital.pdf")
     assert r2.filename == "clean_digital.pdf"
     assert len(r2._raw_bytes) == len(raw_bytes)
+
+
+def test_docling_reader_sequential_reading_order():
+    """Verify tables embedded within text maintain sequential reading order (CR-03)."""
+    mock_converter = MagicMock()
+
+    class MockProv:
+        def __init__(self, page_no):
+            self.page_no = page_no
+
+    class MockItem:
+        def __init__(self, text, label="text", md=None):
+            self.text = text
+            self.label = label
+            self._md = md
+            self.prov = [MockProv(1)]
+
+        def export_to_markdown(self):
+            if self._md:
+                return self._md
+            raise AttributeError("Not a table")
+
+    class MockDoc:
+        def __init__(self):
+            self.pages = [1]
+            self.tables = []
+
+        def iterate_items(self):
+            return [
+                (MockItem("Section Header 1: Introduction", label="section_header"), 1),
+                (
+                    MockItem(
+                        "| Header A | Header B |\n|---|---|\n| 10 | 20 |",
+                        label="table",
+                        md="| Header A | Header B |\n|---|---|\n| 10 | 20 |",
+                    ),
+                    2,
+                ),
+                (MockItem("Concluding remarks following the table.", label="text"), 1),
+            ]
+
+    class MockConvRes:
+        def __init__(self):
+            self.document = MockDoc()
+
+    mock_converter.convert.return_value = MockConvRes()
+
+    reader = DoclingReader(DENSE_TABLE_PDF, converter=mock_converter)
+    reader._has_docling = True
+
+    reader.extract_text(doc_id="doc_order_test", sha12="order1234567")
+    chunks = reader.get_paragraphs()
+
+    assert len(chunks) == 3
+    # First chunk is Introduction header
+    assert "Section Header 1: Introduction" in chunks[0]["content"]
+    # Second chunk is Table
+    assert "| Header A | Header B |" in chunks[1]["content"]
+    # Third chunk is Concluding remarks
+    assert "Concluding remarks following the table" in chunks[2]["content"]
+
+
+def test_docling_reader_chunk_char_offsets():
+    """Verify chunks have populated, valid character offset ranges (IN-02)."""
+    mock_converter = MagicMock()
+
+    class MockProv:
+        def __init__(self, page_no):
+            self.page_no = page_no
+
+    class MockItem:
+        def __init__(self, text):
+            self.text = text
+            self.label = "text"
+            self.prov = [MockProv(1)]
+
+    class MockDoc:
+        def __init__(self):
+            self.pages = [1]
+            self.tables = []
+
+        def iterate_items(self):
+            return [
+                (MockItem("First paragraph for offset check."), 1),
+                (MockItem("Second paragraph for offset check."), 1),
+            ]
+
+    class MockConvRes:
+        def __init__(self):
+            self.document = MockDoc()
+
+    mock_converter.convert.return_value = MockConvRes()
+
+    reader = DoclingReader(DENSE_TABLE_PDF, converter=mock_converter)
+    reader._has_docling = True
+
+    full_text = reader.extract_text(doc_id="doc_offsets_test", sha12="offsets12345")
+    chunks = reader.get_paragraphs()
+
+    assert len(chunks) == 2
+    for c in chunks:
+        assert c["char_start"] is not None
+        assert c["char_end"] is not None
+        assert c["char_end"] > c["char_start"]
+        # Slice of full text matches chunk content
+        assert full_text[c["char_start"] : c["char_end"]] == c["content"]

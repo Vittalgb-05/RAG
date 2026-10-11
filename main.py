@@ -17,6 +17,7 @@ import io
 import json
 from pathlib import Path
 import sqlite3
+from typing import Any
 
 from dotenv import load_dotenv
 import streamlit as st
@@ -25,7 +26,7 @@ from doc_store import DocStore
 from docling_reader import DoclingReader
 from local_embedding import LocalEmbedding
 from local_llm import AiModel
-from models import Chunk, Document, cache_dir_for
+from models import Chunk, Document, Page, cache_dir_for
 from ocr_fallback import apply_conditional_ocr
 from upload_validation import MAX_FILE_MB, validate_pdf_bytes
 from visual_analyzer import VisualAnalyzer
@@ -88,6 +89,7 @@ with st.sidebar:
     st.markdown("#### Model")
     with st.status("Initializing AI Assistant...", expanded=True) as model_status:
         ai_model = load_ai_model()
+        st.session_state.ai_model = ai_model
         health = ai_model.check_health()
         caps = ai_model.get_capabilities()
         if health.status == "healthy":
@@ -204,6 +206,8 @@ with st.sidebar:
                 progress_bar = st.progress(0.0)
 
                 # CR-02: Guard reader construction and text extraction against malformed PDFs
+                paragraphs: list[dict[str, Any]] = []
+                page_records: list[Page] = []
                 try:
                     pdf_stream = io.BytesIO(raw_bytes)
                     docling_reader = DoclingReader(pdf_stream, filename=filename)
@@ -225,9 +229,8 @@ with st.sidebar:
 
                     # 4c. Visual element detection, cropping, and VLM analysis (VIS-01, VIS-02, VIS-03)
                     visual_analyzer = VisualAnalyzer()
-                    active_provider = (
-                        st.session_state.ai_model._provider if st.session_state.ai_model is not None else None
-                    )
+                    current_model = getattr(st.session_state, "ai_model", None) or ai_model
+                    active_provider = current_model._provider if current_model is not None else None
                     evidence_elements = visual_analyzer.analyze_visual_elements(
                         pdf_bytes=raw_bytes,
                         doc_id=doc_id,

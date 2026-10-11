@@ -39,7 +39,8 @@ def should_ocr_page(text: str = "", status: str = "ok", threshold: int = 50) -> 
     """
     if status in ("empty", "failed"):
         return True
-    return len(text.strip()) < threshold
+    eff_threshold = max(0, int(threshold))
+    return len(text.strip()) < eff_threshold
 
 
 class OcrEngine:
@@ -93,12 +94,13 @@ class OcrEngine:
             return self._renderer(pdf_bytes, page_num)
 
         if fitz is not None:
+            eff_dpi = max(72, int(dpi))
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             try:
                 if page_num < 1 or page_num > len(doc):
                     return None
                 page = doc.load_page(page_num - 1)
-                zoom = dpi / 72.0
+                zoom = eff_dpi / 72.0
                 matrix = fitz.Matrix(zoom, zoom)
                 pix = page.get_pixmap(matrix=matrix)
                 return pix.tobytes("png")
@@ -116,6 +118,9 @@ class OcrEngine:
         Returns:
             Tuple of (extracted_text, average_confidence).
         """
+        if not image_data:
+            return "", 0.0
+
         if self._recognizer is None and RapidOCR is not None:
             try:
                 self._recognizer = RapidOCR()
@@ -230,37 +235,61 @@ def apply_conditional_ocr(
             ocr_text_clean = ocr_text.strip()
 
             if not ocr_text_clean:
-                # OCR yielded no text
-                updated_pages.append(
-                    Page(
-                        doc_id=doc_id,
-                        page_num=page_num,
-                        status="empty",
-                        char_count=0,
-                        error=None,
-                        num_chunks=0,
+                # OCR yielded no text; preserve existing partial chunks if present (WR-04)
+                if curr_chunks:
+                    updated_pages.append(
+                        Page(
+                            doc_id=doc_id,
+                            page_num=page_num,
+                            status=page.status if page.status != "empty" else "ok",
+                            char_count=len(curr_text),
+                            error=None,
+                            num_chunks=len(curr_chunks),
+                        )
                     )
-                )
+                    final_chunks.extend(curr_chunks)
+                else:
+                    updated_pages.append(
+                        Page(
+                            doc_id=doc_id,
+                            page_num=page_num,
+                            status="empty",
+                            char_count=0,
+                            error=None,
+                            num_chunks=0,
+                        )
+                    )
                 continue
 
             # Split OCR text into canonical chunks
             sub_chunks = text_splitter.split_text(ocr_text_clean)
             page_new_chunks: list[dict[str, Any]] = []
+            chunk_idx = 0
+            current_offset = 0
 
-            for idx, sc in enumerate(sub_chunks):
+            for sc in sub_chunks:
                 content = sc.strip()
                 if not content:
                     continue
-                chunk_id = f"{sha12}_p{page_num}_{idx:04d}"
+                sc_start = ocr_text_clean.find(content, current_offset)
+                if sc_start == -1:
+                    sc_start = current_offset
+                sc_end = sc_start + len(content)
+                current_offset = sc_end
+
+                chunk_id = f"{sha12}_p{page_num}_{chunk_idx:04d}"
                 chunk_model = Chunk(
                     content=content,
                     filename=filename,
                     page=page_num,
                     chunk_id=chunk_id,
                     doc_id=doc_id,
+                    char_start=sc_start,
+                    char_end=sc_end,
                     extraction="ocr",
                 )
                 page_new_chunks.append(chunk_model.model_dump())
+                chunk_idx += 1
 
             updated_pages.append(
                 Page(

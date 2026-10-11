@@ -153,11 +153,18 @@ class VisualAnalyzer:
         Returns:
             PNG image bytes.
         """
+        if bbox.x1 <= bbox.x0 or bbox.y1 <= bbox.y0:
+            raise ValueError(
+                f"Invalid bounding box coordinates: x0={bbox.x0}, x1={bbox.x1}, y0={bbox.y0}, y1={bbox.y1}"
+            )
+
         if self._cropper is not None:
             return self._cropper(pdf_bytes, page_num, bbox)
 
         if fitz is None:
             raise RuntimeError("PyMuPDF (fitz) is not available for visual cropping.")
+
+        zoom_clamped = max(0.5, float(zoom))
 
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
@@ -165,7 +172,11 @@ class VisualAnalyzer:
                 raise ValueError(f"Invalid page_num {page_num} for document with {len(doc)} pages.")
             page = doc.load_page(page_num - 1)
             clip_rect = fitz.Rect(bbox.x0, bbox.y0, bbox.x1, bbox.y1)
-            mat = fitz.Matrix(zoom, zoom)
+            clip_rect = clip_rect.intersect(page.rect)
+            if clip_rect.is_empty or clip_rect.width <= 0 or clip_rect.height <= 0:
+                raise ValueError("Bounding box does not intersect page boundaries.")
+
+            mat = fitz.Matrix(zoom_clamped, zoom_clamped)
             pix = page.get_pixmap(matrix=mat, clip=clip_rect)
             return pix.tobytes("png")
         finally:
@@ -227,6 +238,10 @@ class VisualAnalyzer:
                     logger.error("VLM image analysis failed for %s: %s", element_id, err)
                     description = f"[Visual element: analysis failed: {err}]"
                 source = f"vlm:{model_name}"
+                version = model_name
+            elif not crop_bytes:
+                description = "[Visual element: cropping failed, image unavailable]"
+                source = f"vlm:{model_name}" if provider is not None else "vlm:none"
                 version = model_name
             else:
                 description = "[Visual element: vision analysis unsupported by active model]"

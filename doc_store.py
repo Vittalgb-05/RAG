@@ -107,6 +107,7 @@ class DocStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
+        conn.execute("PRAGMA foreign_keys = ON;")
         try:
             yield conn
         finally:
@@ -395,3 +396,18 @@ class DocStore:
                     row_dict["bbox"] = None
                 results.append(EvidenceElement.model_validate(row_dict))
             return results
+
+    def delete_document(self, doc_id: str) -> bool:
+        """
+        Delete a document and cascade delete associated pages, chunks, and evidence elements.
+
+        Args:
+            doc_id: Unique document identifier.
+
+        Returns:
+            bool: True if a document was deleted, False otherwise.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM documents WHERE doc_id = ?;", (doc_id,))
+            conn.commit()
+            return cursor.rowcount > 0

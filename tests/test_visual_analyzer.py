@@ -3,9 +3,11 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from doc_store import DocStore
 from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
-from models import BBox, Chunk, EvidenceElement
+from models import BBox, Chunk, Document, EvidenceElement
 from visual_analyzer import DEFAULT_VISION_PROMPT, VisualAnalyzer
 
 
@@ -186,6 +188,18 @@ def test_provenance_separation_from_ground_truth_tables(tmp_path):
     store = DocStore(db_file)
 
     doc_id = "doc_dual_evidence"
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="dense_table.pdf",
+            sha256="d" * 64,
+            size_bytes=1024,
+            num_pages=1,
+            status="indexed",
+            upload_time="2026-10-11T10:00:00Z",
+            num_chunks=1,
+        )
+    )
 
     # 1. Ground truth table extracted from Docling
     table_chunk = Chunk(
@@ -253,3 +267,103 @@ def test_vlm_analysis_error_isolation():
     assert len(elements) == 1
     assert "analysis failed" in elements[0].content
     assert "VLM GPU inference timeout" in elements[0].content
+
+
+def test_crop_visual_element_out_of_bounds_and_inverted_coords(monkeypatch):
+    """Verify crop_visual_element rejects inverted or non-intersecting boxes (WR-02)."""
+    analyzer = VisualAnalyzer()
+    pdf_bytes = CHART_PDF.read_bytes()
+
+    # Inverted coordinates: BBox Pydantic model rejects them
+    with pytest.raises(ValueError):
+        BBox(x0=200.0, y0=300.0, x1=100.0, y1=200.0)
+
+    # Inverted coordinates bypassing validation (e.g. model_construct): crop_visual_element rejects them
+    inverted_bbox = BBox.model_construct(x0=200.0, y0=300.0, x1=100.0, y1=200.0)
+    with pytest.raises(ValueError, match="Invalid bounding box coordinates"):
+        analyzer.crop_visual_element(pdf_bytes, page_num=1, bbox=inverted_bbox)
+
+    # Provide offline PyMuPDF mock if fitz is not installed
+    class FakeRect:
+        def __init__(self, x0, y0, x1, y1):
+            self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+
+        def intersect(self, other):
+            ix0 = max(self.x0, other.x0)
+            iy0 = max(self.y0, other.y0)
+            ix1 = min(self.x1, other.x1)
+            iy1 = min(self.y1, other.y1)
+            if ix1 <= ix0 or iy1 <= iy0:
+                return FakeRect(0, 0, 0, 0)
+            return FakeRect(ix0, iy0, ix1, iy1)
+
+        @property
+        def is_empty(self):
+            return self.x1 <= self.x0 or self.y1 <= self.y0
+
+        @property
+        def width(self):
+            return max(0.0, self.x1 - self.x0)
+
+        @property
+        def height(self):
+            return max(0.0, self.y1 - self.y0)
+
+    class FakePage:
+        rect = FakeRect(0, 0, 612, 792)
+
+    class FakeDoc:
+        def __len__(self):
+            return 1
+
+        def load_page(self, idx):
+            return FakePage()
+
+        def close(self):
+            pass
+
+    class FakeFitz:
+        Rect = FakeRect
+
+        @staticmethod
+        def open(stream=None, filetype=None):
+            return FakeDoc()
+
+    monkeypatch.setattr("visual_analyzer.fitz", FakeFitz)
+
+    # Non-intersecting bounding box (completely outside page boundaries)
+    out_of_bounds_bbox = BBox(x0=5000.0, y0=5000.0, x1=6000.0, y1=6000.0)
+    with pytest.raises(ValueError, match="Bounding box does not intersect page boundaries"):
+        analyzer.crop_visual_element(pdf_bytes, page_num=1, bbox=out_of_bounds_bbox)
+
+
+def test_crop_failure_description_attribution():
+    """Verify cropping failure is accurately attributed rather than claiming model lacks vision (WR-01)."""
+    mock_detector = MagicMock(
+        return_value=[
+            {
+                "page": 1,
+                "kind": "chart",
+                "bbox": BBox(x0=10.0, y0=10.0, x1=50.0, y1=50.0),
+            }
+        ]
+    )
+
+    # Cropper fails
+    def failing_cropper(pdf_bytes, page_num, bbox):
+        raise RuntimeError("Pixmap allocation failure")
+
+    analyzer = VisualAnalyzer(region_detector=mock_detector, cropper=failing_cropper)
+    provider = MockVisionProvider()  # Provider DOES support vision
+
+    elements = analyzer.analyze_visual_elements(
+        pdf_bytes=b"%PDF...",
+        doc_id="doc_crop_fail",
+        provider=provider,
+    )
+
+    assert len(elements) == 1
+    # Must NOT claim model does not support vision
+    assert "vision analysis unsupported" not in elements[0].content
+    # Must correctly attribute to cropping failure
+    assert "cropping failed, image unavailable" in elements[0].content

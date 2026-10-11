@@ -94,7 +94,7 @@ class EvidenceElement(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    element_id: str = Field(..., description="Unique element identifier.")
+    element_id: str = Field(..., min_length=1, description="Unique element identifier.")
     doc_id: str = Field(..., description="Parent document identifier.")
     page: int = Field(..., ge=1, description="1-indexed page number.")
     kind: Literal["text", "table", "chart", "image"] = Field(
@@ -104,6 +104,12 @@ class EvidenceElement(BaseModel):
     bbox: BBox | None = Field(default=None, description="Bounding box coordinates on the page.")
     source: str = Field(default="pypdf", description="Extractor that produced this evidence item.")
     model_version: str = Field(default="", description="Model version or extractor identifier.")
+
+    @model_validator(mode="after")
+    def validate_doc_id(self) -> "EvidenceElement":
+        if not self.doc_id.startswith("doc_"):
+            raise ValueError(f"doc_id must start with 'doc_': {self.doc_id!r}")
+        return self
 
 
 class Document(BaseModel):

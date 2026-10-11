@@ -309,9 +309,23 @@ def test_evidence_elements_roundtrip(tmp_path):
     db_file = tmp_path / "evidence.db"
     store = DocStore(db_file)
 
+    doc_id = "doc_1234567812345678"
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="evidence_doc.pdf",
+            sha256="1" * 64,
+            size_bytes=512,
+            num_pages=2,
+            status="indexed",
+            upload_time="2026-10-11T10:00:00Z",
+            num_chunks=2,
+        )
+    )
+
     elem1 = EvidenceElement(
         element_id="elem_doc1_p1_fig1",
-        doc_id="doc_1234567812345678",
+        doc_id=doc_id,
         page=1,
         kind="chart",
         content="Bar chart showing quarterly performance metrics.",
@@ -321,7 +335,7 @@ def test_evidence_elements_roundtrip(tmp_path):
     )
     elem2 = EvidenceElement(
         element_id="elem_doc1_p2_tab1",
-        doc_id="doc_1234567812345678",
+        doc_id=doc_id,
         page=2,
         kind="table",
         content="| Col A | Col B |\n|---|---|\n| 1 | 2 |",
@@ -346,3 +360,44 @@ def test_evidence_elements_roundtrip(tmp_path):
     assert tab.kind == "table"
     assert tab.source == "docling"
     assert tab.bbox is None
+
+
+def test_foreign_key_cascade_deletion(tmp_path):
+    """Verify deleting a Document cascades to associated EvidenceElements (CR-02)."""
+    db_file = tmp_path / "cascade.db"
+    store = DocStore(db_file)
+
+    doc_id = "doc_cascade_test_1"
+    sha = "c" * 64
+    doc = Document(
+        doc_id=doc_id,
+        filename="cascade_doc.pdf",
+        sha256=sha,
+        size_bytes=1024,
+        num_pages=1,
+        status="indexed",
+        upload_time="2026-10-11T12:00:00Z",
+        num_chunks=1,
+    )
+    store.upsert_document(doc)
+
+    elem = EvidenceElement(
+        element_id="elem_cascade_1",
+        doc_id=doc_id,
+        page=1,
+        kind="chart",
+        content="Test diagram for cascade",
+        source="vlm:qwen3-vl-2b",
+    )
+    store.record_evidence_elements([elem])
+
+    # Verify present
+    assert len(store.get_evidence_for_doc(doc_id)) == 1
+
+    # Delete parent document
+    deleted = store.delete_document(doc_id)
+    assert deleted is True
+
+    # Verify parent is gone and child evidence_elements was cascade-deleted
+    assert store.get_document(doc_id) is None
+    assert len(store.get_evidence_for_doc(doc_id)) == 0

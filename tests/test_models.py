@@ -295,3 +295,27 @@ def test_literal_status_validation():
             kind="unsupported_kind",  # type: ignore
             content="test",
         )
+
+
+def test_evidence_element_invalid_doc_id_rejected():
+    """Verify EvidenceElement rejects doc_id not starting with 'doc_' (WR-05)."""
+    with pytest.raises(ValidationError, match="doc_id must start with 'doc_'"):
+        EvidenceElement(
+            element_id="elem_1",
+            doc_id="invalid_no_prefix",
+            page=1,
+            kind="chart",
+            content="test chart",
+        )
+
+
+def test_evidence_element_empty_id_rejected():
+    """Verify EvidenceElement rejects empty element_id string (WR-05)."""
+    with pytest.raises(ValidationError):
+        EvidenceElement(
+            element_id="",
+            doc_id="doc_valid",
+            page=1,
+            kind="chart",
+            content="test chart",
+        )

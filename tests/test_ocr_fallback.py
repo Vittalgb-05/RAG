@@ -216,3 +216,111 @@ def test_graceful_handling_when_no_ocr_available():
     assert len(updated_pages) == 1
     assert updated_pages[0].status == "empty"
     assert len(updated_chunks) == 0
+
+
+def test_ocr_empty_image_guard():
+    """Verify ocr_page_image handles empty bytes without invoking recognizer (WR-03)."""
+    mock_recognizer = MagicMock()
+    engine = OcrEngine(recognizer=mock_recognizer)
+
+    text, score = engine.ocr_page_image(b"")
+    assert text == ""
+    assert score == 0.0
+    mock_recognizer.assert_not_called()
+
+
+def test_ocr_empty_result_preserves_existing_chunks():
+    """Verify empty OCR result does not discard existing partial chunks (WR-04)."""
+    mock_recognizer = MagicMock(return_value=([], 0.0))
+    mock_renderer = MagicMock(return_value=b"fake_image_bytes")
+    engine = OcrEngine(recognizer=mock_recognizer, renderer=mock_renderer)
+
+    pages = [
+        Page(
+            doc_id="doc_partial",
+            page_num=1,
+            status="ok",
+            char_count=20,
+            error=None,
+            num_chunks=1,
+        )
+    ]
+    chunks = [
+        Chunk(
+            content="Partial line.",
+            filename="partial.pdf",
+            page=1,
+            chunk_id="partial12345_p1_0000",
+            doc_id="doc_partial",
+            extraction="docling",
+        )
+    ]
+
+    updated_pages, updated_chunks = apply_conditional_ocr(
+        pdf_bytes=b"%PDF...",
+        page_records=pages,
+        existing_chunks=chunks,
+        doc_id="doc_partial",
+        sha12="partial12345",
+        filename="partial.pdf",
+        engine=engine,
+        threshold=50,
+    )
+
+    # Should retain the existing chunk and page status
+    assert len(updated_pages) == 1
+    assert updated_pages[0].char_count == len("Partial line.")
+    assert len(updated_chunks) == 1
+    assert updated_chunks[0]["content"] == "Partial line."
+    assert updated_chunks[0]["extraction"] == "docling"
+
+
+def test_ocr_chunk_char_offsets_and_monotonic_ids():
+    """Verify OCR chunks have populated character offsets and monotonic chunk IDs (IN-01, IN-02)."""
+    line1 = "First OCR paragraph " + ("word " * 120)
+    line2 = "Second OCR paragraph " + ("term " * 120)
+    mock_recognizer = MagicMock(
+        return_value=(
+            [
+                [[[0, 0], [1, 0], [1, 1], [0, 1]], line1, 0.95],
+                [[[0, 10], [1, 10], [1, 11], [0, 11]], line2, 0.92],
+            ],
+            0.02,
+        )
+    )
+    mock_renderer = MagicMock(return_value=b"fake_png_bytes")
+    engine = OcrEngine(recognizer=mock_recognizer, renderer=mock_renderer)
+
+    pages = [
+        Page(
+            doc_id="doc_monotonic",
+            page_num=1,
+            status="empty",
+            char_count=0,
+            error=None,
+            num_chunks=0,
+        )
+    ]
+
+    updated_pages, updated_chunks = apply_conditional_ocr(
+        pdf_bytes=b"%PDF...",
+        page_records=pages,
+        existing_chunks=[],
+        doc_id="doc_monotonic",
+        sha12="monotonic123",
+        filename="test.pdf",
+        engine=engine,
+        threshold=50,
+    )
+
+    assert len(updated_chunks) == 2
+    # Verify monotonic IDs
+    assert updated_chunks[0]["chunk_id"] == "monotonic123_p1_0000"
+    assert updated_chunks[1]["chunk_id"] == "monotonic123_p1_0001"
+
+    # Verify char offsets
+    assert updated_chunks[0]["char_start"] == 0
+    assert updated_chunks[0]["char_end"] > 0
+    assert updated_chunks[1]["char_start"] is not None
+    assert updated_chunks[1]["char_end"] is not None
+    assert updated_chunks[1]["char_end"] > updated_chunks[1]["char_start"]
