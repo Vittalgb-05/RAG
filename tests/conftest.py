@@ -86,3 +86,76 @@ def sample_pdf_path():
     """Returns the path to the synthetic clean_digital.pdf."""
     path = Path(__file__).resolve().parent / "data" / "corpus" / "clean_digital.pdf"
     return str(path)
+
+
+@pytest.fixture
+def mock_llama_provider():
+    """Provides a healthy mock local inference provider conforming to BaseModelProvider."""
+    from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+
+    class MockLlamaCppProvider(BaseModelProvider):
+        def __init__(self, healthy=True, tokens=None):
+            self._healthy = healthy
+            self._tokens = tokens or ["This ", "is ", "a ", "grounded ", "answer."]
+            self.stream_calls = []
+
+        def check_health(self) -> HealthStatus:
+            if self._healthy:
+                return HealthStatus(
+                    status="healthy",
+                    message="Mock llama-server ready.",
+                    latency_ms=1.5,
+                )
+            return HealthStatus(
+                status="unreachable",
+                message="Mock llama-server unreachable.\nStart it with:\nllama-server -m models/qwen3-vl-2b-instruct-q4_k_m.gguf",
+                latency_ms=1.5,
+            )
+
+        def get_capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                model_name="qwen3-vl-2b",
+                context_window=4096,
+                supports_vision=True,
+                is_local=True,
+                supports_streaming=True,
+            )
+
+        def generate_text(
+            self,
+            prompt: str,
+            system_prompt: str | None = None,
+            max_tokens: int = 1024,
+            temperature: float = 0.2,
+        ) -> str:
+            return "".join(self._tokens)
+
+        def stream_text(
+            self,
+            prompt: str,
+            system_prompt: str | None = None,
+            history: list[dict[str, str]] | None = None,
+            max_tokens: int = 1024,
+            temperature: float = 0.2,
+        ):
+            self.stream_calls.append(
+                {
+                    "prompt": prompt,
+                    "system_prompt": system_prompt,
+                    "history": history,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+            )
+            for token in self._tokens:
+                yield token
+
+        def analyze_image(
+            self,
+            image_bytes: bytes,
+            prompt: str,
+            max_tokens: int = 512,
+        ) -> str:
+            return f"Mock visual analysis for: {prompt}"
+
+    return MockLlamaCppProvider()

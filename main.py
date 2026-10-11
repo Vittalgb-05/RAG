@@ -82,11 +82,39 @@ with st.sidebar:
     st.markdown("Ask questions about any PDF with local indexing and intelligent deduplication.")
     st.divider()
 
-    # Model loading
+    # Model loading & health
     st.markdown("#### Model")
     with st.status("Initializing AI Assistant...", expanded=True) as model_status:
         ai_model = load_ai_model()
-        model_status.update(label="LLM ready — Groq Cloud", state="complete", expanded=False)
+        health = ai_model.check_health()
+        caps = ai_model.get_capabilities()
+        if health.status == "healthy":
+            if caps.is_local:
+                model_status.update(
+                    label=f"🟢 Inference: Local ({caps.model_name})",
+                    state="complete",
+                    expanded=False,
+                )
+            else:
+                model_status.update(
+                    label=f"🔵 Inference: Groq Cloud ({caps.model_name})",
+                    state="complete",
+                    expanded=False,
+                )
+        elif health.status == "loading":
+            model_status.update(
+                label=f"⏳ Inference: Loading ({caps.model_name})...",
+                state="running",
+                expanded=True,
+            )
+            st.info(health.message)
+        else:
+            model_status.update(
+                label="⚠️ Inference: Offline (setup required)",
+                state="error",
+                expanded=True,
+            )
+            st.warning(health.message)
 
     st.divider()
 
@@ -290,40 +318,49 @@ for message in st.session_state.chat_history:
         st.markdown(message["content"])
 
 # Chat input — pinned to the bottom of the page by Streamlit natively.
-# Passing disabled=True prevents questions before a PDF is indexed.
+# Passing disabled=True prevents questions before a PDF is indexed or when model is offline.
+is_healthy = ai_model.check_health().status == "healthy"
+prompt_placeholder = (
+    "Ask a question about your documents…"
+    if is_healthy
+    else "Inference backend is offline. Start llama-server or configure Groq."
+)
 prompt = st.chat_input(
-    placeholder="Ask a question about your documents…",
-    disabled=(st.session_state.local_embedding is None),
+    placeholder=prompt_placeholder,
+    disabled=(st.session_state.local_embedding is None or not is_healthy),
 )
 
 if prompt:
-    # Show the user's message immediately
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    if not is_healthy:
+        st.error(f"Inference backend unavailable: {ai_model.check_health().message}")
+    else:
+        # Show the user's message immediately
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-    # Fetch context to display sources BEFORE generation starts
-    results = st.session_state.local_embedding.search(prompt, k=10)
-    sources = set()
-    for doc, dist in results:
-        if "filename" in doc:
-            sources.add(doc["filename"])
+        # Fetch context to display sources BEFORE generation starts
+        results = st.session_state.local_embedding.search(prompt, k=10)
+        sources = set()
+        for doc, dist in results:
+            if "filename" in doc:
+                sources.add(doc["filename"])
 
-    # Stream the assistant response token-by-token.
-    with st.chat_message("assistant"):
-        if sources:
-            st.info(f"**Sources used:** {', '.join(sources)}", icon="ℹ️")
+        # Stream the assistant response token-by-token.
+        with st.chat_message("assistant"):
+            if sources:
+                st.info(f"**Sources used:** {', '.join(sources)}", icon="ℹ️")
 
-        # Pass conversation history (excluding the current prompt just appended)
-        # Limit to the last 10 messages (5 exchanges)
-        history_to_pass = st.session_state.chat_history[:-1][-10:]
+            # Pass conversation history (excluding the current prompt just appended)
+            # Limit to the last 10 messages (5 exchanges)
+            history_to_pass = st.session_state.chat_history[:-1][-10:]
 
-        response_stream = ai_model.ask_a_question_from_pdf_stream(
-            pdf_path="",  # ignored because local_embedding is provided
-            prompt=prompt,
-            local_embedding=st.session_state.local_embedding,
-            chat_history=history_to_pass,
-        )
-        full_response = st.write_stream(response_stream)
+            response_stream = ai_model.ask_a_question_from_pdf_stream(
+                pdf_path="",  # ignored because local_embedding is provided
+                prompt=prompt,
+                local_embedding=st.session_state.local_embedding,
+                chat_history=history_to_pass,
+            )
+            full_response = st.write_stream(response_stream)
 
-    st.session_state.chat_history.append({"role": "assistant", "content": full_response, "sources": list(sources)})
+        st.session_state.chat_history.append({"role": "assistant", "content": full_response, "sources": list(sources)})

@@ -1,0 +1,158 @@
+"""Cloud inference provider for Groq API implementing BaseModelProvider.
+
+Used as optional cloud inference fallback when configured with a GROQ_API_KEY.
+"""
+
+from collections.abc import Generator
+import os
+from typing import Any
+
+from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+
+try:
+    from groq import Groq
+except ImportError:
+    Groq = None  # type: ignore[assignment, misc]
+
+
+class GroqProvider(BaseModelProvider):
+    """Cloud Groq API provider conforming to BaseModelProvider."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str = "openai/gpt-oss-20b",
+        context_window: int = 8192,
+    ) -> None:
+        """Initialize the Groq provider.
+
+        Args:
+            api_key: Optional explicit Groq API key.
+            model_name: Cloud model identifier.
+            context_window: Maximum token window.
+        """
+        self.model_name = model_name
+        self.context_window = context_window
+
+        if api_key is None:
+            # Check Streamlit secrets if present, then environment
+            try:
+                import streamlit as st
+
+                api_key = st.secrets.get("GROQ_API_KEY")
+            except (KeyError, FileNotFoundError, AttributeError):
+                api_key = None
+
+            if not api_key:
+                api_key = os.environ.get("GROQ_API_KEY")
+
+        self.api_key = api_key
+        self._client: Any = None
+        if Groq is not None and self.api_key:
+            self._client = Groq(api_key=self.api_key)
+
+    def check_health(self) -> HealthStatus:
+        """Check whether Groq provider is configured and available.
+
+        Returns:
+            HealthStatus indicating healthy, unreachable, or error.
+        """
+        if Groq is None:
+            return HealthStatus(
+                status="unreachable",
+                message="groq package is missing. Install with pip install groq.",
+            )
+        if not self.api_key:
+            return HealthStatus(
+                status="unreachable",
+                message="GROQ_API_KEY is not configured in environment or Streamlit secrets.",
+            )
+        if self._client is None:
+            return HealthStatus(
+                status="error",
+                message="Groq client could not be initialized.",
+            )
+        return HealthStatus(
+            status="healthy",
+            message=f"Groq Cloud ready ({self.model_name}).",
+        )
+
+    def get_capabilities(self) -> ProviderCapabilities:
+        """Inspect provider capabilities.
+
+        Returns:
+            ProviderCapabilities for Groq cloud.
+        """
+        return ProviderCapabilities(
+            model_name=self.model_name,
+            context_window=self.context_window,
+            supports_vision=False,
+            is_local=False,
+            supports_streaming=True,
+        )
+
+    def generate_text(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+    ) -> str:
+        """Generate text synchronously via Groq."""
+        if not self._client:
+            raise RuntimeError("Groq client is not configured or missing API key.")
+
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self._client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=False,
+        )
+        return str(response.choices[0].message.content)
+
+    def stream_text(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+    ) -> Generator[str, None, None]:
+        """Stream text tokens incrementally via Groq."""
+        if not self._client:
+            raise RuntimeError("Groq client is not configured or missing API key.")
+
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+
+        stream = self._client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
+
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+
+    def analyze_image(
+        self,
+        image_bytes: bytes,
+        prompt: str,
+        max_tokens: int = 512,
+    ) -> str:
+        """Multimodal image analysis is not supported on standard Groq text models."""
+        raise NotImplementedError("Groq text model does not support image analysis.")
