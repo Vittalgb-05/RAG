@@ -12,7 +12,7 @@ This roadmap transforms an existing in-memory Streamlit RAG prototype into a loc
 
 - [x] **Phase 0: Baseline and Audit** - Benchmark existing brownfield pipeline, assemble test corpus, and verify initial test/CI setup
 - [x] **Phase 1: Canonical Document Models & Storage Foundation** - Implement Pydantic data models, SQLite metadata store, and robust file validation
-- [ ] **Phase 2: Local Inference Pipeline** - Deploy llama-server runtime with Qwen3-VL 2B GGUF, provider abstraction, and streaming support
+- [x] **Phase 2: Local Inference Pipeline** - Deploy llama-server runtime with Qwen3-VL 2B GGUF, provider abstraction, and streaming support
 - [ ] **Phase 3: Multimodal Ingestion & Conditional OCR** - Integrate Docling layout parser, conditional RapidOCR, and selective visual element analysis
 - [ ] **Phase 4: Persistent Hybrid Retrieval** - Integrate LanceDB with local dense embeddings (CPU-pinned) and BM25 full-text search
 - [ ] **Phase 5: Grounded Summarization & Question Answering** - Build hierarchical summary profiles, evidence-grounded streaming QA, and citation verification
@@ -61,8 +61,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: Define unified BaseModelProvider interface and implement LlamaCppProvider HTTP client with health checks
-- [ ] 02-02: Configure llama-server with Qwen3-VL 2B GGUF Q4_K_M, verify offline token streaming and bounded context
+- [x] 02-01: Define unified BaseModelProvider interface and implement LlamaCppProvider HTTP client with health checks
+- [x] 02-02: Configure llama-server with Qwen3-VL 2B GGUF Q4_K_M, verify offline token streaming and bounded context
 
 ### Phase 3: Multimodal Ingestion & Conditional OCR
 **Goal**: Integrate Docling for structured document layout and table parsing, conditional RapidOCR for scanned pages, and selective visual element analysis.  
