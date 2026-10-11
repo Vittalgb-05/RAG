@@ -160,9 +160,9 @@ Phases execute in numeric order: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 0. Baseline and Audit | 0/2 | Not started | - |
-| 1. Canonical Document Models & Storage Foundation | 0/2 | Not started | - |
-| 2. Local Inference Pipeline | 0/2 | Not started | - |
+| 0. Baseline and Audit | 2/2 | Complete | 2026-10-11 |
+| 1. Canonical Document Models & Storage Foundation | 2/2 | Complete | 2026-10-11 |
+| 2. Local Inference Pipeline | 0/2 | Ready to execute | - |
 | 3. Multimodal Ingestion & Conditional OCR | 0/3 | Not started | - |
 | 4. Persistent Hybrid Retrieval | 0/2 | Not started | - |
 | 5. Grounded Summarization & Question Answering | 0/3 | Not started | - |
