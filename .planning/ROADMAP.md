@@ -106,9 +106,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 05-01: Implement hierarchical multi-profile summarization service with map-reduce page tracking and cache
-- [ ] 05-02: Implement grounded QA prompt pipeline with injection guards, streaming response, and citation validator
-- [ ] 05-03: Enhance Streamlit UI with summary profile selector, interactive evidence chips, and citation drawer
+- [x] 05-01: Implement hierarchical multi-profile summarization service with map-reduce page tracking and cache
+- [x] 05-02: Implement grounded QA prompt pipeline with injection guards, streaming response, and citation validator
+- [x] 05-03: Enhance Streamlit UI with summary profile selector, interactive evidence chips, and citation drawer
 
 ### Phase 6: Performance Optimization & Resource Profiling
 **Goal**: Measure, tune, and document system resource consumption to guarantee stability within the 4 GB VRAM ceiling on the RTX 3050 Laptop GPU.  
@@ -162,10 +162,10 @@ Phases execute in numeric order: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 →
 |-------|----------------|--------|-----------|
 | 0. Baseline and Audit | 2/2 | Complete | 2026-10-11 |
 | 1. Canonical Document Models & Storage Foundation | 2/2 | Complete | 2026-10-11 |
-| 2. Local Inference Pipeline | 0/2 | Ready to execute | - |
-| 3. Multimodal Ingestion & Conditional OCR | 0/3 | Not started | - |
-| 4. Persistent Hybrid Retrieval | 0/2 | Not started | - |
-| 5. Grounded Summarization & Question Answering | 0/3 | Not started | - |
+| 2. Local Inference Pipeline | 2/2 | Complete | 2026-10-11 |
+| 3. Multimodal Ingestion & Conditional OCR | 3/3 | Complete | 2026-10-11 |
+| 4. Persistent Hybrid Retrieval | 2/2 | Complete | 2026-10-11 |
+| 5. Grounded Summarization & Question Answering | 3/3 | Complete | 2026-10-11 |
 | 6. Performance Optimization & Resource Profiling | 0/2 | Not started | - |
 | 7. Optional Cloud Provider & Privacy Controls | 0/2 | Not started | - |
 | 8. Release Hardening & Evaluation | 0/2 | Not started | - |
