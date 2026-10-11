@@ -297,6 +297,10 @@ class HybridRetriever:
 
         return len(raw_chunks)
 
+    def add_vector(self, vector: list[float], document: dict[str, Any]) -> None:
+        """Compatibility method matching VectorIndex.add_vector interface."""
+        self.index_chunks([document], embeddings=[vector])
+
     def delete_document(self, doc_id: str) -> None:
         """Remove all chunks associated with doc_id from persistent and fallback storage."""
         # Remove from fallback store

@@ -131,7 +131,17 @@ class AiModel:
             if last_user_msgs:
                 search_query = f"{last_user_msgs[-1]} {prompt}"
 
-        relevant_sections = local_embedding.get_context(search_query, k=10) if local_embedding else ""
+        retrieval_result = None
+        if local_embedding:
+            if hasattr(local_embedding, "search_hybrid"):
+                retrieval_result = local_embedding.search_hybrid(search_query, k=10)
+                relevant_sections = retrieval_result.formatted_evidence()
+            else:
+                relevant_sections = local_embedding.get_context(search_query, k=10)
+        else:
+            relevant_sections = ""
+
+        self.last_retrieval_result = retrieval_result
 
         caps = self.provider.get_capabilities()
         messages = assemble_grounded_messages(

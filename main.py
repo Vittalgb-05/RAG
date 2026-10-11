@@ -369,11 +369,17 @@ if prompt:
             st.markdown(prompt)
 
         # Fetch context to display sources BEFORE generation starts
-        results = st.session_state.local_embedding.search(prompt, k=10)
-        sources = set()
-        for doc, dist in results:
-            if "filename" in doc:
-                sources.add(doc["filename"])
+        sources: list[str] = []
+        if hasattr(st.session_state.local_embedding, "search_hybrid"):
+            retrieval_res = st.session_state.local_embedding.search_hybrid(prompt, k=5)
+            sources = retrieval_res.source_labels()
+        else:
+            results = st.session_state.local_embedding.search(prompt, k=10)
+            seen_sources = set()
+            for doc, dist in results:
+                if "filename" in doc and doc["filename"] not in seen_sources:
+                    seen_sources.add(doc["filename"])
+                    sources.append(doc["filename"])
 
         # Stream the assistant response token-by-token.
         with st.chat_message("assistant"):

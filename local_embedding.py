@@ -6,7 +6,13 @@ compatible with cosine similarity search in VectorIndex.
 
 import logging
 
+from pathlib import Path
+from typing import Any
+
 from sentence_transformers import SentenceTransformer
+
+from hybrid_retriever import HybridRetriever
+from models import RetrievalResult
 from vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
@@ -18,6 +24,7 @@ class LocalEmbedding:
         model_name: str = "all-MiniLM-L6-v2",
         distance_metric: str = "cosine",
         device: str = "cpu",
+        db_uri: Path | str | None = None,
     ):
         """
         Initialise the embedding model and an empty vector index.
@@ -27,6 +34,7 @@ class LocalEmbedding:
             distance_metric: Distance metric for the index ('cosine' or 'euclidean').
             device:          Hardware device ('cpu' or 'cuda'). Pinned to 'cpu' by default
                              to preserve 100% of GPU VRAM for local VLM inference.
+            db_uri:          Optional persistent storage path for LanceDB.
         """
         self.model_name = model_name
         self.device = device
@@ -34,7 +42,14 @@ class LocalEmbedding:
         self.model = SentenceTransformer(self.model_name, device=self.device)
         logger.info("SentenceTransformer model %s ready.", self.model_name)
 
-        self.store = VectorIndex(distance_metric=distance_metric, embedding_fn=self._embed_one)
+        try:
+            self.store: Any = HybridRetriever(
+                db_uri=db_uri,
+                embedding_fn=self._embed_one,
+            )
+        except Exception as err:
+            logger.warning("Failed to initialize HybridRetriever (%s), falling back to VectorIndex.", err)
+            self.store = VectorIndex(distance_metric=distance_metric, embedding_fn=self._embed_one)
 
     def _embed_one(self, text: str) -> list[float]:
         """
@@ -65,8 +80,11 @@ class LocalEmbedding:
             docs = chunks
 
         embeddings = self.get_embeddings(texts)
-        for doc, embedding in zip(docs, embeddings):
-            self.store.add_vector(embedding.tolist(), doc)
+        if hasattr(self.store, "index_chunks"):
+            self.store.index_chunks(docs, embeddings.tolist())
+        else:
+            for doc, embedding in zip(docs, embeddings):
+                self.store.add_vector(embedding.tolist(), doc)
         logger.info("Indexed %d chunks.", len(chunks))
 
     def search(self, question: str, k: int = 3) -> list[tuple[dict, float]]:
@@ -75,9 +93,43 @@ class LocalEmbedding:
         """
         return self.store.search(question, k=k)
 
+    def search_hybrid(self, question: str, k: int = 5) -> RetrievalResult:
+        """
+        Execute hybrid search returning canonical RetrievalResult container (RETR-03, RETR-04).
+        """
+        if hasattr(self.store, "search_hybrid"):
+            return self.store.search_hybrid(question, k=k)
+
+        # Fallback to dense search constructing basic RetrievalResult
+        results = self.search(question, k=k)
+        from models import EvidenceSnippet
+
+        snippets = []
+        for rank, (doc, score) in enumerate(results, start=1):
+            snippets.append(
+                EvidenceSnippet(
+                    content=doc.get("content", ""),
+                    doc_id=doc.get("doc_id", "doc_default"),
+                    filename=doc.get("filename", ""),
+                    page=int(doc.get("page", 1)),
+                    chunk_id=doc.get("chunk_id", f"c_{rank}"),
+                    score=float(score),
+                    rank=rank,
+                )
+            )
+        return RetrievalResult(
+            query=question,
+            snippets=snippets,
+            total_candidates=len(snippets),
+            search_mode="dense",
+        )
+
     def get_context(self, question: str, k: int = 3) -> str:
         """
         Retrieve the most relevant chunks for a question as a single string.
         """
+        if hasattr(self.store, "search_hybrid"):
+            res = self.search_hybrid(question, k=k)
+            return res.formatted_evidence()
         results = self.search(question, k=k)
         return "\n\n---\n\n".join(doc["content"] for doc, _ in results)
