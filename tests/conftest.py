@@ -77,7 +77,7 @@ def mock_sentence_transformer(monkeypatch):
 
     import local_embedding
 
-    monkeypatch.setattr(local_embedding, "SentenceTransformer", lambda model_name: mock_model)
+    monkeypatch.setattr(local_embedding, "SentenceTransformer", lambda model_name, **kwargs: mock_model)
     return mock_model
 
 

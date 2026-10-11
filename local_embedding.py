@@ -4,23 +4,35 @@ Output: L2-normalised float32 vectors of dimension 384,
 compatible with cosine similarity search in VectorIndex.
 """
 
+import logging
+
 from sentence_transformers import SentenceTransformer
 from vector_index import VectorIndex
 
+logger = logging.getLogger(__name__)
+
 
 class LocalEmbedding:
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", distance_metric: str = "cosine"):
+    def __init__(
+        self,
+        model_name: str = "all-MiniLM-L6-v2",
+        distance_metric: str = "cosine",
+        device: str = "cpu",
+    ):
         """
         Initialise the embedding model and an empty vector index.
 
         Args:
             model_name:      SentenceTransformer model ID.
             distance_metric: Distance metric for the index ('cosine' or 'euclidean').
+            device:          Hardware device ('cpu' or 'cuda'). Pinned to 'cpu' by default
+                             to preserve 100% of GPU VRAM for local VLM inference.
         """
         self.model_name = model_name
-        print(f"[LocalEmbedding] Loading {self.model_name}...")
-        self.model = SentenceTransformer(self.model_name)
-        print("[LocalEmbedding] Model ready.")
+        self.device = device
+        logger.info("Loading SentenceTransformer model %s on %s...", self.model_name, self.device)
+        self.model = SentenceTransformer(self.model_name, device=self.device)
+        logger.info("SentenceTransformer model %s ready.", self.model_name)
 
         self.store = VectorIndex(distance_metric=distance_metric, embedding_fn=self._embed_one)
 
@@ -55,7 +67,7 @@ class LocalEmbedding:
         embeddings = self.get_embeddings(texts)
         for doc, embedding in zip(docs, embeddings):
             self.store.add_vector(embedding.tolist(), doc)
-        print(f"[LocalEmbedding] Indexed {len(chunks)} chunks.")
+        logger.info("Indexed %d chunks.", len(chunks))
 
     def search(self, question: str, k: int = 3) -> list[tuple[dict, float]]:
         """
