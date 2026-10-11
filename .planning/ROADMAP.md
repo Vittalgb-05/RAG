@@ -91,8 +91,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: Setup persistent LanceDB vector store and CPU-pinned Sentence-Transformers embedding pipeline
-- [ ] 04-02: Implement hybrid search with BM25 FTS, Reciprocal Rank Fusion, and shared RetrievalResult contract
+- [x] 04-01: Setup persistent LanceDB vector store and CPU-pinned Sentence-Transformers embedding pipeline
+- [x] 04-02: Implement hybrid search with BM25 FTS, Reciprocal Rank Fusion, and shared RetrievalResult contract
 
 ### Phase 5: Grounded Summarization & Question Answering
 **Goal**: Deliver five distinct summary profiles via hierarchical map-reduce and evidence-grounded streaming QA with verified page citations and abstention.  
