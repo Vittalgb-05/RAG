@@ -22,11 +22,13 @@ from dotenv import load_dotenv
 import streamlit as st
 
 from doc_store import DocStore
+from docling_reader import DoclingReader
 from local_embedding import LocalEmbedding
 from local_llm import AiModel
 from models import Chunk, Document, cache_dir_for
-from pdf_reader import PdfReader
+from ocr_fallback import apply_conditional_ocr
 from upload_validation import MAX_FILE_MB, validate_pdf_bytes
+from visual_analyzer import VisualAnalyzer
 
 # ------------------------------------------------------------------
 # Page configuration  (must be the very first Streamlit call)
@@ -201,15 +203,39 @@ with st.sidebar:
                 st.write(f"Extracting text from `{filename}`…")
                 progress_bar = st.progress(0.0)
 
-                # CR-02: Guard PdfReader construction and text extraction against malformed PDFs
+                # CR-02: Guard reader construction and text extraction against malformed PDFs
                 try:
                     pdf_stream = io.BytesIO(raw_bytes)
-                    pdf_reader = PdfReader(pdf_stream, filename=filename)
+                    docling_reader = DoclingReader(pdf_stream, filename=filename)
 
                     sha12 = validated.sha256[:12]
-                    pdf_reader.extract_text(doc_id=doc_id, sha12=sha12)
-                    paragraphs = pdf_reader.get_paragraphs()
-                    page_records = pdf_reader.get_page_records()
+                    docling_reader.extract_text(doc_id=doc_id, sha12=sha12)
+                    paragraphs = docling_reader.get_paragraphs()
+                    page_records = docling_reader.get_page_records()
+
+                    # 4b. Conditional RapidOCR fallback for low-text or scanned pages (INGEST-04)
+                    page_records, paragraphs = apply_conditional_ocr(
+                        pdf_bytes=raw_bytes,
+                        page_records=page_records,
+                        existing_chunks=paragraphs,
+                        doc_id=doc_id,
+                        sha12=sha12,
+                        filename=filename,
+                    )
+
+                    # 4c. Visual element detection, cropping, and VLM analysis (VIS-01, VIS-02, VIS-03)
+                    visual_analyzer = VisualAnalyzer()
+                    active_provider = (
+                        st.session_state.ai_model._provider if st.session_state.ai_model is not None else None
+                    )
+                    evidence_elements = visual_analyzer.analyze_visual_elements(
+                        pdf_bytes=raw_bytes,
+                        doc_id=doc_id,
+                        provider=active_provider,
+                    )
+                    if evidence_elements:
+                        doc_store.record_evidence_elements(evidence_elements)
+
                 except Exception as err:
                     st.error(f"Could not extract text from `{filename}` ({err})")
                     continue

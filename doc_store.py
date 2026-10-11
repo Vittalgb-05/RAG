@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 from typing import Any
-from models import BBox, Chunk, Document, Page
+from models import BBox, Chunk, Document, EvidenceElement, Page
 
 SCHEMA_V1_DDL = [
     """
@@ -53,8 +53,25 @@ SCHEMA_V1_DDL = [
     """,
 ]
 
+SCHEMA_V2_DDL = [
+    """
+    CREATE TABLE IF NOT EXISTS evidence_elements (
+        element_id TEXT PRIMARY KEY,
+        doc_id TEXT NOT NULL,
+        page INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        bbox_json TEXT NULL,
+        source TEXT NOT NULL,
+        model_version TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+    );
+    """,
+]
+
 MIGRATIONS: dict[int, list[str]] = {
     1: SCHEMA_V1_DDL,
+    2: SCHEMA_V2_DDL,
 }
 
 
@@ -304,4 +321,77 @@ class DocStore:
                 else:
                     row_dict["bbox"] = None
                 results.append(Chunk.model_validate(row_dict))
+            return results
+
+    def record_evidence_elements(self, elements: list[EvidenceElement]) -> None:
+        """
+        Insert or update multimodal evidence elements (tables, charts, images).
+
+        Args:
+            elements: List of canonical EvidenceElement instances.
+        """
+        if not isinstance(elements, list):
+            raise TypeError("elements must be a list of EvidenceElement instances")
+        if not elements:
+            return
+
+        query = """
+        INSERT INTO evidence_elements (element_id, doc_id, page, kind, content, bbox_json, source, model_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(element_id) DO UPDATE SET
+            doc_id = excluded.doc_id,
+            page = excluded.page,
+            kind = excluded.kind,
+            content = excluded.content,
+            bbox_json = excluded.bbox_json,
+            source = excluded.source,
+            model_version = excluded.model_version;
+        """
+        params = []
+        for e in elements:
+            if not isinstance(e, EvidenceElement):
+                raise TypeError(f"Expected EvidenceElement instance, got {type(e).__name__}")
+            bbox_json = e.bbox.model_dump_json() if e.bbox else None
+            params.append(
+                (
+                    e.element_id,
+                    e.doc_id,
+                    e.page,
+                    e.kind,
+                    e.content,
+                    bbox_json,
+                    e.source,
+                    e.model_version,
+                )
+            )
+
+        with self._connect() as conn:
+            conn.executemany(query, params)
+            conn.commit()
+
+    def get_evidence_for_doc(self, doc_id: str) -> list[EvidenceElement]:
+        """
+        Retrieve all stored evidence elements for a specific document.
+
+        Args:
+            doc_id: Unique document identifier.
+
+        Returns:
+            list[EvidenceElement]: List of canonical EvidenceElement instances.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM evidence_elements WHERE doc_id = ? ORDER BY page ASC, rowid ASC;",
+                (doc_id,),
+            )
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                row_dict: dict[str, Any] = dict(row)
+                bbox_json = row_dict.pop("bbox_json", None)
+                if bbox_json:
+                    row_dict["bbox"] = BBox.model_validate_json(bbox_json)
+                else:
+                    row_dict["bbox"] = None
+                results.append(EvidenceElement.model_validate(row_dict))
             return results

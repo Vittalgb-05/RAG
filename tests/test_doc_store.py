@@ -7,7 +7,7 @@
 import sqlite3
 import pytest
 from doc_store import DocStore
-from models import BBox, Chunk, Document, Page
+from models import BBox, Chunk, Document, EvidenceElement, Page
 
 
 def test_insert_get_roundtrip(tmp_path):
@@ -131,7 +131,7 @@ def test_user_version_set(tmp_path):
     with store._connect() as conn:
         cursor = conn.execute("PRAGMA user_version;")
         version = cursor.fetchone()[0]
-        assert version == 1
+        assert version == 2
 
 
 def test_chunk_json_columns_nullable(tmp_path):
@@ -302,3 +302,47 @@ def test_record_chunks_full_column_update_on_conflict(tmp_path):
     assert retrieved[0].filename == "new.pdf"
     assert retrieved[0].page == 3
     assert retrieved[0].extraction == "docling"
+
+
+def test_evidence_elements_roundtrip(tmp_path):
+    """Verify EvidenceElement insertion, update, and retrieval equality."""
+    db_file = tmp_path / "evidence.db"
+    store = DocStore(db_file)
+
+    elem1 = EvidenceElement(
+        element_id="elem_doc1_p1_fig1",
+        doc_id="doc_1234567812345678",
+        page=1,
+        kind="chart",
+        content="Bar chart showing quarterly performance metrics.",
+        bbox=BBox(x0=50.0, y0=100.0, x1=400.0, y1=300.0),
+        source="vlm:qwen3-vl-2b",
+        model_version="qwen3-vl-2b",
+    )
+    elem2 = EvidenceElement(
+        element_id="elem_doc1_p2_tab1",
+        doc_id="doc_1234567812345678",
+        page=2,
+        kind="table",
+        content="| Col A | Col B |\n|---|---|\n| 1 | 2 |",
+        bbox=None,
+        source="docling",
+        model_version="",
+    )
+
+    store.record_evidence_elements([elem1, elem2])
+
+    retrieved = store.get_evidence_for_doc("doc_1234567812345678")
+    assert len(retrieved) == 2
+
+    fig = next(e for e in retrieved if e.element_id == "elem_doc1_p1_fig1")
+    assert fig.kind == "chart"
+    assert fig.source == "vlm:qwen3-vl-2b"
+    assert fig.model_version == "qwen3-vl-2b"
+    assert fig.bbox is not None
+    assert fig.bbox.x0 == 50.0
+
+    tab = next(e for e in retrieved if e.element_id == "elem_doc1_p2_tab1")
+    assert tab.kind == "table"
+    assert tab.source == "docling"
+    assert tab.bbox is None

@@ -103,6 +103,7 @@ class EvidenceElement(BaseModel):
     content: str = Field(..., description="Textual representation, markdown table, or caption.")
     bbox: BBox | None = Field(default=None, description="Bounding box coordinates on the page.")
     source: str = Field(default="pypdf", description="Extractor that produced this evidence item.")
+    model_version: str = Field(default="", description="Model version or extractor identifier.")
 
 
 class Document(BaseModel):
