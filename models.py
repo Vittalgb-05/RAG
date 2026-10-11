@@ -85,6 +85,7 @@ class Page(BaseModel):
     char_count: int = Field(default=0, ge=0, description="Total characters extracted from page.")
     error: str | None = Field(default=None, description="Error message if extraction failed.")
     num_chunks: int = Field(default=0, ge=0, description="Number of text chunks produced from this page.")
+    page_text: str | None = Field(default=None, description="Optional raw text content extracted from page.")
 
 
 class EvidenceElement(BaseModel):
@@ -202,3 +203,34 @@ class RetrievalResult(BaseModel):
                 seen.add(lbl)
                 labels.append(lbl)
         return labels
+
+
+SummaryProfile = Literal["overview", "detailed", "study_notes", "tables_figures", "findings"]
+VALID_SUMMARY_PROFILES: tuple[str, ...] = ("overview", "detailed", "study_notes", "tables_figures", "findings")
+
+
+class SummaryResult(BaseModel):
+    """
+    Synthesized multi-profile summary with page citations and cache metadata.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary_id: str = Field(..., description="Unique summary identifier starting with 'summ_'.")
+    doc_id: str = Field(..., description="Parent document identifier starting with 'doc_'.")
+    sha256: str = Field(..., pattern=r"^[0-9a-f]{64}$", description="64-character lowercase SHA-256 hex digest.")
+    profile: SummaryProfile = Field(..., description="Summary profile type.")
+    summary_text: str = Field(..., description="Synthesized markdown summary text.")
+    page_references: list[int] = Field(default_factory=list, description="Sorted list of referenced page numbers.")
+    created_at: str = Field(..., description="ISO 8601 UTC timestamp of summary generation.")
+    model_version: str = Field(default="", description="Model or pipeline identifier used.")
+    cached: bool = Field(default=False, description="Whether summary was loaded from persistent cache.")
+
+    @model_validator(mode="after")
+    def validate_ids(self) -> "SummaryResult":
+        if not self.summary_id.startswith("summ_"):
+            raise ValueError(f"summary_id must start with 'summ_': {self.summary_id!r}")
+        if not self.doc_id.startswith("doc_"):
+            raise ValueError(f"doc_id must start with 'doc_': {self.doc_id!r}")
+        return self
+

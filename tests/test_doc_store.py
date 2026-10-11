@@ -7,7 +7,7 @@
 import sqlite3
 import pytest
 from doc_store import DocStore
-from models import BBox, Chunk, Document, EvidenceElement, Page
+from models import BBox, Chunk, Document, EvidenceElement, Page, SummaryResult
 
 
 def test_insert_get_roundtrip(tmp_path):
@@ -124,14 +124,14 @@ def test_two_instance_interleave_R1(tmp_path):
 
 
 def test_user_version_set(tmp_path):
-    """Verify schema migrations apply and PRAGMA user_version is 1."""
+    """Verify schema migrations apply and PRAGMA user_version is 3."""
     db_file = tmp_path / "version_check.db"
     store = DocStore(db_file)
 
     with store._connect() as conn:
         cursor = conn.execute("PRAGMA user_version;")
         version = cursor.fetchone()[0]
-        assert version == 2
+        assert version == 3
 
 
 def test_chunk_json_columns_nullable(tmp_path):
@@ -401,3 +401,144 @@ def test_foreign_key_cascade_deletion(tmp_path):
     # Verify parent is gone and child evidence_elements was cascade-deleted
     assert store.get_document(doc_id) is None
     assert len(store.get_evidence_for_doc(doc_id)) == 0
+
+
+def test_summary_save_and_get_roundtrip(tmp_path):
+    """Verify SummaryResult insertion, retrieval, and cache state equality."""
+    db_file = tmp_path / "summaries.db"
+    store = DocStore(db_file)
+
+    doc_id = "doc_summ_test_1"
+    sha = "3" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="summ_doc.pdf",
+            sha256=sha,
+            size_bytes=2048,
+            num_pages=5,
+            status="indexed",
+            upload_time="2026-10-11T12:00:00Z",
+            num_chunks=5,
+        )
+    )
+
+    summary = SummaryResult(
+        summary_id="summ_1111111111111111",
+        doc_id=doc_id,
+        sha256=sha,
+        profile="overview",
+        summary_text="# Overview\n\nThis document describes GPU VRAM optimization.",
+        page_references=[1, 2, 4],
+        created_at="2026-10-11T12:05:00Z",
+        model_version="qwen3-vl-2b",
+        cached=False,
+    )
+    store.save_summary(summary)
+
+    retrieved = store.get_summary(sha, "overview")
+    assert retrieved is not None
+    assert retrieved.summary_id == "summ_1111111111111111"
+    assert retrieved.doc_id == doc_id
+    assert retrieved.sha256 == sha
+    assert retrieved.profile == "overview"
+    assert retrieved.summary_text == summary.summary_text
+    assert retrieved.page_references == [1, 2, 4]
+    assert retrieved.cached is True
+
+    # Non-existent profile should return None
+    assert store.get_summary(sha, "detailed") is None
+
+
+def test_summary_cascade_deletion(tmp_path):
+    """Verify deleting a Document cascades to associated document_summaries."""
+    db_file = tmp_path / "summary_cascade.db"
+    store = DocStore(db_file)
+
+    doc_id = "doc_cascade_summ_2"
+    sha = "d" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="cascade_summ.pdf",
+            sha256=sha,
+            size_bytes=1024,
+            num_pages=3,
+            status="indexed",
+            upload_time="2026-10-11T12:00:00Z",
+        )
+    )
+
+    summary = SummaryResult(
+        summary_id="summ_2222222222222222",
+        doc_id=doc_id,
+        sha256=sha,
+        profile="study_notes",
+        summary_text="# Study Notes\n\nKey takeaways.",
+        page_references=[1, 3],
+        created_at="2026-10-11T12:05:00Z",
+    )
+    store.save_summary(summary)
+    assert store.get_summary(sha, "study_notes") is not None
+
+    deleted = store.delete_document(doc_id)
+    assert deleted is True
+    assert store.get_summary(sha, "study_notes") is None
+
+
+def test_summary_upsert_on_same_profile(tmp_path):
+    """Verify saving a summary with the same (sha256, profile) updates the existing row."""
+    db_file = tmp_path / "summary_upsert.db"
+    store = DocStore(db_file)
+
+    doc_id = "doc_upsert_1"
+    sha = "e" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="upsert.pdf",
+            sha256=sha,
+            size_bytes=1024,
+            num_pages=2,
+            status="indexed",
+            upload_time="2026-10-11T12:00:00Z",
+        )
+    )
+
+    v1 = SummaryResult(
+        summary_id="summ_v1_111111111111",
+        doc_id=doc_id,
+        sha256=sha,
+        profile="findings",
+        summary_text="Initial findings.",
+        page_references=[1],
+        created_at="2026-10-11T12:00:00Z",
+    )
+    store.save_summary(v1)
+
+    v2 = SummaryResult(
+        summary_id="summ_v2_222222222222",
+        doc_id=doc_id,
+        sha256=sha,
+        profile="findings",
+        summary_text="Updated findings with deeper analysis.",
+        page_references=[1, 2],
+        created_at="2026-10-11T12:10:00Z",
+    )
+    store.save_summary(v2)
+
+    retrieved = store.get_summary(sha, "findings")
+    assert retrieved is not None
+    assert retrieved.summary_id == "summ_v2_222222222222"
+    assert retrieved.summary_text == "Updated findings with deeper analysis."
+    assert retrieved.page_references == [1, 2]
+
+    # Verify list_summaries_for_doc returns 1 item
+    doc_summaries = store.list_summaries_for_doc(doc_id)
+    assert len(doc_summaries) == 1
+
+    # Verify delete_summaries_for_doc
+    deleted_count = store.delete_summaries_for_doc(doc_id)
+    assert deleted_count == 1
+    assert store.get_summary(sha, "findings") is None
+

@@ -8,10 +8,11 @@ with Windows file locks and Streamlit execution loops.
 
 from collections.abc import Generator
 from contextlib import contextmanager
+import json
 from pathlib import Path
 import sqlite3
 from typing import Any
-from models import BBox, Chunk, Document, EvidenceElement, Page
+from models import BBox, Chunk, Document, EvidenceElement, Page, SummaryResult
 
 SCHEMA_V1_DDL = [
     """
@@ -69,9 +70,33 @@ SCHEMA_V2_DDL = [
     """,
 ]
 
+SCHEMA_V3_DDL = [
+    """
+    CREATE TABLE IF NOT EXISTS document_summaries (
+        summary_id TEXT PRIMARY KEY,
+        doc_id TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        profile TEXT NOT NULL,
+        summary_text TEXT NOT NULL,
+        page_references_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        model_version TEXT NOT NULL DEFAULT '',
+        UNIQUE(sha256, profile),
+        FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_summaries_sha256 ON document_summaries(sha256);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_summaries_doc_id ON document_summaries(doc_id);
+    """,
+]
+
 MIGRATIONS: dict[int, list[str]] = {
     1: SCHEMA_V1_DDL,
     2: SCHEMA_V2_DDL,
+    3: SCHEMA_V3_DDL,
 }
 
 
@@ -396,6 +421,144 @@ class DocStore:
                     row_dict["bbox"] = None
                 results.append(EvidenceElement.model_validate(row_dict))
             return results
+ 
+    def save_summary(self, summary: SummaryResult) -> None:
+        """
+        Insert or update a synthesized document summary in SQLite.
+
+        Args:
+            summary: Canonical SummaryResult instance.
+        """
+        if not isinstance(summary, SummaryResult):
+            raise TypeError(f"Expected SummaryResult instance, got {type(summary).__name__}")
+
+        page_refs_json = json.dumps(summary.page_references)
+        query = """
+        INSERT INTO document_summaries (
+            summary_id, doc_id, sha256, profile, summary_text, page_references_json, created_at, model_version
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sha256, profile) DO UPDATE SET
+            summary_id = excluded.summary_id,
+            doc_id = excluded.doc_id,
+            summary_text = excluded.summary_text,
+            page_references_json = excluded.page_references_json,
+            created_at = excluded.created_at,
+            model_version = excluded.model_version;
+        """
+        with self._connect() as conn:
+            conn.execute(
+                query,
+                (
+                    summary.summary_id,
+                    summary.doc_id,
+                    summary.sha256,
+                    summary.profile,
+                    summary.summary_text,
+                    page_refs_json,
+                    summary.created_at,
+                    summary.model_version,
+                ),
+            )
+            conn.commit()
+
+    def get_summary(self, sha256: str, profile: str) -> SummaryResult | None:
+        """
+        Retrieve a summary by document SHA-256 and profile type.
+
+        Args:
+            sha256: 64-character lowercase SHA-256 hex string.
+            profile: Summary profile name ('overview', 'detailed', etc.).
+
+        Returns:
+            SummaryResult | None: Canonical SummaryResult with cached=True, or None if not found.
+        """
+        if not isinstance(sha256, str) or not isinstance(profile, str):
+            raise TypeError("sha256 and profile must be strings")
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM document_summaries WHERE sha256 = ? AND profile = ?;",
+                (sha256, profile),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            row_dict = dict(row)
+            try:
+                page_refs = json.loads(row_dict.get("page_references_json") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                page_refs = []
+            return SummaryResult(
+                summary_id=row_dict["summary_id"],
+                doc_id=row_dict["doc_id"],
+                sha256=row_dict["sha256"],
+                profile=row_dict["profile"],
+                summary_text=row_dict["summary_text"],
+                page_references=page_refs,
+                created_at=row_dict["created_at"],
+                model_version=row_dict["model_version"],
+                cached=True,
+            )
+
+    def list_summaries_for_doc(self, doc_id: str) -> list[SummaryResult]:
+        """
+        List all saved summaries for a specific document ID.
+
+        Args:
+            doc_id: Unique document identifier.
+
+        Returns:
+            list[SummaryResult]: List of summaries for the document.
+        """
+        if not isinstance(doc_id, str):
+            raise TypeError("doc_id must be a string")
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM document_summaries WHERE doc_id = ? ORDER BY profile ASC;",
+                (doc_id,),
+            )
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                row_dict = dict(row)
+                try:
+                    page_refs = json.loads(row_dict.get("page_references_json") or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    page_refs = []
+                results.append(
+                    SummaryResult(
+                        summary_id=row_dict["summary_id"],
+                        doc_id=row_dict["doc_id"],
+                        sha256=row_dict["sha256"],
+                        profile=row_dict["profile"],
+                        summary_text=row_dict["summary_text"],
+                        page_references=page_refs,
+                        created_at=row_dict["created_at"],
+                        model_version=row_dict["model_version"],
+                        cached=True,
+                    )
+                )
+            return results
+
+    def delete_summaries_for_doc(self, doc_id: str) -> int:
+        """
+        Delete all summaries for a document.
+
+        Args:
+            doc_id: Unique document identifier.
+
+        Returns:
+            int: Number of deleted summary rows.
+        """
+        if not isinstance(doc_id, str):
+            raise TypeError("doc_id must be a string")
+
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM document_summaries WHERE doc_id = ?;", (doc_id,))
+            conn.commit()
+            return cursor.rowcount
 
     def delete_document(self, doc_id: str) -> bool:
         """
