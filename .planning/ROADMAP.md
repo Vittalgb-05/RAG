@@ -75,9 +75,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01: Integrate Docling DocumentConverter for structured layout, heading hierarchy, and table extraction
-- [ ] 03-02: Implement conditional RapidOCR fallback and page-level fault isolation
-- [ ] 03-03: Implement visual element detection, PyMuPDF cropping, and local VLM figure description service
+- [x] 03-01: Integrate Docling DocumentConverter for structured layout, heading hierarchy, and table extraction
+- [x] 03-02: Implement conditional RapidOCR fallback and page-level fault isolation
+- [x] 03-03: Implement visual element detection, PyMuPDF cropping, and local VLM figure description service
 
 ### Phase 4: Persistent Hybrid Retrieval
 **Goal**: Replace the in-memory linear vector scan with persistent LanceDB hybrid search (dense embeddings + BM25 keyword search) using Reciprocal Rank Fusion.  
