@@ -7,11 +7,9 @@ compatible with cosine similarity search in VectorIndex.
 import logging
 
 from pathlib import Path
-from typing import Any
 
 from sentence_transformers import SentenceTransformer
 
-from hybrid_retriever import HybridRetriever
 from models import RetrievalResult
 from vector_index import VectorIndex
 
@@ -42,14 +40,7 @@ class LocalEmbedding:
         self.model = SentenceTransformer(self.model_name, device=self.device)
         logger.info("SentenceTransformer model %s ready.", self.model_name)
 
-        try:
-            self.store: Any = HybridRetriever(
-                db_uri=db_uri,
-                embedding_fn=self._embed_one,
-            )
-        except Exception as err:
-            logger.warning("Failed to initialize HybridRetriever (%s), falling back to VectorIndex.", err)
-            self.store = VectorIndex(distance_metric=distance_metric, embedding_fn=self._embed_one)
+        self.store = VectorIndex(distance_metric=distance_metric, embedding_fn=self._embed_one)
 
     def _embed_one(self, text: str) -> list[float]:
         """
@@ -80,11 +71,8 @@ class LocalEmbedding:
             docs = chunks
 
         embeddings = self.get_embeddings(texts)
-        if hasattr(self.store, "index_chunks"):
-            self.store.index_chunks(docs, embeddings.tolist())
-        else:
-            for doc, embedding in zip(docs, embeddings):
-                self.store.add_vector(embedding.tolist(), doc)
+        for doc, embedding in zip(docs, embeddings):
+            self.store.add_vector(embedding.tolist(), doc)
         logger.info("Indexed %d chunks.", len(chunks))
 
     def search(self, question: str, k: int = 3) -> list[tuple[dict, float]]:
@@ -95,12 +83,8 @@ class LocalEmbedding:
 
     def search_hybrid(self, question: str, k: int = 5) -> RetrievalResult:
         """
-        Execute hybrid search returning canonical RetrievalResult container (RETR-03, RETR-04).
+        Execute dense search returning canonical RetrievalResult container (RETR-03, RETR-04).
         """
-        if hasattr(self.store, "search_hybrid"):
-            return self.store.search_hybrid(question, k=k)
-
-        # Fallback to dense search constructing basic RetrievalResult
         results = self.search(question, k=k)
         from models import EvidenceSnippet
 
@@ -128,8 +112,5 @@ class LocalEmbedding:
         """
         Retrieve the most relevant chunks for a question as a single string.
         """
-        if hasattr(self.store, "search_hybrid"):
-            res = self.search_hybrid(question, k=k)
-            return res.formatted_evidence()
         results = self.search(question, k=k)
         return "\n\n---\n\n".join(doc["content"] for doc, _ in results)

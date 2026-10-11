@@ -564,4 +564,3 @@ class HybridRetriever:
         """Legacy-compatible context facade returning formatted evidence."""
         result = self.search_hybrid(question, k=k)
         return result.formatted_evidence()
-

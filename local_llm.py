@@ -7,6 +7,7 @@ local llama-server (Qwen3-VL 2B GGUF) and cloud Groq inference.
 
 from collections.abc import Generator
 from groq_provider import GroqProvider
+from hybrid_retriever import HybridRetriever
 from llama_cpp_provider import LlamaCppProvider
 from local_embedding import LocalEmbedding
 from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
@@ -133,11 +134,22 @@ class AiModel:
 
         retrieval_result = None
         if local_embedding:
-            if hasattr(local_embedding, "search_hybrid"):
+            if isinstance(local_embedding, HybridRetriever):
                 retrieval_result = local_embedding.search_hybrid(search_query, k=10)
                 relevant_sections = retrieval_result.formatted_evidence()
-            else:
+            elif hasattr(local_embedding, "get_context"):
                 relevant_sections = local_embedding.get_context(search_query, k=10)
+                if hasattr(local_embedding, "last_retrieval_result"):
+                    retrieval_result = getattr(local_embedding, "last_retrieval_result")
+            elif hasattr(local_embedding, "search_hybrid"):
+                retrieval_result = local_embedding.search_hybrid(search_query, k=10)
+                relevant_sections = (
+                    retrieval_result.formatted_evidence()
+                    if hasattr(retrieval_result, "formatted_evidence")
+                    else str(retrieval_result)
+                )
+            else:
+                relevant_sections = ""
         else:
             relevant_sections = ""
 

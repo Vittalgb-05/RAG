@@ -420,4 +420,3 @@ def test_retrieval_result_formatting_and_source_labels():
     # Verify frozen immutability
     with pytest.raises(ValidationError):
         result.total_candidates = 20  # type: ignore
-

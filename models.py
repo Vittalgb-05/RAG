@@ -195,4 +195,3 @@ class RetrievalResult(BaseModel):
                 seen.add(lbl)
                 labels.append(lbl)
         return labels
-

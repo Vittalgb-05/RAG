@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from hybrid_retriever import DEFAULT_DB_URI, HybridRetriever
+from hybrid_retriever import DEFAULT_DB_URI, HybridRetriever, compute_rrf
 from local_embedding import LocalEmbedding
-from models import Chunk
+from models import Chunk, RetrievalResult
 
 
 def _make_unit_vector(seed: int, dim: int = 384) -> list[float]:
@@ -169,3 +169,135 @@ def test_hybrid_retriever_fallback_when_lancedb_missing(tmp_path, monkeypatch):
     assert len(results) == 1
     assert results[0]["chunk_id"] == "chk_fb_1"
     assert results[0]["score"] >= 0.95
+
+
+def test_rrf_scoring_math():
+    """Verify Reciprocal Rank Fusion calculation and rank ordering (RETR-03)."""
+    # doc_b: dense rank 2, fts rank 1 -> 1/(60+2) + 1/(60+1) = 0.016129 + 0.016393 = 0.032522
+    # doc_a: dense rank 1, fts rank 3 -> 1/(60+1) + 1/(60+3) = 0.016393 + 0.015873 = 0.032266
+    # doc_d: fts rank 2               -> 1/(60+2) = 0.016129
+    # doc_c: dense rank 3             -> 1/(60+3) = 0.015873
+    dense_ranks = [("doc_a", 1, 0.95), ("doc_b", 2, 0.85), ("doc_c", 3, 0.70)]
+    fts_ranks = [("doc_b", 1, 10.0), ("doc_d", 2, 8.0), ("doc_a", 3, 5.0)]
+
+    rrf_results = compute_rrf(dense_ranks, fts_ranks, k_rrf=60)
+    ordered_ids = [item[0] for item in rrf_results]
+
+    assert ordered_ids == ["doc_b", "doc_a", "doc_d", "doc_c"]
+
+    # Verify score magnitudes
+    top_chunk, top_score, final_rank, d_rank, f_rank = rrf_results[0]
+    assert top_chunk == "doc_b"
+    assert round(top_score, 5) == round(1.0 / 62 + 1.0 / 61, 5)
+    assert final_rank == 1
+    assert d_rank == 2
+    assert f_rank == 1
+
+
+def test_hybrid_retrieval_keyword_boost(tmp_path):
+    """Verify exact technical keywords (e.g. acronyms/model IDs) receive keyword boost under hybrid search."""
+    retriever = HybridRetriever(db_uri=tmp_path / "keyword_boost_db")
+
+    v_general = _make_unit_vector(10)
+    v_exact = _make_unit_vector(20)
+
+    chunks = [
+        Chunk(
+            content="General overview of GPU acceleration and graphical rendering pipelines.",
+            filename="general_gpu.pdf",
+            page=1,
+            chunk_id="chk_general",
+            doc_id="doc_1",
+        ),
+        Chunk(
+            content="Specification sheet for NVIDIA RTX-3050-Ti Laptop GPU with 4GB VRAM.",
+            filename="specs_sheet.pdf",
+            page=1,
+            chunk_id="chk_exact_rtx",
+            doc_id="doc_2",
+        ),
+    ]
+
+    retriever.index_chunks(chunks, embeddings=[v_general, v_exact])
+
+    # Query with exact model identifier
+    res = retriever.search_hybrid("RTX-3050-Ti", k=2)
+    assert isinstance(res, RetrievalResult)
+    assert len(res.snippets) > 0
+    top_match = res.snippets[0]
+    assert top_match.chunk_id == "chk_exact_rtx"
+    assert "RTX-3050-Ti" in top_match.content
+
+
+def test_hybrid_retrieval_semantic_boost(tmp_path):
+    """Verify semantic queries without keyword overlap match via dense path (RETR-03)."""
+    # Simple embedding mock that maps similar topics to close vectors
+    topic_vec = _make_unit_vector(55)
+
+    def mock_embed(text: str) -> list[float]:
+        if "fiscal" in text.lower() or "profit" in text.lower() or "earnings" in text.lower():
+            return topic_vec
+        return _make_unit_vector(99)
+
+    retriever = HybridRetriever(db_uri=tmp_path / "semantic_boost_db", embedding_fn=mock_embed)
+
+    chunk1 = Chunk(
+        content="Quarterly earnings and fiscal balance sheet statements.",
+        filename="earnings.pdf",
+        page=1,
+        chunk_id="chk_fiscal",
+        doc_id="doc_f",
+    )
+    chunk2 = Chunk(
+        content="Plant biological taxonomy and cellular morphology.",
+        filename="biology.pdf",
+        page=1,
+        chunk_id="chk_bio",
+        doc_id="doc_b",
+    )
+
+    retriever.index_chunks([chunk1, chunk2], embeddings=[topic_vec, _make_unit_vector(99)])
+
+    # Query without literal word overlap
+    res = retriever.search_hybrid("company profits", k=2)
+    assert len(res.snippets) > 0
+    assert res.snippets[0].chunk_id == "chk_fiscal"
+
+
+def test_retrieval_result_shared_identity(tmp_path):
+    """Verify shared RetrievalResult produces matching prompt context and UI citation metadata (RETR-04)."""
+    retriever = HybridRetriever(db_uri=tmp_path / "shared_identity_db")
+
+    v1 = _make_unit_vector(1)
+    chunk = Chunk(
+        content="Local AI assistant operating strictly offline.",
+        filename="offline_guide.pdf",
+        page=2,
+        chunk_id="chk_offline_1",
+        doc_id="doc_off",
+    )
+    retriever.index_chunks([chunk], embeddings=[v1])
+
+    result = retriever.search_hybrid("offline", k=1)
+    assert isinstance(result, RetrievalResult)
+    assert len(result.snippets) == 1
+
+    # Generation context formatting
+    context_text = result.formatted_evidence()
+    assert "[E1] (offline_guide.pdf, p. 2)" in context_text
+    assert "strictly offline" in context_text
+
+    # UI citation source labels
+    sources = result.source_labels()
+    assert sources == ["offline_guide.pdf (p. 2)"]
+
+
+def test_hybrid_retriever_empty_query_safe(tmp_path):
+    """Verify empty query or k <= 0 returns empty RetrievalResult safely without error."""
+    retriever = HybridRetriever(db_uri=tmp_path / "empty_q_db")
+    res1 = retriever.search_hybrid("", k=5)
+    assert res1.snippets == []
+    assert res1.total_candidates == 0
+
+    res2 = retriever.search_hybrid("query", k=0)
+    assert res2.snippets == []
