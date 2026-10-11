@@ -5,43 +5,44 @@
 ## Naming Patterns
 
 **Files:**
-- Flat `snake_case.py` modules at repo root, one class/concern per file: `main.py`, `local_llm.py`, `local_embedding.py`, `vector_index.py`, `pdf_reader.py`, `model_provider.py`, `llama_cpp_provider.py`, `groq_provider.py`, `prompt_budget.py`, `docling_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`, `doc_store.py`, `models.py`, `upload_validation.py`.
-- Test files mirror module names: `tests/test_<module>.py` (e.g. `tests/test_llama_cpp_provider.py` mirrors `llama_cpp_provider.py`). Shared fixtures live in `tests/conftest.py`. Synthetic corpus generator lives at `tests/data/corpus/generate_corpus.py`.
-- No packages, no `__init__.py` in root (only `tests/__init__.py`). Imports are direct top-level absolute imports (e.g. `from model_provider import BaseModelProvider` in `llama_cpp_provider.py:15`).
+- Flat `snake_case.py` modules at repo root, one class/concern per file: `main.py`, `local_llm.py`, `local_embedding.py`, `vector_index.py`, `pdf_reader.py`, `model_provider.py`, `llama_cpp_provider.py`, `groq_provider.py`, `prompt_budget.py`, `docling_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`, `doc_store.py`, `models.py`, `upload_validation.py`, `hybrid_retriever.py`.
+- Test files mirror module names: `tests/test_<module>.py` (e.g. `tests/test_hybrid_retriever.py` mirrors `hybrid_retriever.py`). Shared fixtures live in `tests/conftest.py`. Synthetic corpus generator lives at `tests/data/corpus/generate_corpus.py`. Benchmark script lives at `scripts/benchmark_baseline.py`.
+- No packages, no `__init__.py` in root (only `tests/__init__.py`). Imports are direct top-level absolute imports (e.g. `from model_provider import BaseModelProvider` in `llama_cpp_provider.py:15`, `from hybrid_retriever import HybridRetriever` in `main.py:27`).
 
 **Functions:**
 - `snake_case` throughout. Public API verbs: `generate_text` / `stream_text` / `analyze_image` / `check_health` / `get_capabilities` (`model_provider.py:78-156`); `extract_text` / `get_paragraphs` / `get_page_records` / `extract_small_portion_of_the_pdf` (`docling_reader.py:78-311`, `pdf_reader.py`); `assemble_grounded_messages` / `estimate_tokens` / `sanitize_xml_boundary` (`prompt_budget.py:20-117`); `detect_visual_regions` / `crop_visual_element` / `analyze_visual_elements` (`visual_analyzer.py:47-191`); `render_page_image` / `ocr_page_image` / `apply_conditional_ocr` / `should_ocr_page` (`ocr_fallback.py:29-171`); `upsert_document` / `get_document` / `get_by_sha` / `list_documents` / `record_page` / `record_chunks` / `get_chunks_for_doc` / `record_evidence_elements` / `get_evidence_for_doc` / `delete_document` (`doc_store.py:131-400`); `validate_pdf_bytes` / `sha256_bytes` / `doc_id_for` (`upload_validation.py:19-64`); `cache_dir_for` (`models.py:17-30`).
-- Private helpers use a single leading underscore: `_embed_one` (`local_embedding.py`), `_cosine_distance` / `_euclidean_distance` / `_dot_product` / `_magnitude` (`vector_index.py`), `_connect` / `_apply_migrations` (`doc_store.py:98-129`), `_detect_provider` (`local_llm.py`), `_recognizer` / `_renderer` / `_region_detector` / `_cropper` / `_converter` / `_client` injected collaborators.
+- Retrieval verbs on `HybridRetriever` (`hybrid_retriever.py:79-622`): `index_chunks` / `search_dense` / `search_fts` / `search_hybrid` / `has_document` / `delete_document` / `count_chunks` / `is_persistent` / `create_fts_index` / `set_embedding_fn` / `close`; module-level `compute_rrf(dense_ranks, fts_ranks, k_rrf=60)` (`hybrid_retriever.py:31-76`). Legacy facades `search` / `get_context` return `(doc, score)` tuples / joined string (`hybrid_retriever.py:614-622`).
+- Private helpers use a single leading underscore: `_embed_one` (`local_embedding.py:45`), `_cosine_distance` / `_euclidean_distance` / `_dot_product` / `_magnitude` (`vector_index.py`), `_connect` / `_apply_migrations` (`doc_store.py:98-129`), `_detect_provider` (`local_llm.py`), `_load_fallback_store` / `_save_fallback_store` / `_init_table` / `_bm25_search_fallback` (`hybrid_retriever.py:126-476`), `_recognizer` / `_renderer` / `_region_detector` / `_cropper` / `_converter` / `_client` injected collaborators.
 
 **Variables:**
-- `snake_case` locals and attributes: `page_chunks`, `pages_text`, `page_records`, `doc_id`, `sha12`, `chunk_prefix`, `page_num`, `chunk_idx`, `current_offset` (`docling_reader.py`, `ocr_fallback.py`); `base_url`, `model_name`, `context_window`, `clamped_temp`, `elapsed_ms` (`llama_cpp_provider.py`); `active_engine`, `page_chunks_map`, `updated_pages`, `final_chunks` (`ocr_fallback.py:187-202`).
-- Constants are `UPPER_CASE` at module level in new code — use these, do not inline: `SYSTEM_GROUNDING_TEMPLATE` (`prompt_budget.py:11-17`), `DEFAULT_VISION_PROMPT` (`visual_analyzer.py:23-27`), `SCHEMA_V1_DDL` / `SCHEMA_V2_DDL` / `MIGRATIONS` (`doc_store.py:16-75`), `CONFIG_VERSION` (`models.py:14`), `MAX_FILE_MB` / `MAX_PAGES` (`upload_validation.py:15-16`), `SCHEMA` threshold default `threshold: int = 50` in `should_ocr_page` (`ocr_fallback.py:29`).
+- `snake_case` locals and attributes: `page_chunks`, `pages_text`, `page_records`, `doc_id`, `sha12`, `chunk_prefix`, `page_num`, `chunk_idx`, `current_offset` (`docling_reader.py`, `ocr_fallback.py`); `base_url`, `model_name`, `context_window`, `clamped_temp`, `elapsed_ms` (`llama_cpp_provider.py`); `active_engine`, `page_chunks_map`, `updated_pages`, `final_chunks` (`ocr_fallback.py:187-202`); `db_uri`, `embedding_fn`, `vector_dim`, `_has_lancedb`, `_db`, `_table`, `_fallback_store`, `_fallback_file` (`hybrid_retriever.py:96-110`); `dense_ranks`, `fts_ranks`, `k_rrf`, `rrf_score`, `d_rank`, `f_rank` (`hybrid_retriever.py:31-76`); `active_retriever`, `retrieval_res` (`main.py:407-432`).
+- Constants are `UPPER_CASE` at module level in new code — use these, do not inline: `SYSTEM_GROUNDING_TEMPLATE` (`prompt_budget.py:11-17`), `DEFAULT_VISION_PROMPT` (`visual_analyzer.py:23-27`), `SCHEMA_V1_DDL` / `SCHEMA_V2_DDL` / `MIGRATIONS` (`doc_store.py:16-75`), `CONFIG_VERSION` (`models.py:14`), `MAX_FILE_MB` / `MAX_PAGES` (`upload_validation.py:15-16`), `DEFAULT_DB_URI` / `DEFAULT_RRF_K = 60` (`hybrid_retriever.py:27-28`), `SCHEMA` threshold default `threshold: int = 50` in `should_ocr_page` (`ocr_fallback.py:29`).
 
 **Types:**
-- `PascalCase`, one public class per module: `AiModel` (`local_llm.py`), `LocalEmbedding` (`local_embedding.py`), `VectorIndex` (`vector_index.py`), `PdfReader` (`pdf_reader.py`), `DoclingReader` (`docling_reader.py:34`), `OcrEngine` (`ocr_fallback.py:46`), `VisualAnalyzer` (`visual_analyzer.py:30`), `DocStore` (`doc_store.py:78`), `BaseModelProvider` + `ProviderCapabilities` + `HealthStatus` (`model_provider.py:15-64`), `LlamaCppProvider` (`llama_cpp_provider.py:18`), `GroqProvider` (`groq_provider.py:18`), `ValidatedUpload` (`upload_validation.py:52-61`), `BBox` / `Chunk` / `Page` / `EvidenceElement` / `Document` (`models.py:33-138`).
+- `PascalCase`, one public class per module: `AiModel` (`local_llm.py`), `LocalEmbedding` (`local_embedding.py`), `VectorIndex` (`vector_index.py`), `PdfReader` (`pdf_reader.py`), `DoclingReader` (`docling_reader.py:34`), `OcrEngine` (`ocr_fallback.py:46`), `VisualAnalyzer` (`visual_analyzer.py:30`), `DocStore` (`doc_store.py:78`), `BaseModelProvider` + `ProviderCapabilities` + `HealthStatus` (`model_provider.py:15-64`), `LlamaCppProvider` (`llama_cpp_provider.py:18`), `GroqProvider` (`groq_provider.py:18`), `HybridRetriever` (`hybrid_retriever.py:79`), `ValidatedUpload` (`upload_validation.py:52-61`), `BBox` / `Chunk` / `Page` / `EvidenceElement` / `EvidenceSnippet` / `RetrievalResult` / `Document` (`models.py`).
 - Test doubles follow `Mock*` / `Stub*` / `Fake*` naming: `MockVisionProvider` / `MockTextOnlyProvider` (`tests/test_visual_analyzer.py`), `MockDelta` / `MockChoice` / `MockChunk` (`tests/conftest.py:26-36`), `MockLlamaCppProvider` (`tests/conftest.py:96`), `StubReader` / `ZeroPageReader` (`tests/test_upload_validation.py`).
 
 ## Code Style
 
 **Formatting:**
-- Ruff formatter, `line-length = 120`, `target-version = "py311"` (`pyproject.toml:1-3`). Verified clean: `ruff format --check .` → `31 files already formatted`.
+- Ruff formatter, `line-length = 120`, `target-version = "py311"` (`pyproject.toml:1-3`). Verified clean: `ruff format --check .` → `33 files already formatted`.
 - 4-space indentation. Double quotes for strings; `"""..."""` module/class/function docstrings everywhere in new modules.
 - Long HTTP payload / Pydantic `Field(...)` blocks break one-arg-per-line (see `model_provider.py:20-41`, `llama_cpp_provider.py:137-143`).
 
 **Linting:**
 - Ruff lint, `select = ["E", "F", "W"]`, `ignore = ["E501", "W291", "W293"]` (`pyproject.toml:5-7`) — line length is enforced by the formatter, not the linter. Per-file ignore `"scripts/*" = ["E402"]` (`pyproject.toml:9-10`) because `scripts/benchmark_baseline.py` mutates `sys.path` before imports.
 - Verified clean: `ruff check .` → `All checks passed!`. CI gates on both: `ruff check .` then `ruff format --check .` (`.github/workflows/ci.yml:30-33`).
-- No `mypy` / `pylint` / `flake8` config. Type errors are expressed as `# type: ignore[...] ` on intentional `None`-assignment import guards (e.g. `Groq = None  # type: ignore[assignment, misc]` in `groq_provider.py:15`).
+- No `mypy` / `pylint` / `flake8` config. Type errors are expressed as `# type: ignore[assignment]` on intentional `None`-assignment import guards (e.g. `lancedb = None  # type: ignore[assignment]` in `hybrid_retriever.py:23`, `Groq = None  # type: ignore[assignment, misc]` in `groq_provider.py:15`).
 
 ## Import Organization
 
 **Order:**
-1. `__future__` / stdlib (`base64`, `collections`, `dataclasses`, `hashlib`, `io`, `json`, `logging`, `math`, `os`, `pathlib`, `re`, `sqlite3`, `time`, `typing`, `contextlib`, `abc`)
-2. Third-party (`httpx`, `pydantic`, `pypdf`, `langchain_text_splitters`, `streamlit`, `groq`, `numpy` in tests, `pytest`, `reportlab`/`psutil` in test tooling)
-3. Local (`model_provider`, `models`, `pdf_reader`, `docling_reader`, `groq_provider`, `llama_cpp_provider`, `local_embedding`, `prompt_budget`)
+1. `__future__` / stdlib (`base64`, `collections`, `collections.abc`, `dataclasses`, `hashlib`, `io`, `json`, `logging`, `math`, `os`, `pathlib`, `re`, `sqlite3`, `time`, `typing`, `contextlib`, `abc`)
+2. Third-party (`httpx`, `pydantic`, `pypdf`, `langchain_text_splitters`, `streamlit`, `groq`, `sentence_transformers`, `lancedb`/`pyarrow` (guarded), `numpy` in tests, `pytest`, `reportlab`/`psutil` in test tooling)
+3. Local (`model_provider`, `models`, `pdf_reader`, `docling_reader`, `groq_provider`, `llama_cpp_provider`, `local_embedding`, `hybrid_retriever`, `prompt_budget`, `vector_index`)
 
 **Path Aliases:**
-- None. All imports are top-level absolute (`from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities` in `llama_cpp_provider.py:15`, `groq_provider.py:10`, `visual_analyzer.py:12`). `scripts/benchmark_baseline.py` prepends repo root to `sys.path` instead of using relative imports.
+- None. All imports are top-level absolute (`from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities` in `llama_cpp_provider.py:15`, `groq_provider.py:10`, `visual_analyzer.py:12`; `from models import BBox, Chunk, EvidenceSnippet, RetrievalResult` in `hybrid_retriever.py:13`). `scripts/benchmark_baseline.py` prepends repo root to `sys.path` instead of using relative imports.
 
 ## Optional-Dependency Pattern (must-follow)
 
@@ -49,34 +50,36 @@ Every heavy/optional third-party import uses the `try/except ImportError → Non
 
 ```python
 try:
-    from docling.datamodel.pipeline_options import PdfPipelineOptions  # noqa
-    ...
+    import lancedb
+    import pyarrow as pa
 except ImportError:
-    DocumentConverter = None  # type: ignore[assignment, misc]
+    lancedb = None  # type: ignore[assignment]
+    pa = None  # type: ignore[assignment]
 ```
 
 Instances to mirror:
+- `lancedb` + `pyarrow` guard → `_has_lancedb` flag, disk-backed JSON fallback store, `is_persistent()` predicate (`hybrid_retriever.py:18-24, 100-124, 202-204`). LanceDB init failure degrades to fallback with `logger.warning`, never a raise (`hybrid_retriever.py:118-121`).
 - `groq` guard → `Groq = None`, health returns `unreachable` with install hint, `generate/stream` raise `RuntimeError` (`groq_provider.py:12-15, 59-83, 106-108`).
 - `docling` guard → five `None` names (`docling_reader.py:22-31`); `self._has_docling` flag + `PdfReader` fallback for the whole document (`docling_reader.py:70-72, 95-100`) and empty-extraction fallback (`docling_reader.py:183-191`) and exception fallback (`docling_reader.py:288-293`).
 - `rapidocr_onnxruntime` + `fitz` guards (`ocr_fallback.py:18-26`); `is_available()` requires both renderer and recognizer (`ocr_fallback.py:71-75`); missing renderer yields `None` image → page kept as-is (`ocr_fallback.py:217-232`); missing recognizer yields `("", 0.0)` (`ocr_fallback.py:131-132`).
 - `fitz` guard in visual path (`visual_analyzer.py:17-20`); `detect_visual_regions` returns `[]` with `logger.warning` when absent (`visual_analyzer.py:59-61`); `crop_visual_element` raises `RuntimeError` only when a crop is actually requested without `fitz` (`visual_analyzer.py:164-165`).
 - `local_llm.py` keeps the same `Groq`-era shape via provider health probing (local-first, Groq fallback, diagnostic default).
 
-New optional dependencies MUST follow this pattern: guarded import, `is_available()`/`check_health()` predicate, fallback path that preserves existing data, `logger.warning` (never `print`).
+New optional dependencies MUST follow this pattern: guarded import, `is_available()`/`check_health()`/`is_persistent()` predicate, fallback path that preserves existing data, `logger.warning` (never `print`).
 
 ## Pydantic v2 Idioms (must-follow)
 
-- All canonical schemas live in `models.py` + `model_provider.py`. Inherit `pydantic.BaseModel`, declare `model_config = ConfigDict(frozen=True, extra="forbid")` for immutable value objects (`ProviderCapabilities`, `HealthStatus` in `model_provider.py:18,47`; `BBox`, `Chunk` in `models.py:38,61`) and `ConfigDict(extra="forbid")` (mutable) for store records (`Page`, `EvidenceElement`, `Document` in `models.py:80,94,121`).
-- Constrain at the field: `Field(..., min_length=1)`, `Field(default=4096, gt=0)`, `Field(default=0.0, ge=0.0)`, `pattern=r"^[0-9a-f]{64}$"`, `Literal["healthy","unreachable","loading","error"]` (`model_provider.py:20-61`); `Literal["ok","empty","failed"]`, `Literal["pending","indexed","failed"]`, `Literal["text","table","chart","image"]` (`models.py:84,128,100`).
-- Cross-field rules go in `@model_validator(mode="after")`: BBox coordinate ordering (`models.py:47-51`), `doc_id` must start with `"doc_"` (`models.py:109-112, 135-138`).
-- Serialize with `.model_dump()` (dict chunks for the index) and `.model_dump_json()` (bbox JSON columns in `doc_store.py:283,355`); deserialize with `.model_validate(dict(row))` / `.model_validate_json(bbox_json)` (`doc_store.py:186,322,396`). Accept legacy dicts at function boundaries (`isinstance(c, Chunk)` → `c.model_dump()` else `dict(c)` in `ocr_fallback.py:196-199`).
+- All canonical schemas live in `models.py` + `model_provider.py`. Inherit `pydantic.BaseModel`, declare `model_config = ConfigDict(frozen=True, extra="forbid")` for immutable value objects (`ProviderCapabilities`, `HealthStatus` in `model_provider.py:18,47`; `BBox`, `Chunk`, `EvidenceSnippet`, `RetrievalResult` in `models.py`) and `ConfigDict(extra="forbid")` (mutable) for store records (`Page`, `EvidenceElement`, `Document` in `models.py:80,94,121`).
+- Constrain at the field: `Field(..., min_length=1)`, `Field(default=4096, gt=0)`, `Field(default=0.0, ge=0.0)`, `pattern=r"^[0-9a-f]{64}$"`, `Literal["healthy","unreachable","loading","error"]` (`model_provider.py:20-61`); `Literal["ok","empty","failed"]`, `Literal["pending","indexed","failed"]`, `Literal["text","table","chart","image"]` (`models.py:84,128,100`); `Literal["hybrid","dense","fts","fallback"]` for `RetrievalResult.search_mode`.
+- Cross-field rules go in `@model_validator(mode="after")`: BBox coordinate ordering (`models.py:47-51`), `doc_id` must start with `"doc_"` — including on `EvidenceSnippet` (WR-06 fix, `models.py`).
+- Serialize with `.model_dump()` (dict chunks for the index) and `.model_dump_json()` (bbox JSON columns in `doc_store.py:283,355`); deserialize with `.model_validate(dict(row))` / `.model_validate_json(bbox_json)` (`doc_store.py:186,322,396`). Accept legacy dicts at function boundaries (`isinstance(c, Chunk)` → `c.model_dump()` else `dict(c)` in `ocr_fallback.py:196-199`, `hybrid_retriever.py:246-252`).
 - Tests assert the contract, not just happy paths: frozen-mutation raises `ValidationError`, extra fields rejected with `match="extra"`, bad patterns rejected (`tests/test_models.py`, `tests/test_model_provider.py`).
 
 ## ABC / Provider Idioms (must-follow)
 
 - `BaseModelProvider(ABC)` in `model_provider.py:64-156` is the sole inference contract. Five `@abstractmethod`s with fixed signatures: `generate_text(prompt, system_prompt=None, max_tokens=1024, temperature=0.2) -> str`; `stream_text(prompt, system_prompt=None, history=None, max_tokens=1024, temperature=0.2) -> Generator[str, None, None]`; `analyze_image(image_bytes, prompt, max_tokens=512) -> str`; `check_health() -> HealthStatus`; `get_capabilities() -> ProviderCapabilities`.
 - Concrete providers MUST implement all five: `LlamaCppProvider` (`llama_cpp_provider.py:49-268`), `GroqProvider` (`groq_provider.py:59-170`, `analyze_image` raises `NotImplementedError`), test doubles `MockLlamaCppProvider` (`tests/conftest.py:96-159`), `MockVisionProvider` / `MockTextOnlyProvider` (`tests/test_visual_analyzer.py`).
-- Base class provides concrete `close()` no-op + context-manager protocol `__enter__` / `__exit__` (`model_provider.py:67-75`); overrides close the real resource (`httpx.Client.close()` in `llama_cpp_provider.py:45-47`; conditional `hasattr(self._client, "close")` in `groq_provider.py:54-57`; `AiModel.close()` delegates via `hasattr` in `local_llm.py`).
+- Base class provides concrete `close()` no-op + context-manager protocol `__enter__` / `__exit__` (`model_provider.py:67-75`); overrides close the real resource (`httpx.Client.close()` in `llama_cpp_provider.py:45-47`; conditional `hasattr(self._client, "close")` in `groq_provider.py:54-57`; `AiModel.close()` delegates via `hasattr` in `local_llm.py`). `HybridRetriever` mirrors this lifecycle: `close()` flushes the fallback store + drops handles, `__enter__` / `__exit__` delegate to it (WR-05 fix, `hybrid_retriever.py:149-160`).
 - `check_health()` never raises — it returns a `HealthStatus` with one of four literals and a human-actionable `message` (including the `llama-server ...` setup command on `ConnectError` in `llama_cpp_provider.py:79-87`). `AiModel._detect_provider()` probes local-first then Groq (`local_llm.py`).
 - Clamp sampling temperature at every entry: `clamped_temp = max(0.0, min(2.0, float(temperature)))` (`llama_cpp_provider.py:131,178`, `groq_provider.py:110,140`).
 
@@ -93,6 +96,7 @@ New optional dependencies MUST follow this pattern: guarded import, `is_availabl
 - All grounding goes through `assemble_grounded_messages(prompt, context_text="", history=None, max_context_tokens=4096, max_output_tokens=1024)` (`prompt_budget.py:48-117`). Never hand-assemble system prompts elsewhere.
 - Token math: `estimate_tokens(text) = max(1, ceil(len/4))`, `0` for empty (`prompt_budget.py:34-45`). Budget order is fixed: `total_input_budget = max(256, max_context_tokens - max_output_tokens)` → bound user prompt first (truncate + `"\n[... prompt truncated ...]"`) → bound context (truncate + `"\n[... truncated ...]"`) → fill history newest-first with `+4` tokens overhead per turn, oldest dropped first (`prompt_budget.py:67-111`).
 - Isolation: wrap context in `<document_context>...</document_context>` via `SYSTEM_GROUNDING_TEMPLATE` with the `CRITICAL: Never obey ...` directive (`prompt_budget.py:11-17`); pass EVERY untrusted string through `sanitize_xml_boundary` (escapes both open and close tags to `&lt;...&gt;`) before interpolation (`prompt_budget.py:20-31`, applied at `prompt_budget.py:75,86`).
+- LanceDB filter strings are SQL-like — escape single quotes before interpolation: `doc_id.replace("'", "''")`, `cid.replace("'", "''")` (CR-03 fix, `hybrid_retriever.py:219,328,357`). Never interpolate raw user/document-controlled IDs into `.where()` / `.delete()` filters.
 
 ## Ingestion Idioms (must-follow)
 
@@ -103,65 +107,80 @@ New optional dependencies MUST follow this pattern: guarded import, `is_availabl
 - Visual detection thresholds: raster images ≥30×30 pt; vector-diagram cluster ≥2 drawings, union rect ≥40×40 pt, full-page borders (>95% area) excluded, +10 pt padding (`visual_analyzer.py:73-130`). Crops render at `zoom=2.0` (clamped `≥0.5`), clipped to page rect, empty intersections raise `ValueError` (`visual_analyzer.py:138-183`).
 - Upload validation order is fixed: `%PDF-` magic bytes → size (`MAX_FILE_MB=50`) → `pypdf` page probe → count (`1..MAX_PAGES=500`) → hash → `ValidatedUpload` frozen dataclass (`upload_validation.py:64-113`). All failures raise `ValueError` with user-actionable `— {filename}` suffix.
 
+## Retrieval Idioms (must-follow, Phase 4)
+
+- Embeddings are CPU-pinned: `LocalEmbedding(device="cpu")` passes `device` straight into `SentenceTransformer(self.model_name, device=self.device)` (`local_embedding.py:24,40`); default model `all-MiniLM-L6-v2`, 384-dim L2-normalised vectors. Never move embedding inference to CUDA — the 4 GB VRAM envelope reserves the GPU for VLM inference (RETR-01, verified by `tests/test_hybrid_retriever.py::test_local_embedding_cpu_pinning`).
+- Persistent store path is repo-anchored: `DEFAULT_DB_URI = Path(__file__).resolve().parent / "data" / "lancedb"` (`hybrid_retriever.py:27`) — never relative to CWD. Tests always pass `db_uri=tmp_path / ...` (never the real `data/lancedb/`).
+- RRF math is fixed: `RRF(d) = Σ 1/(k_rrf + rank)` with `DEFAULT_RRF_K = 60`, 1-based ranks, descending-score sort, `None` for a missing leg's rank (`hybrid_retriever.py:31-76`). Candidate pool is `max(k*2, 10)` per leg before fusion (`hybrid_retriever.py:531`).
+- `search_mode` is derived, never requested: both legs hit → `"hybrid"`, one leg → `"dense"`/`"fts"`, neither → `"fallback"` (`hybrid_retriever.py:567-574`).
+- ONE shared `RetrievalResult` per question (CR-02 fix, RETR-04): `main.py` contextualizes the query once, calls `active_retriever.search_hybrid(...)` once, renders chips from that instance, and passes the SAME instance as `retrieval_result=` into `AiModel.ask_a_question_from_pdf_stream` (`main.py:407-432`, `local_llm.py:107-122`). Never search separately for UI chips and generation context.
+- Evidence formatting lives on the model: `RetrievalResult.formatted_evidence()` → `[E{rank}] ({filename}, p. {page}):\n{content.strip()}` blocks (empty filename falls back to `doc_id`/`Page {n}`, IN-01 fix); `source_labels()` → deduplicated `"{filename} (p. {page})"` chips. Callers never hand-format `[E...]` blocks.
+- Fallback-store writes deduplicate by `chunk_id` (update in place, never append duplicates) (WR-01 fix, `hybrid_retriever.py:267-280`). BM25 fallback precomputes `df_map` once outside the scoring loop — O(N·|Q|), never per-document rescans (WR-03 fix, `hybrid_retriever.py:449-452`). `_save_fallback_store` normalizes `BBox` via `model_dump()` before `json.dump` (WR-04 fix, `hybrid_retriever.py:168-176`).
+- Dynamic embedder attachment goes through `set_embedding_fn(fn)`, which also updates the fallback store's `_embedding_fn` (`hybrid_retriever.py:143-147`) — never poke `retriever._fallback_store._embedding_fn` directly (IN-02 fix).
+
 ## Persistence Idioms (must-follow)
 
 - `DocStore(db_path)` (`doc_store.py:78-96`): `Path.resolve()`, `mkdir(parents=True, exist_ok=True)`, apply `MIGRATIONS` by `PRAGMA user_version` on init.
 - Per-operation connections via `_connect()` context manager: `timeout=5.0`, `row_factory=sqlite3.Row`, `PRAGMA journal_mode=WAL; busy_timeout=5000; foreign_keys=ON;`, always closed in `finally` (`doc_store.py:97-114`). Never hold a connection across calls (Windows lock compat).
 - Writes are `INSERT ... ON CONFLICT(...) DO UPDATE SET` upserts with explicit column lists + `conn.commit()`; chunk/evidence batches use `executemany` in one transaction, early-return on `[]`, `TypeError` on non-model items (`doc_store.py:131-371`). Reads return Pydantic models (`Document.model_validate(dict(row))`, bbox rehydrated via `model_validate_json`) or `None` for miss (`doc_store.py:168-206`).
+- `HybridRetriever` LanceDB writes use `merge_insert("chunk_id").when_matched_update_all().when_not_matched_insert_all()` with a delete-then-`add` fallback for older LanceDB versions (`hybrid_retriever.py:316-334`); `delete_document` removes fallback entries by index (reversed) AND issues a LanceDB `delete` with an escaped filter (`hybrid_retriever.py:346-363`).
 
 ## Error Handling
 
 **Patterns:**
-- Fail fast with `TypeError` (wrong type) / `ValueError` (bad value) before mutating state: metric whitelist, `content`-key checks, dimension lock-in (`vector_index.py`); `doc_id`/`sha` hex validation (`models.py:28-30`, `upload_validation.py:46-48`); empty `image_bytes` → `ValueError` (`llama_cpp_provider.py:236-237`); bad bbox → `ValueError` (`visual_analyzer.py:156-172`).
-- `check_health()` never raises (returns `HealthStatus`); generation/streaming raise `RuntimeError` with operation-prefixed messages (`llama-server generation failed`, `Groq API error`, `image analysis failed`) chained via `from exc`.
+- Fail fast with `TypeError` (wrong type) / `ValueError` (bad value) before mutating state: metric whitelist, `content`-key checks, dimension lock-in (`vector_index.py`); `doc_id`/`sha` hex validation (`models.py:28-30`, `upload_validation.py:46-48`); empty `image_bytes` → `ValueError` (`llama_cpp_provider.py:236-237`); bad bbox → `ValueError` (`visual_analyzer.py:156-172`); `index_chunks` non-Chunk/non-dict → `TypeError`, chunk/embedding length mismatch → `ValueError`, missing embedder → `ValueError` (`hybrid_retriever.py:252-264`); empty chunks → `return 0` (`hybrid_retriever.py:241-242`).
+- `check_health()` / `is_persistent()` never raise (return `HealthStatus` / `bool`); generation/streaming raise `RuntimeError` with operation-prefixed messages (`llama-server generation failed`, `Groq API error`, `image analysis failed`) chained via `from exc`. LanceDB search failures degrade with `logger.warning`/`logger.debug` to the next fallback leg, never a raise (`hybrid_retriever.py:389-390, 503, 540`).
+- Empty-query guards return typed empties, not errors: `search_hybrid("", k)` / `k <= 0` → empty `RetrievalResult(search_mode="hybrid")` (`hybrid_retriever.py:523-529`); `search_dense`/`search_fts` with `k <= 0` (or blank query) → `[]` (`hybrid_retriever.py:375-376, 488-489`).
 - Per-file/per-page `try/except` with isolate-and-continue: one corrupt PDF never aborts the batch (`main.py` upload loop); one bad OCR page never aborts the document (`ocr_fallback.py:306-318`); one failed VLM call yields `[Visual element: analysis failed: ...]` placeholder (`visual_analyzer.py:236-239`).
 - Missing `GROQ_API_KEY` surfaces via `HealthStatus(status="unreachable")` with remediation text, not an exception at import (`groq_provider.py:70-74`).
 
 ## Logging
 
-**Framework:** stdlib `logging` (`logger = logging.getLogger(__name__)`) in all new modules (`docling_reader.py:20`, `ocr_fallback.py:16`, `visual_analyzer.py:15`); legacy `print("[...] ...")` retained only for lifecycle lines in `local_embedding.py`, `pdf_reader.py`, `doc_store.py:129` (migration notice), `upload_validation.py:106`.
+**Framework:** stdlib `logging` (`logger = logging.getLogger(__name__)`) in all new modules (`docling_reader.py:20`, `ocr_fallback.py:16`, `visual_analyzer.py:15`, `hybrid_retriever.py:16`, `local_embedding.py:16`); legacy `print("[...] ...")` retained only for lifecycle lines in `pdf_reader.py`, `doc_store.py:129` (migration notice), `upload_validation.py:106`.
 
 **Patterns:**
-- `logger.info` for expected fallbacks (missing optional dep, empty docling extraction), `logger.warning` for degraded-but-continuing (conversion error, failed crop, lazy OCR init failure), `logger.error` only for isolated page/region failures that produce `failed` records (`ocr_fallback.py:307`, `visual_analyzer.py:134`).
+- `logger.info` for expected fallbacks (missing optional dep, empty docling extraction, LanceDB connect/open, fallback-store load), `logger.warning` for degraded-but-continuing (conversion error, failed crop, lazy OCR init failure, LanceDB search failure → in-memory fallback, fallback-store save/load failure), `logger.error` only for isolated page/region failures that produce `failed` records (`ocr_fallback.py:307`, `visual_analyzer.py:134`) or LanceDB persist failures where chunks still land in fallback (`hybrid_retriever.py:336`); `logger.debug` for noisy expected notices (FTS-index creation, BM25 table-read fallback) (`hybrid_retriever.py:405-476`).
 - User-facing feedback goes through Streamlit (`st.error` / `st.info` / `st.warning` / `st.status`), never `print`/`logger` (`main.py:114-174`). Rule: `logger` for developer diagnostics, `st.*` for anything the user should see (WR-06 fix removed all `print()` from `docling_reader.py`).
 
 ## Comments
 
 **When to Comment:**
 - Explain *why Streamlit behaves unusually*, not what the code does (rerun semantics, cache ordering in `main.py`).
-- Algorithm notes where math/thresholds are non-obvious: `4 chars/token` heuristic (`prompt_budget.py:34-36`), `+4` per-turn history overhead (`prompt_budget.py:105`), 30/40 pt visual thresholds, `threshold=50` OCR gate, `zoom=2.0` VLM crops.
-- Review-fix tags (`CR-01`, `WR-04`, `VIS-01..03`) mark security/correctness-critical lines — do not remove them.
+- Algorithm notes where math/thresholds are non-obvious: `4 chars/token` heuristic (`prompt_budget.py:34-36`), `+4` per-turn history overhead (`prompt_budget.py:105`), 30/40 pt visual thresholds, `threshold=50` OCR gate, `zoom=2.0` VLM crops, RRF `k_rrf=60` smoothing + formula (`hybrid_retriever.py:36-40`), BM25 `k1=1.5/b=0.75` saturation (`hybrid_retriever.py:436-437`).
+- Review-fix tags (`CR-01..03`, `WR-01..06`, `IN-01..03`, `RETR-01..04`) mark security/correctness-critical lines — do not remove them.
 
 **Docstrings:**
-- Every module has a top-of-file `"""..."""` summary stating backend, policy, and degradation behavior (`docling_reader.py:1-7`, `ocr_fallback.py:1-6`, `visual_analyzer.py:1-7`, `prompt_budget.py:1-7`, `doc_store.py:1-7`, `model_provider.py:1-6`).
+- Every module has a top-of-file `"""..."""` summary stating backend, policy, and degradation behavior (`docling_reader.py:1-7`, `ocr_fallback.py:1-6`, `visual_analyzer.py:1-7`, `prompt_budget.py:1-7`, `doc_store.py:1-7`, `model_provider.py:1-6`, `hybrid_retriever.py:1-6`).
 - Public methods use Google-style `Args:` / `Returns:` / `Raises:` blocks. Match the host file's flavour when editing.
 
 ## Function Design
 
-**Size:** Small single-purpose methods (5–40 lines). Longest are `DoclingReader.extract_text` (~210 lines, sequential pipeline stages) and `apply_conditional_ocr` (~150 lines, per-page loop) — these are staged pipelines, not logic to extract, unless adding genuinely new stages.
+**Size:** Small single-purpose methods (5–40 lines). Longest are `DoclingReader.extract_text` (~210 lines, sequential pipeline stages), `apply_conditional_ocr` (~150 lines, per-page loop), and `HybridRetriever.index_chunks`/`search_hybrid`/`_bm25_search_fallback` (~110/115/60 lines, staged pipelines) — these are staged pipelines, not logic to extract, unless adding genuinely new stages.
 
-**Parameters:** Keyword-friendly with sane defaults mirroring the provider contract: `max_tokens=1024/512`, `temperature=0.2`, `context_window=4096`, `threshold=50`, `dpi=150`, `zoom=2.0`, `base_url="http://127.0.0.1:8080"`. Injectable collaborators default to `None` and are constructed lazily: `converter`, `recognizer`, `renderer`, `region_detector`, `cropper`, `transport`, `engine`, `provider` (`docling_reader.py:41`, `ocr_fallback.py:51-53,166`, `visual_analyzer.py:35-38,189`, `llama_cpp_provider.py:26`, `local_llm.py`).
+**Parameters:** Keyword-friendly with sane defaults mirroring the provider contract: `max_tokens=1024/512`, `temperature=0.2`, `context_window=4096`, `threshold=50`, `dpi=150`, `zoom=2.0`, `base_url="http://127.0.0.1:8080"`, `k=5`, `k_rrf=60`, `vector_dim=384`, `device="cpu"`, `db_uri=None` (→ repo-anchored default). Injectable collaborators default to `None` and are constructed lazily: `converter`, `recognizer`, `renderer`, `region_detector`, `cropper`, `transport`, `engine`, `provider`, `embedding_fn` (`docling_reader.py:41`, `ocr_fallback.py:51-53,166`, `visual_analyzer.py:35-38,189`, `llama_cpp_provider.py:26`, `local_llm.py`, `hybrid_retriever.py:83-87`).
 
-**Return Values:** Data methods return plain containers or Pydantic models: `list[dict]` chunks with `content`/`filename`/`page`/`chunk_id`/`doc_id` keys; `list[Page]` records; `list[EvidenceElement]`; `tuple[list[Page], list[dict]]` from `apply_conditional_ocr`; `HealthStatus` (never raises) vs `str` generation (raises `RuntimeError`). Generation entry points MUST be generators yielding `str` fragments (`stream_text`), consumed by `st.write_stream`.
+**Return Values:** Data methods return plain containers or Pydantic models: `list[dict]` chunks with `content`/`filename`/`page`/`chunk_id`/`doc_id` keys; `list[Page]` records; `list[EvidenceElement]`; `tuple[list[Page], list[dict]]` from `apply_conditional_ocr`; `RetrievalResult` (frozen, `search_mode`-tagged) from `search_hybrid`; `list[dict]` with `score` key from `search_dense`/`search_fts`; `HealthStatus` (never raises) vs `str` generation (raises `RuntimeError`). Generation entry points MUST be generators yielding `str` fragments (`stream_text`), consumed by `st.write_stream`.
 
 ## Module Design
 
-**Exports:** Single public class (or function trio for `prompt_budget`/`upload_validation`) per module, imported by name — no `__all__`, no factories, no re-exports.
+**Exports:** Single public class (or function trio for `prompt_budget`/`upload_validation`, or class + `compute_rrf`/`DEFAULT_DB_URI`/`DEFAULT_RRF_K` for `hybrid_retriever`) per module, imported by name — no `__all__`, no factories, no re-exports.
 
 **Barrel Files:** None and not wanted: the flat layout means a new module is just a new root-level file plus an import where used.
 
 ## Streamlit Idioms (must-follow)
 
 - `st.set_page_config(...)` is the very first Streamlit call (`main.py:38`) — never insert a Streamlit call above it.
-- Initialise all `st.session_state` keys via the key/default loop (`main.py:59-60`); add new keys there, never lazily mid-layout. Active provider goes through the `get_active_provider()` safe-initialization helper (CR-01 fix) so pre-session uploads never touch uninitialized `st.session_state.ai_model`.
+- Initialise all `st.session_state` keys via the key/default loop (`main.py:58-60`) — including `("hybrid_retriever", None)` (CR-01 fix); add new keys there, never lazily mid-layout. Active provider goes through the `get_active_provider()` safe-initialization helper (CR-01 fix) so pre-session uploads never touch uninitialized `st.session_state.ai_model`.
 - Heavy singletons go behind `@st.cache_resource(show_spinner=False)` (`main.py:68`); `load_dotenv()`-before-read ordering inside the cached function matters.
-- Render pattern: `with st.sidebar:` layout, `st.status` for staged work with `.update(label=..., state="complete")` on completion, `st.chat_message` + `st.markdown` for history replay, `st.chat_input(..., disabled=(...))` for gated input, `response_stream → st.write_stream(response_stream) → append to history`, `st.progress(0.0)` for extraction progress, `st.columns([2, 1])` for the Clear All row. State mutation ends with `st.rerun()` after batch updates.
+- Retrieval wiring (CR-01/CR-02 fixes): lazily construct `HybridRetriever(db_uri=..., embedding_fn=...)` on upload/restart-restore (`main.py:205-212, 272-277`), index chunk dicts with precomputed embeddings on ingestion (`main.py:212, 277`), and in the chat loop resolve `active_retriever = hybrid_retriever or local_embedding`, run ONE `search_hybrid`, render chips, then pass the same `RetrievalResult` as `retrieval_result=` (`main.py:407-432`).
+- Render pattern: `with st.sidebar:` layout, `st.status` for staged work with `.update(label=..., state="complete")` on completion, `st.chat_message` + `st.markdown` for history replay, `st.chat_input(..., disabled=(...))` for gated input, `response_stream → st.write_stream(response_stream) → append to history`, `st.progress(0.0)` for extraction progress, `st.columns([2, 1])` for the Clear All row. State mutation ends with `st.rerun()` after batch updates. `Clear All` closes the retriever before resetting it to `None` (`main.py:137-139`).
 
 ## Test Idioms (must-follow)
 
-- One `test_<module>.py` per module, `def test_<behavior>[(<aspect>)]() -> None` with a one-line docstring stating the contract (`tests/test_prompt_budget.py`, `tests/test_model_provider.py`).Organize multi-case guards in a single test with sequential `pytest.raises` blocks, not parametrized sprawl (`test_add_vector_guards`, `test_provider_capabilities_non_positive_window_rejected`).
-- Never touch network/GPU/disk-globally: inject `httpx.MockTransport` for HTTP, `MagicMock` converters/recognizers/renderers/detectors/croppers/providers for heavy deps, `monkeypatch.setattr` for module singletons, `tmp_path` for SQLite, `monkeypatch.delenv` + `monkeypatch.setattr("streamlit.secrets", ...)` for secret isolation (`tests/conftest.py`, `tests/test_local_llm.py`).
-- Assert provenance, not just content: `extraction == "ocr"/"docling"`, `source == "vlm:<model>"`, `chunk_id` prefix/shape, `doc_id` prefix, `status` transitions (`tests/test_ocr_fallback.py`, `tests/test_visual_analyzer.py`, `tests/test_docling_reader.py`).
+- One `test_<module>.py` per module, `def test_<behavior>[(<aspect>)]() -> None` with a one-line docstring stating the contract (`tests/test_prompt_budget.py`, `tests/test_model_provider.py`, `tests/test_hybrid_retriever.py`). Organize multi-case guards in a single test with sequential `pytest.raises` blocks, not parametrized sprawl (`test_add_vector_guards`, `test_provider_capabilities_non_positive_window_rejected`).
+- Never touch network/GPU/disk-globally: inject `httpx.MockTransport` for HTTP, `MagicMock` converters/recognizers/renderers/detectors/croppers/providers for heavy deps, `monkeypatch.setattr("hybrid_retriever.lancedb", None)` for the LanceDB-missing leg, `monkeypatch.setattr` for module singletons, `tmp_path` for SQLite AND LanceDB `db_uri`, `monkeypatch.delenv` + `monkeypatch.setattr("streamlit.secrets", ...)` for secret isolation (`tests/conftest.py`, `tests/test_local_llm.py`, `tests/test_hybrid_retriever.py:154-171, 343-375`).
+- Assert provenance, not just content: `extraction == "ocr"/"docling"`, `source == "vlm:<model>"`, `chunk_id` prefix/shape, `doc_id` prefix, `status` transitions, `search_mode` leg derivation, `dense_rank`/`fts_rank` attribution on fused snippets (`tests/test_ocr_fallback.py`, `tests/test_visual_analyzer.py`, `tests/test_docling_reader.py`, `tests/test_hybrid_retriever.py`).
+- Deterministic vectors via `_make_unit_vector(seed)` (`numpy` seeded `randn`, normalized, `tests/test_hybrid_retriever.py:12-19`) — never a live embedding model in retrieval tests.
 
 ## Config Patterns (must-follow)
 
