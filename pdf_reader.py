@@ -49,6 +49,52 @@ class PdfReader:
             page_num = i + 1
             try:
                 page_text = page.extract_text()
+                if not page_text or not page_text.strip():
+                    self.page_records.append(
+                        Page(
+                            doc_id=effective_doc_id,
+                            page_num=page_num,
+                            status="empty",
+                            char_count=0,
+                            error=None,
+                            num_chunks=0,
+                        )
+                    )
+                    continue
+
+                # Clean up multiple spaces and weird newlines first
+                pdf_text = re.sub(r" +", " ", page_text)
+                all_pages_text.append(pdf_text)
+
+                # Split into chunks using langchain and store with metadata
+                chunks = text_splitter.split_text(pdf_text)
+                page_chunks_added = 0
+                for j, p in enumerate(chunks):
+                    content = p.strip()
+                    if not content:
+                        continue
+                    chunk_id = f"{chunk_prefix}_p{page_num}_{j:04d}"
+                    chunk_model = Chunk(
+                        content=content,
+                        filename=self.filename,
+                        page=page_num,
+                        chunk_id=chunk_id,
+                        doc_id=effective_doc_id,
+                        extraction="pypdf",
+                    )
+                    self.page_chunks.append(chunk_model.model_dump())
+                    page_chunks_added += 1
+
+                self.page_records.append(
+                    Page(
+                        doc_id=effective_doc_id,
+                        page_num=page_num,
+                        status="ok" if page_chunks_added > 0 else "empty",
+                        char_count=len(pdf_text),
+                        error=None,
+                        num_chunks=page_chunks_added,
+                    )
+                )
             except Exception as err:
                 self.page_records.append(
                     Page(
@@ -61,48 +107,6 @@ class PdfReader:
                     )
                 )
                 continue
-
-            if not page_text or not page_text.strip():
-                self.page_records.append(
-                    Page(
-                        doc_id=effective_doc_id,
-                        page_num=page_num,
-                        status="empty",
-                        char_count=0,
-                        error=None,
-                        num_chunks=0,
-                    )
-                )
-                continue
-
-            # Clean up multiple spaces and weird newlines first
-            pdf_text = re.sub(r" +", " ", page_text)
-            all_pages_text.append(pdf_text)
-
-            # Split into chunks using langchain and store with metadata
-            chunks = text_splitter.split_text(pdf_text)
-            for j, p in enumerate(chunks):
-                chunk_id = f"{chunk_prefix}_p{page_num}_{j}"
-                chunk_model = Chunk(
-                    content=p.strip(),
-                    filename=self.filename,
-                    page=page_num,
-                    chunk_id=chunk_id,
-                    doc_id=effective_doc_id,
-                    extraction="pypdf",
-                )
-                self.page_chunks.append(chunk_model.model_dump())
-
-            self.page_records.append(
-                Page(
-                    doc_id=effective_doc_id,
-                    page_num=page_num,
-                    status="ok",
-                    char_count=len(pdf_text),
-                    error=None,
-                    num_chunks=len(chunks),
-                )
-            )
 
         # Join the text from all pages for backward compatibility
         self.pages_text = "\n".join(all_pages_text)

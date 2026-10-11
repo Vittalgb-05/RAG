@@ -228,3 +228,70 @@ def test_chunk_backward_compat_read():
     assert dumped["filename"] == legacy_data["filename"]
     assert dumped["page"] == legacy_data["page"]
     assert dumped["chunk_id"] == legacy_data["chunk_id"]
+
+
+def test_cache_dir_for_traversal_rejected():
+    """Verify cache_dir_for rejects path traversal or invalid sha256 digests (IN-04)."""
+    with pytest.raises(ValueError, match="Invalid sha256"):
+        cache_dir_for(Path(".cache"), "../../etc")
+
+    with pytest.raises(ValueError, match="Invalid sha256"):
+        cache_dir_for(Path(".cache"), "short_hex")
+
+
+def test_bbox_extra_forbidden():
+    """Verify BBox rejects unexpected extra fields (IN-01)."""
+    with pytest.raises(ValidationError, match="extra"):
+        BBox(x0=0, y0=0, x1=10, y1=10, unexpected_attr="disallowed")  # type: ignore
+
+
+def test_bbox_invalid_coordinates():
+    """Verify BBox rejects negative or inverted coordinates (IN-02)."""
+    # Negative coordinates
+    with pytest.raises(ValidationError, match="Invalid BBox coordinates"):
+        BBox(x0=-1.0, y0=0.0, x1=10.0, y1=10.0)
+
+    # Inverted coordinates (x1 < x0)
+    with pytest.raises(ValidationError, match="Invalid BBox coordinates"):
+        BBox(x0=20.0, y0=0.0, x1=10.0, y1=10.0)
+
+
+def test_document_invalid_doc_id_rejected():
+    """Verify Document rejects doc_id that does not start with 'doc_' (WR-05)."""
+    valid_sha = "a" * 64
+    with pytest.raises(ValidationError, match="doc_id must start with 'doc_'"):
+        Document(
+            doc_id="invalid_prefix",
+            filename="test.pdf",
+            sha256=valid_sha,
+            size_bytes=100,
+            num_pages=1,
+            upload_time="2026-10-10T12:00:00Z",
+        )
+
+
+def test_literal_status_validation():
+    """Verify Literal type validation on Page, Document, and EvidenceElement (WR-05)."""
+    valid_sha = "a" * 64
+    with pytest.raises(ValidationError):
+        Page(doc_id="doc_1", page_num=1, status="unsupported_status")  # type: ignore
+
+    with pytest.raises(ValidationError):
+        Document(
+            doc_id="doc_test",
+            filename="test.pdf",
+            sha256=valid_sha,
+            size_bytes=100,
+            num_pages=1,
+            status="unsupported_status",  # type: ignore
+            upload_time="2026-10-10T12:00:00Z",
+        )
+
+    with pytest.raises(ValidationError):
+        EvidenceElement(
+            element_id="elem_1",
+            doc_id="doc_1",
+            page=1,
+            kind="unsupported_kind",  # type: ignore
+            content="test",
+        )

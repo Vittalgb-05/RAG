@@ -171,3 +171,134 @@ def test_chunk_json_columns_nullable(tmp_path):
     assert by_id["chunk_with_bbox"].bbox is not None
     assert by_id["chunk_with_bbox"].bbox.x0 == 50.0
     assert by_id["chunk_with_bbox"].embedding_model == "all-MiniLM-L6-v2"
+
+
+def test_restore_chunks_to_embedding_from_doc_store(tmp_path, mock_sentence_transformer):
+    """
+    Verify restart rebuild flow (CR-01 & CR-03):
+    Stored chunks can be restored from DocStore and passed into LocalEmbedding.build_index.
+    """
+    from local_embedding import LocalEmbedding
+
+    db_file = tmp_path / "restore.db"
+    store = DocStore(db_file)
+
+    doc_id = "doc_restore_12345"
+    doc = Document(
+        doc_id=doc_id,
+        filename="manual.pdf",
+        sha256="d" * 64,
+        size_bytes=2048,
+        num_pages=2,
+        status="indexed",
+        upload_time="2026-10-11T02:00:00Z",
+        num_chunks=2,
+    )
+    store.upsert_document(doc)
+
+    chunks = [
+        Chunk(
+            content="Local multimodal RAG system running on RTX 3050 GPU.",
+            filename="manual.pdf",
+            page=1,
+            chunk_id=f"{doc_id[:12]}_p1_0000",
+            doc_id=doc_id,
+            extraction="pypdf",
+        ),
+        Chunk(
+            content="Fast vector similarity search via normalized inner product.",
+            filename="manual.pdf",
+            page=2,
+            chunk_id=f"{doc_id[:12]}_p2_0000",
+            doc_id=doc_id,
+            extraction="pypdf",
+        ),
+    ]
+    store.record_chunks(chunks)
+
+    # Simulate restart: empty session embedding index
+    retrieved = store.get_chunks_for_doc(doc_id)
+    assert len(retrieved) == 2
+
+    local_embedding = LocalEmbedding()
+    local_embedding.build_index([c.model_dump() for c in retrieved])
+
+    results = local_embedding.search("RTX 3050 GPU", k=1)
+    assert len(results) == 1
+    doc, score = results[0]
+    assert "RTX 3050" in doc["content"]
+    assert doc["page"] == 1
+
+
+def test_upsert_document_updates_size_and_time(tmp_path):
+    """Verify upsert_document updates size_bytes and upload_time on conflict (WR-02)."""
+    db_file = tmp_path / "upsert_check.db"
+    store = DocStore(db_file)
+
+    sha = "e" * 64
+    doc_id = "doc_test_upsert"
+    doc_v1 = Document(
+        doc_id=doc_id,
+        filename="v1.pdf",
+        sha256=sha,
+        size_bytes=100,
+        num_pages=1,
+        status="pending",
+        upload_time="2026-10-11T01:00:00Z",
+        num_chunks=1,
+    )
+    store.upsert_document(doc_v1)
+
+    doc_v2 = Document(
+        doc_id=doc_id,
+        filename="v2.pdf",
+        sha256=sha,
+        size_bytes=250,
+        num_pages=2,
+        status="indexed",
+        upload_time="2026-10-11T02:00:00Z",
+        num_chunks=5,
+    )
+    store.upsert_document(doc_v2)
+
+    updated = store.get_document(doc_id)
+    assert updated is not None
+    assert updated.filename == "v2.pdf"
+    assert updated.size_bytes == 250
+    assert updated.num_pages == 2
+    assert updated.status == "indexed"
+    assert updated.upload_time == "2026-10-11T02:00:00Z"
+    assert updated.num_chunks == 5
+
+
+def test_record_chunks_full_column_update_on_conflict(tmp_path):
+    """Verify record_chunks updates all metadata columns on chunk_id conflict (IN-06)."""
+    db_file = tmp_path / "chunks_conflict.db"
+    store = DocStore(db_file)
+
+    chunk_v1 = Chunk(
+        content="Original content.",
+        filename="old.pdf",
+        page=1,
+        chunk_id="chunk_conflict_1",
+        doc_id="doc_v1",
+        extraction="pypdf",
+    )
+    store.record_chunks([chunk_v1])
+
+    chunk_v2 = Chunk(
+        content="Updated content.",
+        filename="new.pdf",
+        page=3,
+        chunk_id="chunk_conflict_1",
+        doc_id="doc_v2",
+        extraction="docling",
+    )
+    store.record_chunks([chunk_v2])
+
+    retrieved = store.get_chunks_for_doc("doc_v2")
+    assert len(retrieved) == 1
+    assert retrieved[0].content == "Updated content."
+    assert retrieved[0].filename == "new.pdf"
+    assert retrieved[0].page == 3
+    assert retrieved[0].extraction == "docling"

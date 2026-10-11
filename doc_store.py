@@ -6,6 +6,8 @@ application restarts. Uses per-operation connection lifecycles to ensure compati
 with Windows file locks and Streamlit execution loops.
 """
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -68,27 +70,30 @@ class DocStore:
         Args:
             db_path: Path to the SQLite database file.
         """
-        self.db_path = Path(db_path)
-        # Ensure parent directory exists
-        if self.db_path.parent:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db_path = Path(db_path).resolve()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize schema and verify user_version
         with self._connect() as conn:
             self._apply_migrations(conn)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
         """
-        Create a per-operation connection with WAL mode and busy timeouts.
+        Create a per-operation connection with WAL mode and busy timeouts,
+        guaranteeing connection closing upon context exit.
 
-        Returns:
+        Yields:
             sqlite3.Connection: Configured SQLite connection.
         """
         conn = sqlite3.connect(str(self.db_path), timeout=5.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _apply_migrations(self, conn: sqlite3.Connection) -> None:
         """
@@ -120,8 +125,10 @@ class DocStore:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(doc_id) DO UPDATE SET
             filename = excluded.filename,
-            status = excluded.status,
+            size_bytes = excluded.size_bytes,
             num_pages = excluded.num_pages,
+            status = excluded.status,
+            upload_time = excluded.upload_time,
             num_chunks = excluded.num_chunks;
         """
         with self._connect() as conn:
@@ -241,8 +248,14 @@ class DocStore:
         INSERT INTO chunks (chunk_id, doc_id, filename, page, content, char_start, char_end, bbox_json, extraction, embedding_model)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(chunk_id) DO UPDATE SET
+            doc_id = excluded.doc_id,
+            filename = excluded.filename,
+            page = excluded.page,
             content = excluded.content,
+            char_start = excluded.char_start,
+            char_end = excluded.char_end,
             bbox_json = excluded.bbox_json,
+            extraction = excluded.extraction,
             embedding_model = excluded.embedding_model;
         """
         params = []
@@ -280,7 +293,7 @@ class DocStore:
             list[Chunk]: List of canonical Chunk instances.
         """
         with self._connect() as conn:
-            cursor = conn.execute("SELECT * FROM chunks WHERE doc_id = ? ORDER BY page ASC, chunk_id ASC;", (doc_id,))
+            cursor = conn.execute("SELECT * FROM chunks WHERE doc_id = ? ORDER BY page ASC, rowid ASC;", (doc_id,))
             rows = cursor.fetchall()
             results = []
             for row in rows:

@@ -14,4 +14,5 @@ build/
 .coverage
 htmlcov/
 unused/
+.cache/
 

@@ -8,6 +8,7 @@ and produces deterministic doc_id identifiers based on document content hash.
 from dataclasses import dataclass
 import hashlib
 import io
+import re
 import pypdf
 
 # Locked configuration constants (RESEARCH-locked ASSUMED caps)
@@ -29,7 +30,7 @@ def sha256_bytes(raw: bytes) -> str:
     slice_size = 1024 * 1024
     for offset in range(0, len(raw), slice_size):
         hasher.update(raw[offset : offset + slice_size])
-    return hasher.hexdigest().lower()
+    return hasher.hexdigest()
 
 
 def doc_id_for(sha: str) -> str:
@@ -42,6 +43,8 @@ def doc_id_for(sha: str) -> str:
     Returns:
         str: Stable identifier in 'doc_<sha16>' format.
     """
+    if not isinstance(sha, str) or not re.match(r"^[0-9a-f]{64}$", sha):
+        raise ValueError(f"Invalid sha256 digest: {sha!r}")
     return f"doc_{sha[:16]}"
 
 
@@ -89,6 +92,9 @@ def validate_pdf_bytes(raw: bytes, filename: str) -> ValidatedUpload:
         num_pages = len(reader.pages)
     except Exception as err:
         raise ValueError(f"Unreadable PDF ({err}) — {filename}.") from err
+
+    if num_pages < 1:
+        raise ValueError(f"PDF contains no pages — {filename}.")
 
     if num_pages > MAX_PAGES:
         raise ValueError(f"Too many pages ({num_pages} > {MAX_PAGES}) — {filename}.")

@@ -82,3 +82,30 @@ def test_sha256_streaming_stable():
     expected_hex = hashlib.sha256(sample_data).hexdigest()
     assert sha256_bytes(sample_data) == expected_hex
     assert doc_id_for(expected_hex) == f"doc_{expected_hex[:16]}"
+
+
+def test_zero_page_pdf_rejected(monkeypatch):
+    """Verify that a PDF reporting zero pages is rejected (WR-03)."""
+    pdf_path = CORPUS_DIR / "clean_digital.pdf"
+    with open(pdf_path, "rb") as f:
+        raw_bytes = f.read()
+
+    class ZeroPageReader:
+        def __init__(self, stream):
+            self.pages = []
+
+    import pypdf
+
+    monkeypatch.setattr(pypdf, "PdfReader", ZeroPageReader)
+
+    with pytest.raises(ValueError, match="contains no pages"):
+        validate_pdf_bytes(raw_bytes, "empty_pages.pdf")
+
+
+def test_doc_id_for_invalid_sha_rejected():
+    """Verify doc_id_for rejects invalid or non-hex sha256 arguments (WR-05)."""
+    with pytest.raises(ValueError, match="Invalid sha256"):
+        doc_id_for("short_hash")
+
+    with pytest.raises(ValueError, match="Invalid sha256"):
+        doc_id_for("G" * 64)

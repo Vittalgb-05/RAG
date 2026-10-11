@@ -16,6 +16,7 @@ import datetime
 import io
 import json
 from pathlib import Path
+import sqlite3
 
 from dotenv import load_dotenv
 import streamlit as st
@@ -23,9 +24,9 @@ import streamlit as st
 from doc_store import DocStore
 from local_embedding import LocalEmbedding
 from local_llm import AiModel
-from models import Document, cache_dir_for
+from models import Chunk, Document, cache_dir_for
 from pdf_reader import PdfReader
-from upload_validation import validate_pdf_bytes
+from upload_validation import MAX_FILE_MB, validate_pdf_bytes
 
 # ------------------------------------------------------------------
 # Page configuration  (must be the very first Streamlit call)
@@ -117,9 +118,21 @@ with st.sidebar:
             doc_store = DocStore(Path("data/documents.db"))
 
             for uploaded_file in uploaded_files:
+                filename = uploaded_file.name
+
+                # WR-04: Size pre-check before buffering into memory
+                if (
+                    hasattr(uploaded_file, "size")
+                    and uploaded_file.size is not None
+                    and uploaded_file.size > MAX_FILE_MB * 1024 * 1024
+                ):
+                    st.error(
+                        f"File too large ({uploaded_file.size / (1024 * 1024):.1f} MB > {MAX_FILE_MB} MB) — `{filename}`."
+                    )
+                    continue
+
                 # 1. Single raw bytes read per file
                 raw_bytes = uploaded_file.getvalue()
-                filename = uploaded_file.name
 
                 # 2. Server-side validation (%PDF header, size limit, page limit)
                 st.write(f"Validating `{filename}`…")
@@ -141,10 +154,17 @@ with st.sidebar:
                         "doc_id": doc_id,
                         "upload_time": existing_doc.upload_time
                         if existing_doc
-                        else datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S"),
+                        else datetime.datetime.now(datetime.timezone.utc).isoformat(),
                         "pages": existing_doc.num_pages if existing_doc else validated.num_pages,
                         "chunks": existing_doc.num_chunks if existing_doc else 0,
                     }
+                    # CR-01: On dedup hit after restart (empty session index), restore chunks from DocStore
+                    if st.session_state.local_embedding is None:
+                        persisted_chunks = doc_store.get_chunks_for_doc(doc_id)
+                        if persisted_chunks:
+                            st.session_state.local_embedding = LocalEmbedding()
+                            st.session_state.local_embedding.build_index([c.model_dump() for c in persisted_chunks])
+                            new_pdf_uploaded = True
                     continue
 
                 new_pdf_uploaded = True
@@ -153,13 +173,18 @@ with st.sidebar:
                 st.write(f"Extracting text from `{filename}`…")
                 progress_bar = st.progress(0.0)
 
-                pdf_stream = io.BytesIO(raw_bytes)
-                pdf_reader = PdfReader(pdf_stream, filename=filename)
+                # CR-02: Guard PdfReader construction and text extraction against malformed PDFs
+                try:
+                    pdf_stream = io.BytesIO(raw_bytes)
+                    pdf_reader = PdfReader(pdf_stream, filename=filename)
 
-                sha12 = validated.sha256[:12]
-                pdf_reader.extract_text(doc_id=doc_id, sha12=sha12)
-                paragraphs = pdf_reader.get_paragraphs()
-                page_records = pdf_reader.get_page_records()
+                    sha12 = validated.sha256[:12]
+                    pdf_reader.extract_text(doc_id=doc_id, sha12=sha12)
+                    paragraphs = pdf_reader.get_paragraphs()
+                    page_records = pdf_reader.get_page_records()
+                except Exception as err:
+                    st.error(f"Could not extract text from `{filename}` ({err})")
+                    continue
 
                 for idx, page in enumerate(page_records):
                     doc_store.record_page(page)
@@ -173,7 +198,10 @@ with st.sidebar:
                     st.session_state.local_embedding = LocalEmbedding()
                 st.session_state.local_embedding.build_index(paragraphs)
 
-                # 6. Persist metadata in DocStore
+                # 6. Persist metadata and chunks in DocStore (CR-03 & WR-03)
+                chunk_models = [Chunk.model_validate(p) for p in paragraphs]
+                doc_store.record_chunks(chunk_models)
+
                 now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 doc_model = Document(
                     doc_id=doc_id,
@@ -185,7 +213,10 @@ with st.sidebar:
                     upload_time=now_iso,
                     num_chunks=len(paragraphs),
                 )
-                doc_store.upsert_document(doc_model)
+                try:
+                    doc_store.upsert_document(doc_model)
+                except sqlite3.IntegrityError:
+                    st.info(f"Document `{filename}` already recorded.")
 
                 # 7. Best-effort disk cache write (STORE-03)
                 try:
@@ -205,11 +236,11 @@ with st.sidebar:
                 st.session_state.indexed_files.add(filename)
                 st.session_state.document_metadata[filename] = {
                     "doc_id": doc_id,
-                    "upload_time": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "upload_time": now_iso,
                     "pages": validated.num_pages,
                     "chunks": len(paragraphs),
                 }
-                st.success(f"**{filename}** indexed successfully (`{doc_id}`)")
+                st.success(f"**`{filename}`** indexed successfully (`{doc_id}`)")
 
             if new_pdf_uploaded:
                 st.session_state.chat_history = []
@@ -224,8 +255,9 @@ with st.sidebar:
         st.markdown("##### Indexed Documents:")
         for filename, meta in st.session_state.document_metadata.items():
             doc_id_label = f" (`{meta['doc_id']}`)" if "doc_id" in meta else ""
+            display_time = meta["upload_time"][:19].replace("T", " ")
             st.success(
-                f"**{filename}**{doc_id_label}\n\n{meta['pages']} pages · {meta['chunks']} chunks · Indexed at {meta['upload_time']}"
+                f"**`{filename}`**{doc_id_label}\n\n{meta['pages']} pages · {meta['chunks']} chunks · Indexed at {display_time}"
             )
     else:
         st.info("Upload a PDF to get started.")
