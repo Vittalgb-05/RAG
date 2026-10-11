@@ -6,7 +6,6 @@ from doc_store import DocStore
 from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 from models import Document, Page, SummaryResult
 from summarizer import (
-    FAST_PATH_TOKEN_LIMIT,
     PROFILE_SYSTEM_INSTRUCTIONS,
     Summarizer,
     extract_page_references,

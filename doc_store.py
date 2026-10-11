@@ -421,7 +421,7 @@ class DocStore:
                     row_dict["bbox"] = None
                 results.append(EvidenceElement.model_validate(row_dict))
             return results
- 
+
     def save_summary(self, summary: SummaryResult) -> None:
         """
         Insert or update a synthesized document summary in SQLite.

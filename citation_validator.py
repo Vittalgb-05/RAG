@@ -161,8 +161,7 @@ def validate_citations(
         msg = f"Citation precision {precision:.1%} ({len(valid_ranks)}/{total_claimed} citations verified)."
     else:
         msg = (
-            f"Citation precision {precision:.1%} failed >=95% requirement: "
-            f"hallucinated {', '.join(hallucinated_tags)}."
+            f"Citation precision {precision:.1%} failed >=95% requirement: hallucinated {', '.join(hallucinated_tags)}."
         )
 
     return CitationVerificationResult(

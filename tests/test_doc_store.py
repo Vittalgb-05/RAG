@@ -541,4 +541,3 @@ def test_summary_upsert_on_same_profile(tmp_path):
     deleted_count = store.delete_summaries_for_doc(doc_id)
     assert deleted_count == 1
     assert store.get_summary(sha, "findings") is None
-

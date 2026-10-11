@@ -233,4 +233,3 @@ class SummaryResult(BaseModel):
         if not self.doc_id.startswith("doc_"):
             raise ValueError(f"doc_id must start with 'doc_': {self.doc_id!r}")
         return self
-

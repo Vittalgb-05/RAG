@@ -22,6 +22,7 @@ from typing import Any
 from dotenv import load_dotenv
 import streamlit as st
 
+from citation_validator import validate_citations
 from doc_store import DocStore
 from docling_reader import DoclingReader
 from hybrid_retriever import HybridRetriever
@@ -29,6 +30,7 @@ from local_embedding import LocalEmbedding
 from local_llm import AiModel
 from models import Chunk, Document, Page, cache_dir_for
 from ocr_fallback import apply_conditional_ocr
+from summarizer import Summarizer
 from upload_validation import MAX_FILE_MB, validate_pdf_bytes
 from visual_analyzer import VisualAnalyzer
 
@@ -76,6 +78,10 @@ def load_ai_model() -> AiModel:
     """
     load_dotenv()
     return AiModel()
+
+
+DOC_STORE_PATH = Path(__file__).resolve().parent / "data" / "documents.db"
+doc_store = DocStore(DOC_STORE_PATH)
 
 
 # ------------------------------------------------------------------
@@ -152,7 +158,6 @@ with st.sidebar:
         # Build the embedding index for any new PDFs
         with st.status("Processing documents…", expanded=True) as doc_status:
             new_pdf_uploaded = False
-            doc_store = DocStore(Path("data/documents.db"))
 
             for uploaded_file in uploaded_files:
                 filename = uploaded_file.name
@@ -189,6 +194,7 @@ with st.sidebar:
                     st.session_state.indexed_files.add(filename)
                     st.session_state.document_metadata[filename] = {
                         "doc_id": doc_id,
+                        "sha256": validated.sha256,
                         "upload_time": existing_doc.upload_time
                         if existing_doc
                         else datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -314,6 +320,7 @@ with st.sidebar:
                 st.session_state.indexed_files.add(filename)
                 st.session_state.document_metadata[filename] = {
                     "doc_id": doc_id,
+                    "sha256": validated.sha256,
                     "upload_time": now_iso,
                     "pages": validated.num_pages,
                     "chunks": len(paragraphs),
@@ -345,106 +352,267 @@ with st.sidebar:
 
 
 # ------------------------------------------------------------------
-# Main content area — chat interface
+# Main content area — tabs for Chat and Summarizer
 # ------------------------------------------------------------------
 
-st.markdown("# Ask Your Document")
+tab_chat, tab_summary = st.tabs(["💬 Ask Your Document", "📑 Document Summarizer"])
 
-if st.session_state.local_embedding is None:
-    st.markdown("> **Upload a PDF in the sidebar** to begin asking questions.")
-else:
-    total_chunks = sum(meta["chunks"] for meta in st.session_state.document_metadata.values())
-    st.markdown(
-        f"Chatting across **{len(st.session_state.indexed_files)} documents** · {total_chunks} total chunks indexed"
+with tab_chat:
+    st.markdown("## Chat & Grounded Question Answering")
+
+    if st.session_state.local_embedding is None:
+        st.markdown("> **Upload a PDF in the sidebar** to begin asking questions.")
+    else:
+        total_chunks = sum(meta["chunks"] for meta in st.session_state.document_metadata.values())
+        st.caption(
+            f"Chatting across **{len(st.session_state.indexed_files)} documents** · {total_chunks} total chunks indexed"
+        )
+
+    st.divider()
+
+    # Replay full conversation on every rerun
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+            if message.get("role") == "assistant":
+                # Citation verification badge
+                v_data = message.get("verification")
+                if v_data:
+                    if v_data.get("abstention_detected"):
+                        st.caption("ℹ️ *Explicit abstention — no document evidence found.*")
+                    elif v_data.get("is_valid"):
+                        precision = v_data.get("precision", 1.0)
+                        st.caption(f"✅ Verified Grounding ({precision:.0%} citation precision)")
+                    else:
+                        precision = v_data.get("precision", 0.0)
+                        st.caption(f"⚠️ Unverified Citations ({precision:.0%} citation precision)")
+
+                # Evidence chips & drawer
+                snippets = message.get("snippets", [])
+                if snippets:
+                    chip_labels = [
+                        f"[E{s['rank']}] {s.get('filename', 'doc')} (p. {s.get('page', 1)})" for s in snippets
+                    ]
+                    if chip_labels:
+                        st.caption(f"**Sources:** {', '.join(chip_labels)}")
+
+                    with st.expander("🔍 Cited Evidence & Source Context", expanded=False):
+                        for s in snippets:
+                            header = f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
+                            st.markdown(header)
+                            st.markdown(f"> {s.get('content', '').strip()}")
+                            if s.get("bbox"):
+                                bbox = s["bbox"]
+                                st.caption(
+                                    f"📐 Region: x0={bbox.get('x0', 0.0):.1f}, y0={bbox.get('y0', 0.0):.1f}, "
+                                    f"x1={bbox.get('x1', 0.0):.1f}, y1={bbox.get('y1', 0.0):.1f}"
+                                )
+                            st.divider()
+                elif message.get("sources"):
+                    st.info(f"**Sources used:** {', '.join(message['sources'])}", icon="ℹ️")
+
+    # Chat input pinned to bottom
+    is_healthy = health.status == "healthy"
+    prompt_placeholder = (
+        "Ask a question about your documents…"
+        if is_healthy
+        else "Inference backend is offline. Start llama-server or configure Groq."
+    )
+    prompt = st.chat_input(
+        placeholder=prompt_placeholder,
+        disabled=(st.session_state.local_embedding is None or not is_healthy),
     )
 
-st.divider()
+    if prompt:
+        if not is_healthy:
+            st.error(f"Inference backend unavailable: {health.message}")
+        else:
+            # Show the user's message immediately
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-# Replay the full conversation on every rerun so chat history stays visible
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        if message.get("sources"):
-            st.info(f"**Sources used:** {', '.join(message['sources'])}", icon="ℹ️")
-        st.markdown(message["content"])
+            # Contextualize search query with previous user question if history exists
+            history_to_pass = st.session_state.chat_history[:-1][-10:]
+            search_query = prompt
+            if history_to_pass:
+                last_user_msgs = [
+                    m["content"]
+                    for m in history_to_pass
+                    if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
+                ]
+                if last_user_msgs:
+                    search_query = f"{last_user_msgs[-1]} {prompt}"
 
-# Chat input — pinned to the bottom of the page by Streamlit natively.
-# Passing disabled=True prevents questions before a PDF is indexed or when model is offline.
-is_healthy = health.status == "healthy"
-prompt_placeholder = (
-    "Ask a question about your documents…"
-    if is_healthy
-    else "Inference backend is offline. Start llama-server or configure Groq."
-)
-prompt = st.chat_input(
-    placeholder=prompt_placeholder,
-    disabled=(st.session_state.local_embedding is None or not is_healthy),
-)
+            # Fetch context once to ensure single shared RetrievalResult identity (RETR-04)
+            sources: list[str] = []
+            retrieval_res = None
+            active_retriever = st.session_state.get("hybrid_retriever") or st.session_state.local_embedding
+            if active_retriever is not None:
+                if hasattr(active_retriever, "search_hybrid"):
+                    retrieval_res = active_retriever.search_hybrid(search_query, k=5)
+                    sources = retrieval_res.source_labels()
+                else:
+                    results = active_retriever.search(search_query, k=10)
+                    seen_sources = set()
+                    for doc, dist in results:
+                        fn = doc.get("filename")
+                        if fn and fn not in seen_sources:
+                            seen_sources.add(fn)
+                            sources.append(fn)
 
-if prompt:
-    if not is_healthy:
-        st.error(f"Inference backend unavailable: {health.message}")
+            snippets_data = (
+                [s.model_dump() for s in retrieval_res.snippets] if retrieval_res and retrieval_res.snippets else []
+            )
+
+            # Stream the assistant response token-by-token
+            with st.chat_message("assistant"):
+                try:
+                    response_stream = ai_model.ask_a_question_from_pdf_stream(
+                        pdf_path="",
+                        prompt=prompt,
+                        local_embedding=active_retriever,
+                        chat_history=history_to_pass,
+                        retrieval_result=retrieval_res,
+                    )
+                    full_response = st.write_stream(response_stream)
+
+                    # Validate citations and abstention (QA-03, QA-04)
+                    verification = validate_citations(full_response, retrieval_res)
+                    if verification.abstention_detected:
+                        st.caption("ℹ️ *Explicit abstention — no document evidence found.*")
+                    elif verification.is_valid:
+                        st.caption(f"✅ Verified Grounding ({verification.precision:.0%} citation precision)")
+                    else:
+                        st.caption(f"⚠️ Unverified Citations ({verification.precision:.0%} citation precision)")
+
+                    # Render live evidence drawer
+                    if snippets_data:
+                        chip_labels = [
+                            f"[E{s['rank']}] {s.get('filename', 'doc')} (p. {s.get('page', 1)})" for s in snippets_data
+                        ]
+                        if chip_labels:
+                            st.caption(f"**Sources:** {', '.join(chip_labels)}")
+
+                        with st.expander("🔍 Cited Evidence & Source Context", expanded=False):
+                            for s in snippets_data:
+                                header = f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
+                                st.markdown(header)
+                                st.markdown(f"> {s.get('content', '').strip()}")
+                                if s.get("bbox"):
+                                    bbox = s["bbox"]
+                                    st.caption(
+                                        f"📐 Region: x0={bbox.get('x0', 0.0):.1f}, y0={bbox.get('y0', 0.0):.1f}, "
+                                        f"x1={bbox.get('x1', 0.0):.1f}, y1={bbox.get('y1', 0.0):.1f}"
+                                    )
+                                st.divider()
+                    elif sources:
+                        st.info(f"**Sources used:** {', '.join(sources)}", icon="ℹ️")
+
+                    st.session_state.chat_history.append(
+                        {
+                            "role": "assistant",
+                            "content": full_response,
+                            "sources": list(sources),
+                            "verification": verification.model_dump(),
+                            "snippets": snippets_data,
+                        }
+                    )
+                except Exception as err:
+                    st.error(f"Inference streaming failed: {err}")
+                    st.session_state.chat_history.append(
+                        {
+                            "role": "assistant",
+                            "content": f"*[Response generation interrupted: {err}]*",
+                            "sources": list(sources),
+                            "verification": None,
+                            "snippets": snippets_data,
+                        }
+                    )
+
+
+with tab_summary:
+    st.markdown("## 📑 Document Summarizer")
+    st.caption("Generate grounded, page-referenced summaries across 5 analytical profiles.")
+
+    if not st.session_state.indexed_files:
+        st.info("Upload and index a PDF in the sidebar to enable summarization.")
     else:
-        # Show the user's message immediately
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        file_options = sorted(list(st.session_state.indexed_files))
+        selected_file = st.selectbox("Select Document to Summarize", options=file_options)
+        file_meta = st.session_state.document_metadata.get(selected_file, {})
+        selected_doc_id = file_meta.get("doc_id", "")
+        selected_sha = file_meta.get("sha256", "")
+        if not selected_sha and selected_doc_id:
+            doc_rec = doc_store.get_document(selected_doc_id)
+            if doc_rec:
+                selected_sha = doc_rec.sha256
 
-        # Contextualize search query with previous user question if history exists
-        history_to_pass = st.session_state.chat_history[:-1][-10:]
-        search_query = prompt
-        if history_to_pass:
-            last_user_msgs = [
-                m["content"]
-                for m in history_to_pass
-                if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
-            ]
-            if last_user_msgs:
-                search_query = f"{last_user_msgs[-1]} {prompt}"
+        profile_map = {
+            "overview": "Overview — Executive synthesis & core thesis",
+            "detailed": "Detailed — Comprehensive section-by-section breakdown",
+            "study_notes": "Study Notes — Pedagogical takeaways & quiz questions",
+            "tables_figures": "Tables & Figures — Structured data & visual synthesis",
+            "findings": "Findings — Strategic discoveries, risks & recommendations",
+        }
 
-        # Fetch context once to ensure single shared RetrievalResult identity (RETR-04)
-        sources: list[str] = []
-        retrieval_res = None
-        active_retriever = st.session_state.get("hybrid_retriever") or st.session_state.local_embedding
-        if active_retriever is not None:
-            if hasattr(active_retriever, "search_hybrid"):
-                retrieval_res = active_retriever.search_hybrid(search_query, k=5)
-                sources = retrieval_res.source_labels()
+        selected_profile = st.radio(
+            "Select Summary Profile",
+            options=list(profile_map.keys()),
+            format_func=lambda p: profile_map[p],
+            index=0,
+        )
+
+        col_btn, col_force = st.columns([1, 3])
+        with col_btn:
+            generate_summary_btn = st.button(
+                "Generate Summary",
+                type="primary",
+                disabled=not is_healthy,
+                use_container_width=True,
+            )
+        with col_force:
+            force_refresh_summary = st.checkbox("Force re-generate (bypass persistent cache)", value=False)
+
+        summary_cache_key = f"summary_{selected_doc_id}_{selected_profile}"
+
+        if generate_summary_btn:
+            with st.status(
+                f"Generating {selected_profile.replace('_', ' ').title()} summary...", expanded=True
+            ) as sum_status:
+                summarizer = Summarizer(provider=ai_model.provider, doc_store=doc_store)
+                try:
+                    summary_obj = summarizer.summarize_document(
+                        doc_id=selected_doc_id,
+                        sha256=selected_sha,
+                        profile=selected_profile,
+                        force_refresh=force_refresh_summary,
+                    )
+                    st.session_state[summary_cache_key] = summary_obj.model_dump()
+                    sum_status.update(label="Summary generated successfully!", state="complete", expanded=False)
+                except Exception as sum_err:
+                    sum_status.update(label="Summary generation failed", state="error", expanded=True)
+                    st.error(f"Summarization error: {sum_err}")
+
+        # Check for summary to display
+        active_summary = st.session_state.get(summary_cache_key)
+        if not active_summary and selected_sha:
+            cached_summ = doc_store.get_summary(selected_sha, selected_profile)
+            if cached_summ:
+                active_summary = cached_summ.model_dump()
+
+        if active_summary:
+            st.divider()
+            if active_summary.get("cached"):
+                st.caption("⚡ *Loaded from persistent SQLite cache (DocStore v3)*")
             else:
-                results = active_retriever.search(search_query, k=10)
-                seen_sources = set()
-                for doc, dist in results:
-                    fn = doc.get("filename")
-                    if fn and fn not in seen_sources:
-                        seen_sources.add(fn)
-                        sources.append(fn)
+                st.caption(f"✨ *Generated fresh with {active_summary.get('model_version', 'model')}*")
 
-        # Stream the assistant response token-by-token.
-        with st.chat_message("assistant"):
-            if sources:
-                st.info(f"**Sources used:** {', '.join(sources)}", icon="ℹ️")
+            st.markdown(active_summary.get("summary_text", ""))
 
-            try:
-                response_stream = ai_model.ask_a_question_from_pdf_stream(
-                    pdf_path="",  # ignored because retrieval_result/active_retriever is provided
-                    prompt=prompt,
-                    local_embedding=active_retriever,
-                    chat_history=history_to_pass,
-                    retrieval_result=retrieval_res,
-                )
-                full_response = st.write_stream(response_stream)
-                st.session_state.chat_history.append(
-                    {
-                        "role": "assistant",
-                        "content": full_response,
-                        "sources": list(sources),
-                    }
-                )
-            except Exception as err:
-                st.error(f"Inference streaming failed: {err}")
-                st.session_state.chat_history.append(
-                    {
-                        "role": "assistant",
-                        "content": f"*[Response generation interrupted: {err}]*",
-                        "sources": list(sources),
-                    }
-                )
+            p_refs = active_summary.get("page_references", [])
+            if p_refs:
+                with st.expander("📄 Referenced Source Pages", expanded=False):
+                    st.markdown(f"**Source pages cited:** {', '.join(f'Page {p}' for p in p_refs)}")
+                    st.caption(f"Generated at: {active_summary.get('created_at', '')}")

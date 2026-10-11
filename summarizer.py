@@ -14,7 +14,7 @@ from typing import Any
 import uuid
 
 from model_provider import BaseModelProvider
-from models import Page, SummaryProfile, SummaryResult, VALID_SUMMARY_PROFILES
+from models import Page, SummaryResult, VALID_SUMMARY_PROFILES
 from prompt_budget import estimate_tokens, sanitize_xml_boundary
 
 logger = logging.getLogger(__name__)
@@ -352,13 +352,13 @@ Attribute every key fact to its source page using (p. X).
                 pages = []
 
         # Filter to pages with text
-        valid_pages = [p for p in pages if (hasattr(p, "page_text") and p.page_text and p.page_text.strip()) or p.char_count > 0]
+        valid_pages = [
+            p for p in pages if (hasattr(p, "page_text") and p.page_text and p.page_text.strip()) or p.char_count > 0
+        ]
         if not valid_pages:
             valid_pages = pages
 
-        total_tokens = sum(
-            estimate_tokens(p.page_text if hasattr(p, "page_text") else "") for p in valid_pages
-        )
+        total_tokens = sum(estimate_tokens(p.page_text if hasattr(p, "page_text") else "") for p in valid_pages)
 
         # 2. Execute single-pass or map-reduce
         if total_tokens <= FAST_PATH_TOKEN_LIMIT:
