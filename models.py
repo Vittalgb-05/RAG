@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Configuration version for chunking and extraction policy
-CONFIG_VERSION: str = "chunker-1000-200-pypdf"
+CONFIG_VERSION: str = "docling-1000-200-v1"
 
 
 def cache_dir_for(base: Path, sha256: str) -> Path:

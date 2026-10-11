@@ -145,11 +145,11 @@ def test_page_and_evidence_elements():
 
 def test_config_version_and_cache_dir_helper():
     """Verify CONFIG_VERSION constant and cache_dir_for path computation."""
-    assert CONFIG_VERSION == "chunker-1000-200-pypdf"
+    assert CONFIG_VERSION == "docling-1000-200-v1"
     sha = "e" * 64
     base = Path(".cache")
     cache_path = cache_dir_for(base, sha)
-    assert cache_path == base / sha / "chunker-1000-200-pypdf"
+    assert cache_path == base / sha / CONFIG_VERSION
 
 
 def test_tracer_chunk_to_store_roundtrip(tmp_path, sample_pdf_path):

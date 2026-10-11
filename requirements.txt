@@ -7,3 +7,4 @@ sentence-transformers==3.4.1
 numpy>=1.26.0,<3.0.0
 pydantic==2.11.9
 httpx>=0.28.0
+docling>=2.0.0
