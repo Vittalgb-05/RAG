@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from models import Chunk
+from models import BBox, Chunk, EvidenceSnippet, RetrievalResult
 from vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,55 @@ except ImportError:
 
 
 DEFAULT_DB_URI = Path(__file__).resolve().parent / "data" / "lancedb"
+DEFAULT_RRF_K = 60
+
+
+def compute_rrf(
+    dense_ranks: list[tuple[str, int, float]],
+    fts_ranks: list[tuple[str, int, float]],
+    k_rrf: int = DEFAULT_RRF_K,
+) -> list[tuple[str, float, int, int | None, int | None]]:
+    """Compute Reciprocal Rank Fusion across dense and FTS ranked lists (RETR-03).
+
+    Formula:
+        RRF_score(d) = sum_{m in {dense, fts}} 1 / (k_rrf + rank_m(d))
+
+    Args:
+        dense_ranks: List of (chunk_id, 1-based rank, raw_score) from dense vector search.
+        fts_ranks: List of (chunk_id, 1-based rank, raw_score) from full-text keyword search.
+        k_rrf: Smoothing parameter (standard literature default: 60).
+
+    Returns:
+        List of tuples sorted by descending composite RRF score:
+        (chunk_id, rrf_score, final_rank, dense_rank_or_None, fts_rank_or_None)
+    """
+    scores: dict[str, float] = {}
+    d_ranks: dict[str, int] = {}
+    f_ranks: dict[str, int] = {}
+
+    for chunk_id, rank, _ in dense_ranks:
+        d_ranks[chunk_id] = rank
+        scores[chunk_id] = scores.get(chunk_id, 0.0) + (1.0 / (k_rrf + rank))
+
+    for chunk_id, rank, _ in fts_ranks:
+        f_ranks[chunk_id] = rank
+        scores[chunk_id] = scores.get(chunk_id, 0.0) + (1.0 / (k_rrf + rank))
+
+    sorted_chunks = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    results: list[tuple[str, float, int, int | None, int | None]] = []
+
+    for final_rank, (chunk_id, rrf_score) in enumerate(sorted_chunks, start=1):
+        results.append(
+            (
+                chunk_id,
+                rrf_score,
+                final_rank,
+                d_ranks.get(chunk_id),
+                f_ranks.get(chunk_id),
+            )
+        )
+
+    return results
 
 
 class HybridRetriever:
@@ -305,3 +354,210 @@ class HybridRetriever:
         except Exception as err:
             logger.warning("Fallback search error: %s", err)
             return []
+
+    def create_fts_index(self) -> None:
+        """Create full-text search index on 'content' column in LanceDB if supported."""
+        if self._has_lancedb and self._table is not None:
+            try:
+                if hasattr(self._table, "create_fts_index"):
+                    self._table.create_fts_index("content", replace=True)
+                    logger.info("Created LanceDB full-text search index on 'content'.")
+            except Exception as err:
+                logger.debug("LanceDB create_fts_index notice: %s", err)
+
+    def _bm25_search_fallback(self, query: str, k: int = 5) -> list[dict[str, Any]]:
+        """Pure-Python BM25 keyword search across stored chunks (RETR-03)."""
+        import math
+        import re
+
+        query_terms = [w.lower() for w in re.findall(r"\w+", query) if len(w) > 1]
+        if not query_terms:
+            return []
+
+        docs = self._fallback_store.documents
+        if not docs:
+            return []
+
+        k1 = 1.5
+        b = 0.75
+        N = len(docs)
+        doc_tokens = []
+        doc_lens = []
+
+        for d in docs:
+            toks = [w.lower() for w in re.findall(r"\w+", d.get("content", ""))]
+            doc_tokens.append(toks)
+            doc_lens.append(len(toks))
+
+        avg_dl = sum(doc_lens) / N if N > 0 else 1.0
+
+        scores: list[tuple[float, dict[str, Any]]] = []
+        for doc, tokens, dl in zip(docs, doc_tokens, doc_lens):
+            token_counts: dict[str, int] = {}
+            for t in tokens:
+                token_counts[t] = token_counts.get(t, 0) + 1
+
+            doc_score = 0.0
+            for qt in query_terms:
+                if qt in token_counts:
+                    tf = token_counts[qt]
+                    df = sum(1 for dtoks in doc_tokens if qt in dtoks)
+                    idf = math.log((N - df + 0.5) / (df + 0.5) + 1.0)
+                    denom = tf + k1 * (1 - b + b * (dl / (avg_dl or 1.0)))
+                    term_score = idf * ((tf * (k1 + 1)) / (denom or 1.0))
+                    doc_score += term_score
+
+            if doc_score > 0.0:
+                d_copy = dict(doc)
+                d_copy["score"] = float(doc_score)
+                scores.append((doc_score, d_copy))
+
+        scores.sort(key=lambda x: x[0], reverse=True)
+        return [d for _, d in scores[:k]]
+
+    def search_fts(self, query: str, k: int = 5) -> list[dict[str, Any]]:
+        """Perform full-text keyword search across indexed chunks.
+
+        Args:
+            query: Natural language query or exact keyword search term.
+            k: Maximum number of top candidates to return.
+
+        Returns:
+            List of matching chunk dictionaries with 'score' key.
+        """
+        if k <= 0 or not query.strip():
+            return []
+
+        if self._has_lancedb and self._table is not None:
+            try:
+                results = self._table.search(query, query_type="fts").limit(k).to_list()
+                formatted_results: list[dict[str, Any]] = []
+                for row in results:
+                    r = dict(row)
+                    score = float(r.get("_score", r.get("score", 1.0)))
+                    r["score"] = score
+                    formatted_results.append(r)
+                if formatted_results:
+                    return formatted_results
+            except Exception as err:
+                logger.debug("LanceDB FTS search notice: %s. Using BM25 fallback.", err)
+
+        return self._bm25_search_fallback(query, k=k)
+
+    def search_hybrid(
+        self,
+        query: str,
+        k: int = 5,
+        k_rrf: int = DEFAULT_RRF_K,
+    ) -> RetrievalResult:
+        """Execute hybrid search combining dense semantic and BM25 full-text search with RRF.
+
+        Args:
+            query: Natural language query or question.
+            k: Number of top evidence snippets to return.
+            k_rrf: Reciprocal rank fusion smoothing parameter (default: 60).
+
+        Returns:
+            Canonical immutable RetrievalResult containing ranked EvidenceSnippet items (RETR-03, RETR-04).
+        """
+        if k <= 0 or not query.strip():
+            return RetrievalResult(
+                query=query,
+                snippets=[],
+                total_candidates=0,
+                search_mode="hybrid",
+            )
+
+        candidate_pool = max(k * 2, 10)
+
+        # 1. Dense vector search
+        dense_matches: list[dict[str, Any]] = []
+        if self.embedding_fn is not None:
+            try:
+                q_vec = self.embedding_fn(query)
+                dense_matches = self.search_dense(q_vec, k=candidate_pool)
+            except Exception as err:
+                logger.warning("Dense search failed during hybrid retrieval: %s", err)
+
+        # 2. Full-text search
+        fts_matches = self.search_fts(query, k=candidate_pool)
+
+        # Build chunks lookup
+        chunks_map: dict[str, dict[str, Any]] = {}
+        for d in dense_matches:
+            cid = d.get("chunk_id")
+            if cid:
+                chunks_map[cid] = d
+        for d in fts_matches:
+            cid = d.get("chunk_id")
+            if cid and cid not in chunks_map:
+                chunks_map[cid] = d
+
+        dense_ranks = [
+            (d["chunk_id"], rank, float(d.get("score", 0.0)))
+            for rank, d in enumerate(dense_matches, start=1)
+            if d.get("chunk_id")
+        ]
+        fts_ranks = [
+            (d["chunk_id"], rank, float(d.get("score", 0.0)))
+            for rank, d in enumerate(fts_matches, start=1)
+            if d.get("chunk_id")
+        ]
+
+        if dense_matches and fts_matches:
+            search_mode: Any = "hybrid"
+        elif dense_matches:
+            search_mode = "dense"
+        elif fts_matches:
+            search_mode = "fts"
+        else:
+            search_mode = "fallback"
+
+        rrf_fused = compute_rrf(dense_ranks, fts_ranks, k_rrf=k_rrf)
+        top_candidates = rrf_fused[:k]
+
+        snippets: list[EvidenceSnippet] = []
+        for chunk_id, rrf_score, final_rank, d_rank, f_rank in top_candidates:
+            raw = chunks_map.get(chunk_id, {})
+            bbox = raw.get("bbox")
+            bbox_json = raw.get("bbox_json")
+            if bbox is None and bbox_json:
+                try:
+                    bbox = BBox.model_validate_json(bbox_json)
+                except Exception:
+                    pass
+
+            snippet = EvidenceSnippet(
+                content=str(raw.get("content", "")),
+                doc_id=str(raw.get("doc_id", "doc_default")),
+                filename=str(raw.get("filename", "")),
+                page=int(raw.get("page", 1)),
+                chunk_id=chunk_id,
+                score=float(rrf_score),
+                rank=final_rank,
+                dense_rank=d_rank,
+                fts_rank=f_rank,
+                extraction=str(raw.get("extraction", "docling")),
+                char_start=raw.get("char_start"),
+                char_end=raw.get("char_end"),
+                bbox=bbox,
+            )
+            snippets.append(snippet)
+
+        return RetrievalResult(
+            query=query,
+            snippets=snippets,
+            total_candidates=len(chunks_map),
+            search_mode=search_mode,
+        )
+
+    def search(self, question: str, k: int = 3) -> list[tuple[dict[str, Any], float]]:
+        """Legacy-compatible search facade returning (doc_dict, score) tuples."""
+        result = self.search_hybrid(question, k=k)
+        return [(s.model_dump(), s.score) for s in result.snippets]
+
+    def get_context(self, question: str, k: int = 3) -> str:
+        """Legacy-compatible context facade returning formatted evidence."""
+        result = self.search_hybrid(question, k=k)
+        return result.formatted_evidence()
+
