@@ -1,0 +1,268 @@
+"""Local inference provider for llama-server (llama.cpp) supporting Qwen3-VL 2B GGUF.
+
+Communicates with llama-server over local HTTP REST endpoints, offering
+text generation, incremental SSE streaming, multimodal image analysis,
+and health diagnostics without any outbound network calls.
+"""
+
+import base64
+from collections.abc import Generator
+import json
+import time
+
+import httpx
+
+from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+
+
+class LlamaCppProvider(BaseModelProvider):
+    """Client for local llama-server implementing the BaseModelProvider interface."""
+
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:8080",
+        model_name: str = "qwen3-vl-2b",
+        context_window: int = 4096,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        """Initialize the local llama.cpp provider.
+
+        Args:
+            base_url: Base URL of the llama-server instance.
+            model_name: Identifier for the model.
+            context_window: Bounded context token capacity (default 4096).
+            transport: Optional custom HTTP transport (e.g. httpx.MockTransport for tests).
+        """
+        self.base_url = base_url.rstrip("/")
+        self.model_name = model_name
+        self.context_window = context_window
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            transport=transport,
+            timeout=httpx.Timeout(connect=2.0, read=60.0, write=10.0, pool=5.0),
+        )
+
+    def close(self) -> None:
+        """Close the underlying HTTP client."""
+        self._client.close()
+
+    def __enter__(self) -> "LlamaCppProvider":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def check_health(self) -> HealthStatus:
+        """Check whether llama-server is healthy, loading, or unreachable.
+
+        Returns:
+            HealthStatus schema with connectivity state and diagnostics.
+        """
+        start = time.perf_counter()
+        try:
+            resp = self._client.get("/health", timeout=2.0)
+            elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+
+            if resp.status_code == 200:
+                return HealthStatus(
+                    status="healthy",
+                    message="llama-server is active and ready.",
+                    latency_ms=elapsed_ms,
+                )
+            if resp.status_code == 503:
+                return HealthStatus(
+                    status="loading",
+                    message="llama-server is loading the model into VRAM. Please wait...",
+                    latency_ms=elapsed_ms,
+                )
+            return HealthStatus(
+                status="error",
+                message=f"llama-server returned unexpected status code: {resp.status_code}",
+                latency_ms=elapsed_ms,
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+            setup_cmd = (
+                f"llama-server -m models/{self.model_name}-instruct-q4_k_m.gguf "
+                f"--mmproj models/mmproj-f16.gguf -c {self.context_window} -ngl 28 --port 8080"
+            )
+            return HealthStatus(
+                status="unreachable",
+                message=(f"Cannot connect to llama-server at {self.base_url}. Start it with:\n{setup_cmd}"),
+                latency_ms=elapsed_ms,
+            )
+        except httpx.HTTPError as exc:
+            elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+            return HealthStatus(
+                status="error",
+                message=f"llama-server health check error: {exc}",
+                latency_ms=elapsed_ms,
+            )
+
+    def get_capabilities(self) -> ProviderCapabilities:
+        """Inspect provider capabilities.
+
+        Returns:
+            ProviderCapabilities for local Qwen3-VL 2B.
+        """
+        return ProviderCapabilities(
+            model_name=self.model_name,
+            context_window=self.context_window,
+            supports_vision=True,
+            is_local=True,
+            supports_streaming=True,
+        )
+
+    def generate_text(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+    ) -> str:
+        """Generate a complete text response synchronously from llama-server.
+
+        Args:
+            prompt: User prompt or grounded instruction.
+            system_prompt: Optional system prompt instructions.
+            max_tokens: Maximum tokens in response.
+            temperature: Sampling temperature.
+
+        Returns:
+            Extracted text content from the response.
+
+        Raises:
+            RuntimeError: If the server returns an HTTP error or invalid response.
+        """
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+        }
+
+        try:
+            resp = self._client.post("/v1/chat/completions", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return str(data["choices"][0]["message"]["content"])
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"llama-server generation failed: {exc}") from exc
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"llama-server returned malformed response payload: {exc}") from exc
+
+    def stream_text(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+    ) -> Generator[str, None, None]:
+        """Stream response tokens from llama-server via Server-Sent Events (SSE).
+
+        Args:
+            prompt: Current turn prompt.
+            system_prompt: Optional system instructions.
+            history: Optional conversation history.
+            max_tokens: Maximum generation tokens.
+            temperature: Sampling temperature.
+
+        Yields:
+            Incremental text tokens.
+
+        Raises:
+            RuntimeError: If the stream fails or server returns an HTTP error.
+        """
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+
+        try:
+            with self._client.stream("POST", "/v1/chat/completions", json=payload) as resp:
+                resp.raise_for_status()
+                for raw_line in resp.iter_lines():
+                    line = raw_line.strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if line.startswith("data: "):
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                yield content
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"llama-server streaming failed: {exc}") from exc
+
+    def analyze_image(
+        self,
+        image_bytes: bytes,
+        prompt: str,
+        max_tokens: int = 512,
+    ) -> str:
+        """Analyze an image using the multimodal capabilities of llama-server.
+
+        Args:
+            image_bytes: Raw bytes of image.
+            prompt: Text prompt asking for image description or analysis.
+            max_tokens: Maximum tokens in description.
+
+        Returns:
+            Description or visual analysis from the model.
+
+        Raises:
+            RuntimeError: If analysis request fails.
+        """
+        b64_image = base64.b64encode(image_bytes).decode("ascii")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"},
+                    },
+                ],
+            }
+        ]
+
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+
+        try:
+            resp = self._client.post("/v1/chat/completions", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return str(data["choices"][0]["message"]["content"])
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"llama-server image analysis failed: {exc}") from exc
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"llama-server returned malformed image analysis payload: {exc}") from exc
