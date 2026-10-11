@@ -6,6 +6,7 @@ local llama-server (Qwen3-VL 2B GGUF) and cloud Groq inference.
 """
 
 from collections.abc import Generator
+from citation_validator import CitationVerificationResult, validate_citations
 from groq_provider import GroqProvider
 from hybrid_retriever import HybridRetriever
 from llama_cpp_provider import LlamaCppProvider
@@ -33,6 +34,8 @@ class AiModel:
             self.provider = self._detect_provider()
 
         self.model_name = self.provider.get_capabilities().model_name
+        self.last_retrieval_result: RetrievalResult | None = None
+        self.last_verification_result: CitationVerificationResult | None = None
 
     def close(self) -> None:
         """Close underlying provider resources."""
@@ -178,3 +181,23 @@ class AiModel:
             history=history_turns,
             max_tokens=1024,
         )
+
+    def validate_response(
+        self,
+        response_text: str,
+        retrieval_result: RetrievalResult | None = None,
+    ) -> CitationVerificationResult:
+        """Validate citations in generated response against active or provided evidence.
+
+        Args:
+            response_text: Completed assistant response text.
+            retrieval_result: Optional override for retrieval result. If None, uses
+                              last_retrieval_result from previous inference call.
+
+        Returns:
+            CitationVerificationResult schema.
+        """
+        active_result = retrieval_result if retrieval_result is not None else self.last_retrieval_result
+        verification = validate_citations(response_text, active_result)
+        self.last_verification_result = verification
+        return verification
