@@ -17,6 +17,20 @@ If the answer cannot be found in the document context, state: "The document does
 </document_context>"""
 
 
+def sanitize_xml_boundary(text: str) -> str:
+    """Neutralize attempts to prematurely close or spoof document context XML tags.
+
+    Args:
+        text: Untrusted document text or user prompt.
+
+    Returns:
+        String with <document_context> and </document_context> tags escaped.
+    """
+    return text.replace("</document_context>", "&lt;/document_context&gt;").replace(
+        "<document_context>", "&lt;document_context&gt;"
+    )
+
+
 def estimate_tokens(text: str) -> int:
     """Estimate token count using a conservative heuristic (approx 4 characters per token).
 
@@ -53,48 +67,51 @@ def assemble_grounded_messages(
     # Total token budget available for input messages (system + context + history + prompt)
     total_input_budget = max(256, max_context_tokens - max_output_tokens)
 
-    user_prompt_tokens = estimate_tokens(prompt)
-
     # Base system prompt with empty context
     base_system = SYSTEM_GROUNDING_TEMPLATE.format(context_text="")
     base_system_tokens = estimate_tokens(base_system)
 
-    # Available tokens for document context
-    # Reserve room for base system and user prompt
+    # 1. Bound user prompt to ensure it does not overflow the entire input window on its own
+    bounded_prompt = sanitize_xml_boundary(prompt)
+    max_prompt_budget = max(64, total_input_budget - base_system_tokens)
+    if estimate_tokens(bounded_prompt) > max_prompt_budget:
+        char_cap = max(0, max_prompt_budget * 4)
+        bounded_prompt = bounded_prompt[:char_cap] + "\n[... prompt truncated ...]"
+
+    user_prompt_tokens = estimate_tokens(bounded_prompt)
+
+    # 2. Available tokens for document context
     available_for_context = max(0, total_input_budget - (base_system_tokens + user_prompt_tokens))
 
-    clean_context = context_text.strip()
+    clean_context = sanitize_xml_boundary(context_text.strip())
     if clean_context:
         context_tokens = estimate_tokens(clean_context)
         if context_tokens > available_for_context:
-            # Truncate context to fit available budget (approx 4 chars/token)
             char_limit = max(0, available_for_context * 4)
             clean_context = clean_context[:char_limit] + "\n[... truncated ...]"
 
     system_content = SYSTEM_GROUNDING_TEMPLATE.format(context_text=clean_context)
     system_tokens = estimate_tokens(system_content)
 
-    # Remaining token budget for history
+    # 3. Remaining token budget for conversation history
     remaining_budget = total_input_budget - (system_tokens + user_prompt_tokens)
 
     retained_history: list[dict[str, str]] = []
     if history and remaining_budget > 0:
-        # Evaluate history turns newest-first to retain latest conversational context
         candidate_turns = [turn for turn in history if isinstance(turn, dict) and "role" in turn and "content" in turn]
         history_acc: list[dict[str, str]] = []
         for turn in reversed(candidate_turns):
-            turn_tokens = estimate_tokens(turn.get("content", "")) + 4  # overhead
+            turn_content = str(turn.get("content", ""))
+            turn_tokens = estimate_tokens(turn_content) + 4
             if remaining_budget >= turn_tokens:
-                history_acc.append(turn)
+                history_acc.append({"role": turn["role"], "content": turn_content})
                 remaining_budget -= turn_tokens
             else:
-                # Stop including older turns once budget is exhausted
                 break
-        # Restore chronological order
         retained_history = list(reversed(history_acc))
 
     messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
     messages.extend(retained_history)
-    messages.append({"role": "user", "content": prompt})
+    messages.append({"role": "user", "content": bounded_prompt})
 
     return messages

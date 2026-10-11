@@ -33,6 +33,20 @@ def test_provider_capabilities_custom_fields() -> None:
     assert caps.supports_streaming is False
 
 
+def test_provider_capabilities_empty_name_rejected() -> None:
+    """Test that empty string model_name is rejected."""
+    with pytest.raises(ValidationError):
+        ProviderCapabilities(model_name="")
+
+
+def test_provider_capabilities_non_positive_window_rejected() -> None:
+    """Test that zero or negative context_window is rejected."""
+    with pytest.raises(ValidationError):
+        ProviderCapabilities(model_name="qwen3-vl-2b", context_window=0)
+    with pytest.raises(ValidationError):
+        ProviderCapabilities(model_name="qwen3-vl-2b", context_window=-100)
+
+
 def test_provider_capabilities_immutability() -> None:
     """Test that ProviderCapabilities is frozen against mutation."""
     caps = ProviderCapabilities(model_name="qwen3-vl-2b")
@@ -83,7 +97,13 @@ def test_abstract_provider_instantiation_fails() -> None:
 def test_concrete_provider_implementation() -> None:
     """Test that a fully implemented concrete provider can be instantiated and invoked."""
 
+    closed = False
+
     class DummyProvider(BaseModelProvider):
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+
         def generate_text(
             self,
             prompt: str,
@@ -118,9 +138,11 @@ def test_concrete_provider_implementation() -> None:
         def get_capabilities(self) -> ProviderCapabilities:
             return ProviderCapabilities(model_name="dummy-provider")
 
-    provider = DummyProvider()
-    assert provider.generate_text("hello") == "Echo: hello"
-    assert list(provider.stream_text("world")) == ["Echo: ", "world"]
-    assert provider.analyze_image(b"123", "describe") == "Image of size 3: describe"
-    assert provider.check_health().status == "healthy"
-    assert provider.get_capabilities().model_name == "dummy-provider"
+    with DummyProvider() as provider:
+        assert provider.generate_text("hello") == "Echo: hello"
+        assert list(provider.stream_text("world")) == ["Echo: ", "world"]
+        assert provider.analyze_image(b"123", "describe") == "Image of size 3: describe"
+        assert provider.check_health().status == "healthy"
+        assert provider.get_capabilities().model_name == "dummy-provider"
+
+    assert closed is True

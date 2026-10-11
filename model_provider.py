@@ -17,9 +17,14 @@ class ProviderCapabilities(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    model_name: str = Field(..., description="Identifier of the underlying model.")
+    model_name: str = Field(
+        ...,
+        min_length=1,
+        description="Identifier of the underlying model.",
+    )
     context_window: int = Field(
         default=4096,
+        gt=0,
         description="Maximum combined input + output token budget.",
     )
     supports_vision: bool = Field(
@@ -58,6 +63,16 @@ class HealthStatus(BaseModel):
 
 class BaseModelProvider(ABC):
     """Abstract base class defining the inference interface for LLM/VLM models."""
+
+    def close(self) -> None:
+        """Release underlying HTTP client or network resources. Default is no-op."""
+        pass
+
+    def __enter__(self) -> "BaseModelProvider":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
 
     @abstractmethod
     def generate_text(

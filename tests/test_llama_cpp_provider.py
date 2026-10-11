@@ -228,3 +228,32 @@ def test_analyze_image_payload() -> None:
     assert contents[1]["type"] == "image_url"
     expected_b64 = base64.b64encode(fake_png).decode("ascii")
     assert contents[1]["image_url"]["url"] == f"data:image/jpeg;base64,{expected_b64}"
+
+
+def test_analyze_image_empty_bytes_raises() -> None:
+    """Test analyze_image raises ValueError when given empty image bytes."""
+    provider = LlamaCppProvider()
+    with pytest.raises(ValueError, match="image_bytes cannot be empty"):
+        provider.analyze_image(b"", "Describe image")
+    provider.close()
+
+
+def test_temperature_clamping() -> None:
+    """Test temperature is clamped between 0.0 and 2.0."""
+    captured_payload: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with LlamaCppProvider(transport=transport) as provider:
+        provider.generate_text("test", temperature=5.0)
+        assert captured_payload["temperature"] == 2.0
+
+        provider.generate_text("test", temperature=-1.0)
+        assert captured_payload["temperature"] == 0.0

@@ -139,3 +139,54 @@ def test_groq_provider_capabilities_and_health_unconfigured(monkeypatch) -> None
     health = provider.check_health()
     assert health.status == "unreachable"
     assert "GROQ_API_KEY is not configured" in health.message
+    provider.close()
+
+
+def test_ai_model_dynamic_self_healing(monkeypatch) -> None:
+    """Verify AiModel recovers dynamically when llama-server becomes healthy after initial failure."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
+
+    server_running = False
+
+    def dynamic_health(self):
+        if server_running:
+            return HealthStatus(status="healthy", message="llama-server ready.")
+        return HealthStatus(status="unreachable", message="Cannot connect.")
+
+    monkeypatch.setattr(LlamaCppProvider, "check_health", dynamic_health)
+
+    model = AiModel()
+    assert model.check_health().status == "unreachable"
+
+    # Simulate user starting llama-server in background
+    server_running = True
+    recovered = model.check_health()
+    assert recovered.status == "healthy"
+    assert model.provider.get_capabilities().is_local is True
+    model.close()
+
+
+def test_ai_model_close_propagates(mock_llama_provider) -> None:
+    """Verify AiModel.close propagates to underlying provider."""
+    model = AiModel(provider=mock_llama_provider)
+    with model:
+        assert model.model_name == "qwen3-vl-2b"
+
+
+def test_groq_provider_error_encapsulation() -> None:
+    """Verify GroqProvider wraps SDK errors into RuntimeError."""
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = Exception("API rate limited")
+
+    provider = GroqProvider(api_key="mock-key")
+    provider._client = mock_client
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="Groq API error"):
+        provider.generate_text("test")
+
+    with pytest.raises(RuntimeError, match="Groq API error"):
+        list(provider.stream_text("test"))
+    provider.close()

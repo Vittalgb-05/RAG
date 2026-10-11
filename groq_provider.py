@@ -51,6 +51,11 @@ class GroqProvider(BaseModelProvider):
         if Groq is not None and self.api_key:
             self._client = Groq(api_key=self.api_key)
 
+    def close(self) -> None:
+        """Close underlying Groq client resources."""
+        if hasattr(self._client, "close"):
+            self._client.close()
+
     def check_health(self) -> HealthStatus:
         """Check whether Groq provider is configured and available.
 
@@ -102,19 +107,23 @@ class GroqProvider(BaseModelProvider):
         if not self._client:
             raise RuntimeError("Groq client is not configured or missing API key.")
 
+        clamped_temp = max(0.0, min(2.0, float(temperature)))
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = self._client.chat.completions.create(
-            model=self.model_name,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stream=False,
-        )
-        return str(response.choices[0].message.content)
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=clamped_temp,
+                stream=False,
+            )
+            return str(response.choices[0].message.content)
+        except Exception as exc:
+            raise RuntimeError(f"Groq API error: {exc}") from exc
 
     def stream_text(
         self,
@@ -128,6 +137,7 @@ class GroqProvider(BaseModelProvider):
         if not self._client:
             raise RuntimeError("Groq client is not configured or missing API key.")
 
+        clamped_temp = max(0.0, min(2.0, float(temperature)))
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -135,18 +145,20 @@ class GroqProvider(BaseModelProvider):
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
 
-        stream = self._client.chat.completions.create(
-            model=self.model_name,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stream=True,
-        )
-
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
+        try:
+            stream = self._client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=clamped_temp,
+                stream=True,
+            )
+            for chunk in stream:
+                content = chunk.choices[0].delta.content
+                if content:
+                    yield content
+        except Exception as exc:
+            raise RuntimeError(f"Groq API error: {exc}") from exc
 
     def analyze_image(
         self,

@@ -46,12 +46,6 @@ class LlamaCppProvider(BaseModelProvider):
         """Close the underlying HTTP client."""
         self._client.close()
 
-    def __enter__(self) -> "LlamaCppProvider":
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        self.close()
-
     def check_health(self) -> HealthStatus:
         """Check whether llama-server is healthy, loading, or unreachable.
 
@@ -134,6 +128,7 @@ class LlamaCppProvider(BaseModelProvider):
         Raises:
             RuntimeError: If the server returns an HTTP error or invalid response.
         """
+        clamped_temp = max(0.0, min(2.0, float(temperature)))
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -143,7 +138,7 @@ class LlamaCppProvider(BaseModelProvider):
             "model": self.model_name,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
+            "temperature": clamped_temp,
             "stream": False,
         }
 
@@ -180,6 +175,7 @@ class LlamaCppProvider(BaseModelProvider):
         Raises:
             RuntimeError: If the stream fails or server returns an HTTP error.
         """
+        clamped_temp = max(0.0, min(2.0, float(temperature)))
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -191,7 +187,7 @@ class LlamaCppProvider(BaseModelProvider):
             "model": self.model_name,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
+            "temperature": clamped_temp,
             "stream": True,
         }
 
@@ -234,8 +230,12 @@ class LlamaCppProvider(BaseModelProvider):
             Description or visual analysis from the model.
 
         Raises:
+            ValueError: If image_bytes is empty.
             RuntimeError: If analysis request fails.
         """
+        if not image_bytes:
+            raise ValueError("image_bytes cannot be empty.")
+
         b64_image = base64.b64encode(image_bytes).decode("ascii")
         messages = [
             {

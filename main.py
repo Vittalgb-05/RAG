@@ -319,7 +319,7 @@ for message in st.session_state.chat_history:
 
 # Chat input — pinned to the bottom of the page by Streamlit natively.
 # Passing disabled=True prevents questions before a PDF is indexed or when model is offline.
-is_healthy = ai_model.check_health().status == "healthy"
+is_healthy = health.status == "healthy"
 prompt_placeholder = (
     "Ask a question about your documents…"
     if is_healthy
@@ -332,7 +332,7 @@ prompt = st.chat_input(
 
 if prompt:
     if not is_healthy:
-        st.error(f"Inference backend unavailable: {ai_model.check_health().message}")
+        st.error(f"Inference backend unavailable: {health.message}")
     else:
         # Show the user's message immediately
         st.session_state.chat_history.append({"role": "user", "content": prompt})
@@ -355,12 +355,27 @@ if prompt:
             # Limit to the last 10 messages (5 exchanges)
             history_to_pass = st.session_state.chat_history[:-1][-10:]
 
-            response_stream = ai_model.ask_a_question_from_pdf_stream(
-                pdf_path="",  # ignored because local_embedding is provided
-                prompt=prompt,
-                local_embedding=st.session_state.local_embedding,
-                chat_history=history_to_pass,
-            )
-            full_response = st.write_stream(response_stream)
-
-        st.session_state.chat_history.append({"role": "assistant", "content": full_response, "sources": list(sources)})
+            try:
+                response_stream = ai_model.ask_a_question_from_pdf_stream(
+                    pdf_path="",  # ignored because local_embedding is provided
+                    prompt=prompt,
+                    local_embedding=st.session_state.local_embedding,
+                    chat_history=history_to_pass,
+                )
+                full_response = st.write_stream(response_stream)
+                st.session_state.chat_history.append(
+                    {
+                        "role": "assistant",
+                        "content": full_response,
+                        "sources": list(sources),
+                    }
+                )
+            except Exception as err:
+                st.error(f"Inference streaming failed: {err}")
+                st.session_state.chat_history.append(
+                    {
+                        "role": "assistant",
+                        "content": f"*[Response generation interrupted: {err}]*",
+                        "sources": list(sources),
+                    }
+                )

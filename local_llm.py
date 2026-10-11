@@ -32,6 +32,17 @@ class AiModel:
 
         self.model_name = self.provider.get_capabilities().model_name
 
+    def close(self) -> None:
+        """Close underlying provider resources."""
+        if hasattr(self.provider, "close"):
+            self.provider.close()
+
+    def __enter__(self) -> "AiModel":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def _detect_provider(self) -> BaseModelProvider:
         """Probe local llama-server and cloud Groq to choose the active provider.
 
@@ -52,15 +63,30 @@ class AiModel:
             return groq_provider
 
         # 3. Default to local provider so health checks display actionable setup guidance
+        groq_provider.close()
         return local
 
     def check_health(self) -> HealthStatus:
-        """Check operational status of the active provider.
+        """Check operational status of the active provider, re-probing if unhealthy.
 
         Returns:
             HealthStatus schema from active provider.
         """
-        return self.provider.check_health()
+        current_status = self.provider.check_health()
+        if current_status.status != "healthy":
+            # Re-probe providers dynamically to recover if llama-server was started
+            # or Groq credentials were added after initial startup
+            new_provider = self._detect_provider()
+            new_status = new_provider.check_health()
+            if new_status.status == "healthy":
+                self.close()
+                self.provider = new_provider
+                self.model_name = new_provider.get_capabilities().model_name
+                return new_status
+            else:
+                new_provider.close()
+
+        return current_status
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Inspect capabilities of the active provider.
@@ -97,7 +123,11 @@ class AiModel:
         # Contextualize search query with previous user question if history exists
         search_query = prompt
         if chat_history:
-            last_user_msgs = [m["content"] for m in chat_history if isinstance(m, dict) and m.get("role") == "user"]
+            last_user_msgs = [
+                m["content"]
+                for m in chat_history
+                if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
+            ]
             if last_user_msgs:
                 search_query = f"{last_user_msgs[-1]} {prompt}"
 
@@ -113,9 +143,10 @@ class AiModel:
 
         system_prompt = messages[0]["content"]
         history_turns = messages[1:-1]
+        bounded_prompt = messages[-1]["content"]
 
         yield from self.provider.stream_text(
-            prompt=prompt,
+            prompt=bounded_prompt,
             system_prompt=system_prompt,
             history=history_turns,
             max_tokens=1024,
