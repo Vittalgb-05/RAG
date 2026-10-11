@@ -420,3 +420,36 @@ def test_retrieval_result_formatting_and_source_labels():
     # Verify frozen immutability
     with pytest.raises(ValidationError):
         result.total_candidates = 20  # type: ignore
+
+
+def test_evidence_snippet_doc_id_validation_and_filename_fallback():
+    """Verify EvidenceSnippet enforces doc_ prefix and handles missing filenames."""
+    with pytest.raises(ValidationError):
+        EvidenceSnippet(
+            content="Invalid doc_id snippet",
+            doc_id="invalid_id_without_prefix",
+            filename="test.pdf",
+            page=1,
+            chunk_id="chk_err",
+            score=0.5,
+            rank=1,
+        )
+
+    # Valid doc_id with empty filename fallback
+    snippet = EvidenceSnippet(
+        content="Valid snippet text",
+        doc_id="doc_valid12345",
+        filename="",
+        page=3,
+        chunk_id="chk_val",
+        score=0.9,
+        rank=1,
+    )
+    res = RetrievalResult(
+        query="test",
+        snippets=[snippet],
+        total_candidates=1,
+        search_mode="dense",
+    )
+    assert "[E1] (doc_valid12345, p. 3)" in res.formatted_evidence()
+    assert res.source_labels() == ["Page 3"]

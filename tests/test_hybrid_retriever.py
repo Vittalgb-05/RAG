@@ -301,3 +301,90 @@ def test_hybrid_retriever_empty_query_safe(tmp_path):
 
     res2 = retriever.search_hybrid("query", k=0)
     assert res2.snippets == []
+
+
+def test_hybrid_retriever_filter_injection_escaping(tmp_path):
+    """Verify single quotes in doc_id do not cause filter injection or SQL syntax crashes (CR-03)."""
+    retriever = HybridRetriever(db_uri=tmp_path / "sql_injection_db")
+
+    v1 = _make_unit_vector(1)
+    chunk1 = Chunk(
+        content="Document for normal user.",
+        filename="normal.pdf",
+        page=1,
+        chunk_id="chk_normal",
+        doc_id="doc_normal",
+    )
+    v2 = _make_unit_vector(2)
+    chunk2 = Chunk(
+        content="Document with quotation in id.",
+        filename="quotes.pdf",
+        page=1,
+        chunk_id="chk_quote",
+        doc_id="doc_O'Reilly",
+    )
+
+    retriever.index_chunks([chunk1, chunk2], embeddings=[v1, v2])
+    assert retriever.count_chunks() == 2
+
+    # Query has_document with quotes and injection payloads
+    assert retriever.has_document("doc_O'Reilly") is True
+    assert retriever.has_document("doc_normal' OR '1'='1") is False
+
+    # Delete with injection payload should not delete normal document
+    retriever.delete_document("doc_normal' OR '1'='1")
+    assert retriever.has_document("doc_normal") is True
+
+    # Legitimate deletion with quote
+    retriever.delete_document("doc_O'Reilly")
+    assert retriever.has_document("doc_O'Reilly") is False
+    assert retriever.has_document("doc_normal") is True
+
+
+def test_hybrid_retriever_fallback_deduplication(tmp_path, monkeypatch):
+    """Verify fallback store deduplicates chunks by chunk_id on re-indexing (WR-01)."""
+    import hybrid_retriever
+
+    monkeypatch.setattr(hybrid_retriever, "lancedb", None)
+    retriever = HybridRetriever(db_uri=tmp_path / "fallback_dedup_db")
+
+    v1 = _make_unit_vector(1)
+    chunk1 = Chunk(
+        content="Initial version of chunk 1.",
+        filename="doc.pdf",
+        page=1,
+        chunk_id="chk_1",
+        doc_id="doc_1",
+    )
+    retriever.index_chunks([chunk1], embeddings=[v1])
+    assert retriever.count_chunks() == 1
+
+    # Re-indexing the same chunk with updated content
+    v1_updated = _make_unit_vector(10)
+    chunk1_updated = Chunk(
+        content="Updated version of chunk 1.",
+        filename="doc.pdf",
+        page=1,
+        chunk_id="chk_1",
+        doc_id="doc_1",
+    )
+    retriever.index_chunks([chunk1_updated], embeddings=[v1_updated])
+
+    # Count must remain 1 (no duplicate accumulation)
+    assert retriever.count_chunks() == 1
+    assert retriever._fallback_store.documents[0]["content"] == "Updated version of chunk 1."
+
+
+def test_hybrid_retriever_lifecycle_and_setter(tmp_path):
+    """Verify close(), context manager, and dynamic set_embedding_fn work cleanly (WR-05, IN-02)."""
+    with HybridRetriever(db_uri=tmp_path / "lifecycle_db") as retriever:
+        assert retriever.is_persistent() or not retriever.is_persistent()
+
+        # Dynamic setter
+        dummy_vec = _make_unit_vector(42)
+        retriever.set_embedding_fn(lambda text: dummy_vec)
+        assert retriever.embedding_fn("test") == dummy_vec
+
+    # Exiting context manager closes retriever
+    assert retriever._db is None
+    assert retriever._table is None

@@ -24,6 +24,7 @@ import streamlit as st
 
 from doc_store import DocStore
 from docling_reader import DoclingReader
+from hybrid_retriever import HybridRetriever
 from local_embedding import LocalEmbedding
 from local_llm import AiModel
 from models import Chunk, Document, Page, cache_dir_for
@@ -54,6 +55,7 @@ for key, default in [
     ("indexed_files", set()),  # set of filenames displayed in the UI
     ("document_metadata", {}),  # dict mapping filename -> metadata dict
     ("local_embedding", None),  # unified index spanning all uploaded documents
+    ("hybrid_retriever", None),  # persistent LanceDB hybrid retriever
     ("chat_history", []),  # list of {"role": ..., "content": ..., "sources": ...} dicts
 ]:
     if key not in st.session_state:
@@ -132,6 +134,9 @@ with st.sidebar:
             st.session_state.indexed_files = set()
             st.session_state.document_metadata = {}
             st.session_state.local_embedding = None
+            if st.session_state.get("hybrid_retriever"):
+                st.session_state.hybrid_retriever.close()
+            st.session_state.hybrid_retriever = None
             st.session_state.chat_history = []
             st.rerun()
 
@@ -195,7 +200,16 @@ with st.sidebar:
                         persisted_chunks = doc_store.get_chunks_for_doc(doc_id)
                         if persisted_chunks:
                             st.session_state.local_embedding = LocalEmbedding()
-                            st.session_state.local_embedding.build_index([c.model_dump() for c in persisted_chunks])
+                            chunk_dicts = [c.model_dump() for c in persisted_chunks]
+                            st.session_state.local_embedding.build_index(chunk_dicts)
+                            if st.session_state.hybrid_retriever is None:
+                                st.session_state.hybrid_retriever = HybridRetriever(
+                                    embedding_fn=st.session_state.local_embedding._embed_one
+                                )
+                            embeddings = st.session_state.local_embedding.get_embeddings(
+                                [c["content"] for c in chunk_dicts]
+                            )
+                            st.session_state.hybrid_retriever.index_chunks(chunk_dicts, embeddings.tolist())
                             new_pdf_uploaded = True
                     continue
 
@@ -249,11 +263,18 @@ with st.sidebar:
                     if page.status == "failed":
                         st.warning(f"Page {page.page_num} in `{filename}` skipped ({page.error})")
 
-                # 5. Build vector embeddings
+                # 5. Build vector embeddings and persistent LanceDB hybrid index
                 st.write(f"Building index for `{filename}` ({len(paragraphs)} chunks)…")
                 if st.session_state.local_embedding is None:
                     st.session_state.local_embedding = LocalEmbedding()
                 st.session_state.local_embedding.build_index(paragraphs)
+
+                if st.session_state.hybrid_retriever is None:
+                    st.session_state.hybrid_retriever = HybridRetriever(
+                        embedding_fn=st.session_state.local_embedding._embed_one
+                    )
+                embeddings = st.session_state.local_embedding.get_embeddings([p["content"] for p in paragraphs])
+                st.session_state.hybrid_retriever.index_chunks(paragraphs, embeddings=embeddings.tolist())
 
                 # 6. Persist metadata and chunks in DocStore (CR-03 & WR-03)
                 chunk_models = [Chunk.model_validate(p) for p in paragraphs]
@@ -368,34 +389,47 @@ if prompt:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Fetch context to display sources BEFORE generation starts
+        # Contextualize search query with previous user question if history exists
+        history_to_pass = st.session_state.chat_history[:-1][-10:]
+        search_query = prompt
+        if history_to_pass:
+            last_user_msgs = [
+                m["content"]
+                for m in history_to_pass
+                if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
+            ]
+            if last_user_msgs:
+                search_query = f"{last_user_msgs[-1]} {prompt}"
+
+        # Fetch context once to ensure single shared RetrievalResult identity (RETR-04)
         sources: list[str] = []
-        if hasattr(st.session_state.local_embedding, "search_hybrid"):
-            retrieval_res = st.session_state.local_embedding.search_hybrid(prompt, k=5)
-            sources = retrieval_res.source_labels()
-        else:
-            results = st.session_state.local_embedding.search(prompt, k=10)
-            seen_sources = set()
-            for doc, dist in results:
-                if "filename" in doc and doc["filename"] not in seen_sources:
-                    seen_sources.add(doc["filename"])
-                    sources.append(doc["filename"])
+        retrieval_res = None
+        active_retriever = st.session_state.get("hybrid_retriever") or st.session_state.local_embedding
+        if active_retriever is not None:
+            if hasattr(active_retriever, "search_hybrid"):
+                retrieval_res = active_retriever.search_hybrid(search_query, k=5)
+                sources = retrieval_res.source_labels()
+            else:
+                results = active_retriever.search(search_query, k=10)
+                seen_sources = set()
+                for doc, dist in results:
+                    fn = doc.get("filename")
+                    if fn and fn not in seen_sources:
+                        seen_sources.add(fn)
+                        sources.append(fn)
 
         # Stream the assistant response token-by-token.
         with st.chat_message("assistant"):
             if sources:
                 st.info(f"**Sources used:** {', '.join(sources)}", icon="ℹ️")
 
-            # Pass conversation history (excluding the current prompt just appended)
-            # Limit to the last 10 messages (5 exchanges)
-            history_to_pass = st.session_state.chat_history[:-1][-10:]
-
             try:
                 response_stream = ai_model.ask_a_question_from_pdf_stream(
-                    pdf_path="",  # ignored because local_embedding is provided
+                    pdf_path="",  # ignored because retrieval_result/active_retriever is provided
                     prompt=prompt,
-                    local_embedding=st.session_state.local_embedding,
+                    local_embedding=active_retriever,
                     chat_history=history_to_pass,
+                    retrieval_result=retrieval_res,
                 )
                 full_response = st.write_stream(response_stream)
                 st.session_state.chat_history.append(

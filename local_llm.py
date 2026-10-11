@@ -11,6 +11,7 @@ from hybrid_retriever import HybridRetriever
 from llama_cpp_provider import LlamaCppProvider
 from local_embedding import LocalEmbedding
 from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from models import RetrievalResult
 from pdf_reader import PdfReader
 from prompt_budget import assemble_grounded_messages
 
@@ -101,57 +102,61 @@ class AiModel:
         self,
         pdf_path: str = "",
         prompt: str = "tell me what is this pdf about",
-        local_embedding: LocalEmbedding | None = None,
+        local_embedding: LocalEmbedding | HybridRetriever | None = None,
         chat_history: list[dict[str, str]] | None = None,
+        retrieval_result: RetrievalResult | None = None,
     ) -> Generator[str, None, None]:
         """Stream answer tokens grounded in retrieved document context.
 
         Args:
             pdf_path: Path to PDF if building embedding on-the-fly.
             prompt: User question.
-            local_embedding: Existing vector index instance.
+            local_embedding: Existing vector index or hybrid retriever instance.
             chat_history: Prior conversation turns.
+            retrieval_result: Optional pre-computed canonical RetrievalResult (RETR-04).
 
         Yields:
             Token text chunks as generated.
         """
-        if local_embedding is None and pdf_path:
-            pdf_reader = PdfReader(pdf_path)
-            pdf_paragraphs = pdf_reader.get_paragraphs()
-            local_embedding = LocalEmbedding()
-            local_embedding.build_index(pdf_paragraphs)
+        if retrieval_result is not None:
+            relevant_sections = retrieval_result.formatted_evidence()
+        else:
+            if local_embedding is None and pdf_path:
+                pdf_reader = PdfReader(pdf_path)
+                pdf_paragraphs = pdf_reader.get_paragraphs()
+                local_embedding = LocalEmbedding()
+                local_embedding.build_index(pdf_paragraphs)
 
-        # Contextualize search query with previous user question if history exists
-        search_query = prompt
-        if chat_history:
-            last_user_msgs = [
-                m["content"]
-                for m in chat_history
-                if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
-            ]
-            if last_user_msgs:
-                search_query = f"{last_user_msgs[-1]} {prompt}"
+            # Contextualize search query with previous user question if history exists
+            search_query = prompt
+            if chat_history:
+                last_user_msgs = [
+                    m["content"]
+                    for m in chat_history
+                    if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
+                ]
+                if last_user_msgs:
+                    search_query = f"{last_user_msgs[-1]} {prompt}"
 
-        retrieval_result = None
-        if local_embedding:
-            if isinstance(local_embedding, HybridRetriever):
-                retrieval_result = local_embedding.search_hybrid(search_query, k=10)
-                relevant_sections = retrieval_result.formatted_evidence()
-            elif hasattr(local_embedding, "get_context"):
-                relevant_sections = local_embedding.get_context(search_query, k=10)
-                if hasattr(local_embedding, "last_retrieval_result"):
-                    retrieval_result = getattr(local_embedding, "last_retrieval_result")
-            elif hasattr(local_embedding, "search_hybrid"):
-                retrieval_result = local_embedding.search_hybrid(search_query, k=10)
-                relevant_sections = (
-                    retrieval_result.formatted_evidence()
-                    if hasattr(retrieval_result, "formatted_evidence")
-                    else str(retrieval_result)
-                )
+            if local_embedding:
+                if isinstance(local_embedding, HybridRetriever):
+                    retrieval_result = local_embedding.search_hybrid(search_query, k=10)
+                    relevant_sections = retrieval_result.formatted_evidence()
+                elif hasattr(local_embedding, "get_context"):
+                    relevant_sections = local_embedding.get_context(search_query, k=10)
+                    if hasattr(local_embedding, "last_retrieval_result"):
+                        retrieval_result = getattr(local_embedding, "last_retrieval_result")
+                elif hasattr(local_embedding, "search_hybrid"):
+                    retrieval_result = local_embedding.search_hybrid(search_query, k=10)
+                    relevant_sections = (
+                        retrieval_result.formatted_evidence()
+                        if hasattr(retrieval_result, "formatted_evidence")
+                        else str(retrieval_result)
+                    )
+                else:
+                    relevant_sections = ""
             else:
                 relevant_sections = ""
-        else:
-            relevant_sections = ""
 
         self.last_retrieval_result = retrieval_result
 

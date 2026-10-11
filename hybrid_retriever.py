@@ -140,16 +140,45 @@ class HybridRetriever:
         except Exception as err:
             logger.warning("Failed to load fallback store: %s", err)
 
+    def set_embedding_fn(self, embedding_fn: Callable[[str], list[float]]) -> None:
+        """Set or update the embedding function used for query vectorization."""
+        self.embedding_fn = embedding_fn
+        if hasattr(self._fallback_store, "_embedding_fn"):
+            self._fallback_store._embedding_fn = embedding_fn
+
+    def close(self) -> None:
+        """Flush fallback persistence and release database handles."""
+        if not self._has_lancedb or self._db is None:
+            self._save_fallback_store()
+        self._table = None
+        self._db = None
+
+    def __enter__(self) -> "HybridRetriever":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def _save_fallback_store(self) -> None:
         """Persist fallback store to disk."""
         try:
             import json
 
             self.db_uri.mkdir(parents=True, exist_ok=True)
+            serializable_docs = []
+            for d in self._fallback_store.documents:
+                doc_copy = dict(d)
+                bbox = doc_copy.get("bbox")
+                if isinstance(bbox, BBox):
+                    doc_copy["bbox"] = bbox.model_dump()
+                elif hasattr(bbox, "model_dump"):
+                    doc_copy["bbox"] = bbox.model_dump()
+                serializable_docs.append(doc_copy)
+
             with open(self._fallback_file, "w", encoding="utf-8") as f:
                 json.dump(
                     {
-                        "documents": self._fallback_store.documents,
+                        "documents": serializable_docs,
                         "vectors": self._fallback_store.vectors,
                     },
                     f,
@@ -187,7 +216,8 @@ class HybridRetriever:
         """Check if any chunks for the given doc_id exist in the index."""
         if self._has_lancedb and self._table is not None:
             try:
-                results = self._table.search().where(f"doc_id = '{doc_id}'").limit(1).to_list()
+                safe_doc_id = doc_id.replace("'", "''")
+                results = self._table.search().where(f"doc_id = '{safe_doc_id}'").limit(1).to_list()
                 return len(results) > 0
             except Exception:
                 pass
@@ -234,9 +264,20 @@ class HybridRetriever:
                 f"Mismatch: {len(raw_chunks)} chunks provided but {len(computed_embeddings)} embeddings provided."
             )
 
-        # 1. Update in-memory fallback index
+        # 1. Update in-memory fallback index with chunk deduplication
+        existing_indices = {
+            d.get("chunk_id"): i for i, d in enumerate(self._fallback_store.documents) if d.get("chunk_id")
+        }
         for doc, emb in zip(raw_chunks, computed_embeddings):
-            self._fallback_store.add_vector(emb, doc)
+            cid = doc.get("chunk_id")
+            if cid and cid in existing_indices:
+                idx = existing_indices[cid]
+                self._fallback_store.documents[idx] = doc
+                self._fallback_store.vectors[idx] = emb
+            else:
+                self._fallback_store.add_vector(emb, doc)
+                if cid:
+                    existing_indices[cid] = len(self._fallback_store.documents) - 1
 
         # 2. Update persistent LanceDB table
         if self._has_lancedb and self._db is not None:
@@ -284,7 +325,8 @@ class HybridRetriever:
                     else:
                         chunk_ids = [r["chunk_id"] for r in records if r["chunk_id"]]
                         if chunk_ids:
-                            quoted_ids = ", ".join(f"'{cid}'" for cid in chunk_ids)
+                            safe_ids = [cid.replace("'", "''") for cid in chunk_ids]
+                            quoted_ids = ", ".join(f"'{cid}'" for cid in safe_ids)
                             try:
                                 self._table.delete(f"chunk_id IN ({quoted_ids})")
                             except Exception:
@@ -312,7 +354,8 @@ class HybridRetriever:
         # Remove from LanceDB
         if self._has_lancedb and self._table is not None:
             try:
-                self._table.delete(f"doc_id = '{doc_id}'")
+                safe_doc_id = doc_id.replace("'", "''")
+                self._table.delete(f"doc_id = '{safe_doc_id}'")
                 logger.info("Deleted chunks for doc_id=%s from LanceDB.", doc_id)
             except Exception as err:
                 logger.error("Failed to delete doc_id=%s from LanceDB: %s", doc_id, err)
@@ -379,6 +422,14 @@ class HybridRetriever:
             return []
 
         docs = self._fallback_store.documents
+        if not docs and self._has_lancedb and self._table is not None:
+            try:
+                table_rows = self._table.search().limit(10000).to_list()
+                docs = [dict(r) for r in table_rows]
+            except Exception as err:
+                logger.debug("Could not read docs from LanceDB for BM25 fallback: %s", err)
+                docs = []
+
         if not docs:
             return []
 
@@ -395,6 +446,11 @@ class HybridRetriever:
 
         avg_dl = sum(doc_lens) / N if N > 0 else 1.0
 
+        # Precompute document frequencies once for all query terms (O(N * |Q|) vs O(N^2 * |Q|))
+        df_map: dict[str, int] = {}
+        for qt in query_terms:
+            df_map[qt] = sum(1 for dtoks in doc_tokens if qt in dtoks)
+
         scores: list[tuple[float, dict[str, Any]]] = []
         for doc, tokens, dl in zip(docs, doc_tokens, doc_lens):
             token_counts: dict[str, int] = {}
@@ -405,7 +461,7 @@ class HybridRetriever:
             for qt in query_terms:
                 if qt in token_counts:
                     tf = token_counts[qt]
-                    df = sum(1 for dtoks in doc_tokens if qt in dtoks)
+                    df = df_map[qt]
                     idf = math.log((N - df + 0.5) / (df + 0.5) + 1.0)
                     denom = tf + k1 * (1 - b + b * (dl / (avg_dl or 1.0)))
                     term_score = idf * ((tf * (k1 + 1)) / (denom or 1.0))

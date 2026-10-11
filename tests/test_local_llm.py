@@ -190,3 +190,37 @@ def test_groq_provider_error_encapsulation() -> None:
     with pytest.raises(RuntimeError, match="Groq API error"):
         list(provider.stream_text("test"))
     provider.close()
+
+
+def test_ai_model_with_precomputed_retrieval_result(mock_llama_provider) -> None:
+    """Verify AiModel directly accepts pre-computed RetrievalResult without duplicate search (CR-02)."""
+    from models import EvidenceSnippet, RetrievalResult
+
+    model = AiModel(provider=mock_llama_provider)
+
+    snippet = EvidenceSnippet(
+        content="Pre-computed evidence chunk for verification.",
+        doc_id="doc_test12345",
+        filename="verified.pdf",
+        page=1,
+        chunk_id="chk_direct_1",
+        score=0.99,
+        rank=1,
+    )
+    custom_result = RetrievalResult(
+        query="test query",
+        snippets=[snippet],
+        total_candidates=1,
+        search_mode="hybrid",
+    )
+
+    tokens = list(
+        model.ask_a_question_from_pdf_stream(
+            pdf_path="",
+            prompt="test query",
+            retrieval_result=custom_result,
+        )
+    )
+
+    assert len(tokens) > 0
+    assert model.last_retrieval_result is custom_result

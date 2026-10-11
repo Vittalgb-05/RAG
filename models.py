@@ -160,6 +160,12 @@ class EvidenceSnippet(BaseModel):
     char_end: int | None = Field(default=None, description="Ending character offset on page.")
     bbox: BBox | None = Field(default=None, description="Optional bounding box on source page.")
 
+    @model_validator(mode="after")
+    def validate_doc_id(self) -> "EvidenceSnippet":
+        if not self.doc_id.startswith("doc_"):
+            raise ValueError(f"doc_id must start with 'doc_': {self.doc_id!r}")
+        return self
+
 
 class RetrievalResult(BaseModel):
     """
@@ -181,8 +187,9 @@ class RetrievalResult(BaseModel):
             return ""
         blocks = []
         for s in self.snippets:
-            header = f"[E{s.rank}] ({s.filename}, p. {s.page})"
-            blocks.append(f"{header}\n{s.content}")
+            display_name = s.filename if s.filename else s.doc_id
+            header = f"[E{s.rank}] ({display_name}, p. {s.page})"
+            blocks.append(f"{header}\n{s.content.strip()}")
         return "\n\n---\n\n".join(blocks)
 
     def source_labels(self) -> list[str]:
@@ -190,7 +197,7 @@ class RetrievalResult(BaseModel):
         seen = set()
         labels = []
         for s in self.snippets:
-            lbl = f"{s.filename} (p. {s.page})"
+            lbl = f"{s.filename} (p. {s.page})" if s.filename else f"Page {s.page}"
             if lbl not in seen:
                 seen.add(lbl)
                 labels.append(lbl)
