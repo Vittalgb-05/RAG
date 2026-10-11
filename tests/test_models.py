@@ -4,10 +4,20 @@
 # immutability, extra-field forbidding, and JSON serialization.
 # ------------------------------------------------------------------
 
+from pathlib import Path
 import pytest
 from pydantic import ValidationError
-from models import BBox, Chunk, Document, EvidenceElement, Page, CONFIG_VERSION, cache_dir_for
-from pathlib import Path
+from models import (
+    BBox,
+    Chunk,
+    CONFIG_VERSION,
+    Document,
+    EvidenceElement,
+    EvidenceSnippet,
+    Page,
+    RetrievalResult,
+    cache_dir_for,
+)
 
 
 def test_chunk_dump_matches_legacy_keys():
@@ -319,3 +329,95 @@ def test_evidence_element_empty_id_rejected():
             kind="chart",
             content="test chart",
         )
+
+
+def test_evidence_snippet_schema_and_immutability():
+    """Verify EvidenceSnippet fields, frozen immutability, and extra attribute rejection (RETR-04)."""
+    snippet = EvidenceSnippet(
+        content="Revenue grew by 18% in Q2.",
+        doc_id="doc_finance123",
+        filename="earnings.pdf",
+        page=3,
+        chunk_id="chk_earn_03",
+        score=0.88,
+        rank=1,
+        dense_rank=1,
+        fts_rank=2,
+        extraction="docling",
+        char_start=100,
+        char_end=126,
+    )
+    assert snippet.content == "Revenue grew by 18% in Q2."
+    assert snippet.rank == 1
+    assert snippet.dense_rank == 1
+    assert snippet.fts_rank == 2
+
+    # Verify frozen immutability
+    with pytest.raises(ValidationError):
+        snippet.score = 0.99  # type: ignore
+
+    # Verify extra fields forbidden
+    with pytest.raises(ValidationError, match="extra"):
+        EvidenceSnippet(
+            content="test",
+            doc_id="doc_1",
+            filename="a.pdf",
+            page=1,
+            chunk_id="c1",
+            score=1.0,
+            rank=1,
+            unauthorized="bad",  # type: ignore
+        )
+
+
+def test_retrieval_result_formatting_and_source_labels():
+    """Verify RetrievalResult produces structured numbered context and clean UI labels (RETR-04)."""
+    s1 = EvidenceSnippet(
+        content="Q1 net income: $42M.",
+        doc_id="doc_fin",
+        filename="report.pdf",
+        page=1,
+        chunk_id="chk_1",
+        score=0.92,
+        rank=1,
+    )
+    s2 = EvidenceSnippet(
+        content="Q2 net income: $56M.",
+        doc_id="doc_fin",
+        filename="report.pdf",
+        page=2,
+        chunk_id="chk_2",
+        score=0.85,
+        rank=2,
+    )
+    s3 = EvidenceSnippet(
+        content="Overview of market conditions.",
+        doc_id="doc_market",
+        filename="market.pdf",
+        page=1,
+        chunk_id="chk_3",
+        score=0.75,
+        rank=3,
+    )
+
+    result = RetrievalResult(
+        query="What was the net income?",
+        snippets=[s1, s2, s3],
+        total_candidates=15,
+        search_mode="hybrid",
+    )
+
+    formatted = result.formatted_evidence()
+    assert "[E1] (report.pdf, p. 1)" in formatted
+    assert "Q1 net income: $42M." in formatted
+    assert "[E2] (report.pdf, p. 2)" in formatted
+    assert "Q2 net income: $56M." in formatted
+    assert "[E3] (market.pdf, p. 1)" in formatted
+
+    labels = result.source_labels()
+    assert labels == ["report.pdf (p. 1)", "report.pdf (p. 2)", "market.pdf (p. 1)"]
+
+    # Verify frozen immutability
+    with pytest.raises(ValidationError):
+        result.total_candidates = 20  # type: ignore
+

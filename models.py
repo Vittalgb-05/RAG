@@ -136,3 +136,63 @@ class Document(BaseModel):
         if not self.doc_id.startswith("doc_"):
             raise ValueError(f"doc_id must start with 'doc_': {self.doc_id!r}")
         return self
+
+
+class EvidenceSnippet(BaseModel):
+    """
+    An individual retrieved evidence snippet with ranking and provenance.
+    Shared identically across LLM generation prompt assembly and UI citation rendering (RETR-04).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    content: str = Field(..., description="Text content of the retrieved snippet.")
+    doc_id: str = Field(..., description="Parent document identifier.")
+    filename: str = Field(..., description="Source PDF filename.")
+    page: int = Field(..., ge=1, description="1-indexed source page number.")
+    chunk_id: str = Field(..., description="Unique chunk identifier.")
+    score: float = Field(..., description="Composite retrieval or RRF score (higher is better).")
+    rank: int = Field(..., ge=1, description="1-based composite rank ([E1], [E2], ...).")
+    dense_rank: int | None = Field(default=None, description="1-based rank from vector search.")
+    fts_rank: int | None = Field(default=None, description="1-based rank from full-text keyword search.")
+    extraction: str = Field(default="docling", description="Extraction backend used (docling, ocr, pypdf).")
+    char_start: int | None = Field(default=None, description="Starting character offset on page.")
+    char_end: int | None = Field(default=None, description="Ending character offset on page.")
+    bbox: BBox | None = Field(default=None, description="Optional bounding box on source page.")
+
+
+class RetrievalResult(BaseModel):
+    """
+    Immutable retrieval container shared identically across generation and UI citations (RETR-04).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    query: str = Field(..., description="User search query or question.")
+    snippets: list[EvidenceSnippet] = Field(default_factory=list, description="Ranked list of evidence snippets.")
+    total_candidates: int = Field(default=0, ge=0, description="Total candidates examined across modalities.")
+    search_mode: Literal["hybrid", "dense", "fts", "fallback"] = Field(
+        default="hybrid", description="Retrieval execution mode."
+    )
+
+    def formatted_evidence(self) -> str:
+        """Render numbered evidence blocks ([E1], [E2], ...) for the LLM prompt context."""
+        if not self.snippets:
+            return ""
+        blocks = []
+        for s in self.snippets:
+            header = f"[E{s.rank}] ({s.filename}, p. {s.page})"
+            blocks.append(f"{header}\n{s.content}")
+        return "\n\n---\n\n".join(blocks)
+
+    def source_labels(self) -> list[str]:
+        """Return unique source citation labels for UI display chips."""
+        seen = set()
+        labels = []
+        for s in self.snippets:
+            lbl = f"{s.filename} (p. {s.page})"
+            if lbl not in seen:
+                seen.add(lbl)
+                labels.append(lbl)
+        return labels
+
