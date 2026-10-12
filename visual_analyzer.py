@@ -164,7 +164,7 @@ class VisualAnalyzer:
         if fitz is None:
             raise RuntimeError("PyMuPDF (fitz) is not available for visual cropping.")
 
-        zoom_clamped = max(0.5, float(zoom))
+        zoom_clamped = min(3.0, max(0.5, float(zoom)))
 
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
@@ -175,6 +175,13 @@ class VisualAnalyzer:
             clip_rect = clip_rect.intersect(page.rect)
             if clip_rect.is_empty or clip_rect.width <= 0 or clip_rect.height <= 0:
                 raise ValueError("Bounding box does not intersect page boundaries.")
+
+            # Strict pixel budget clamp (max 2048x2048 area) to avoid runaway raster memory allocations
+            max_crop_pixels = 2048 * 2048
+            est_pixels = (clip_rect.width * zoom_clamped) * (clip_rect.height * zoom_clamped)
+            if est_pixels > max_crop_pixels:
+                scale = (max_crop_pixels / est_pixels) ** 0.5
+                zoom_clamped = max(0.5, zoom_clamped * scale)
 
             mat = fitz.Matrix(zoom_clamped, zoom_clamped)
             pix = page.get_pixmap(matrix=mat, clip=clip_rect)
@@ -188,6 +195,7 @@ class VisualAnalyzer:
         doc_id: str,
         provider: BaseModelProvider | None = None,
         prompt: str = DEFAULT_VISION_PROMPT,
+        max_regions: int = 20,
     ) -> list[EvidenceElement]:
         """Detect, crop, and generate VLM descriptions for visual elements.
 
@@ -200,6 +208,7 @@ class VisualAnalyzer:
             doc_id: Canonical document identifier.
             provider: Optional BaseModelProvider instance (e.g. Qwen3-VL 2B or Groq fallback).
             prompt: Targeted vision query prompt.
+            max_regions: Maximum visual regions to analyze to preserve memory/time budgets (default 20).
 
         Returns:
             List of EvidenceElement models representing visual artifacts.
@@ -207,6 +216,13 @@ class VisualAnalyzer:
         regions = self.detect_visual_regions(pdf_bytes)
         if not regions:
             return []
+        if len(regions) > max_regions:
+            logger.info(
+                "Capping visual elements from %d to %d to preserve inference budget",
+                len(regions),
+                max_regions,
+            )
+            regions = regions[:max_regions]
 
         supports_vision = False
         model_name = "unknown"

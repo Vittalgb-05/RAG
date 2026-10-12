@@ -193,10 +193,19 @@ Navigate to `http://localhost:8501` in your browser.
 
 ### Issue 4: Corrupt or Stale Extraction Cache
 - **Remedy**:
-  Delete the cache directory to trigger fresh indexing:
+  Use the "Purge All Data" button in the sidebar, or manually clear cache files:
   ```bash
   # Windows PowerShell
   Remove-Item -Recurse -Force .cache/
   # Linux
   rm -rf .cache/
   ```
+
+---
+
+## 8. Deployment Architecture: Workstation Scoping & Privacy
+
+### Single-User Workstation Assumption
+- **Design Intent**: This application is architected and validated as a personal desktop workstation tool where Streamlit and `llama-server` execute concurrently on the same local system (`127.0.0.1`).
+- **Session-Scoped Routing**: Individual browser sessions maintain their own isolated `AiModel` instances and ephemeral cloud-consent posture. One session toggling Cloud Mode does not alter the local-only routing of another session.
+- **Hosted Cloud Caveat**: Deploying the Streamlit frontend to external services (e.g., Streamlit Community Cloud) cannot access `127.0.0.1:8080` on your laptop. Hosted deployments require remote endpoint configuration with dedicated API keys and TLS encryption.

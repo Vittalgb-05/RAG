@@ -4,6 +4,7 @@
 # constraint handling, page failure tracking, and chunk storage.
 # ------------------------------------------------------------------
 
+from pathlib import Path
 import sqlite3
 import pytest
 from doc_store import DocStore
@@ -580,3 +581,81 @@ def test_summary_get_with_model_version_invalidation(tmp_path):
     assert store.get_summary(sha, "overview") is not None
     # Different model version: mismatch / invalidate
     assert store.get_summary(sha, "overview", model_version="llama-3.3-70b") is None
+
+
+def test_delete_document_cascades_all_tables(tmp_path: Path):
+    """Verify delete_document removes document, pages, chunks, evidence elements, and summaries."""
+    store = DocStore(tmp_path / "test_cascade.db")
+    doc_id = "doc_cascade_test"
+    sha = "8" * 64
+
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="cascade.pdf",
+            sha256=sha,
+            size_bytes=2048,
+            num_pages=2,
+            status="indexed",
+            upload_time="2026-10-12T00:00:00Z",
+            num_chunks=2,
+        )
+    )
+    store.record_page(Page(doc_id=doc_id, page_num=1, status="ok", char_count=100))
+    store.record_page(Page(doc_id=doc_id, page_num=2, status="ok", char_count=100))
+    store.record_chunks(
+        [
+            Chunk(chunk_id="chk_c1", doc_id=doc_id, filename="cascade.pdf", page=1, content="Chunk 1"),
+            Chunk(chunk_id="chk_c2", doc_id=doc_id, filename="cascade.pdf", page=2, content="Chunk 2"),
+        ]
+    )
+    store.save_summary(
+        SummaryResult(
+            summary_id="summ_c1",
+            doc_id=doc_id,
+            sha256=sha,
+            profile="overview",
+            summary_text="Summary text",
+            page_references=[1],
+            created_at="2026-10-12T00:00:00Z",
+        )
+    )
+
+    assert store.count_documents() == 1
+    assert store.count_summaries() == 1
+    assert len(store.get_chunks_for_doc(doc_id)) == 2
+
+    # Execute cascade deletion
+    deleted = store.delete_document(doc_id)
+    assert deleted is True
+
+    assert store.get_document(doc_id) is None
+    assert store.count_documents() == 0
+    assert len(store.get_chunks_for_doc(doc_id)) == 0
+    assert store.get_summary(sha, "overview") is None
+    assert store.count_summaries() == 0
+
+
+def test_purge_all_empties_all_tables(tmp_path: Path):
+    """Verify purge_all wipes entire database state across all tables."""
+    store = DocStore(tmp_path / "test_purge.db")
+    for i in range(3):
+        d_id = f"doc_{i}"
+        s_sha = f"{i}" * 64
+        store.upsert_document(
+            Document(
+                doc_id=d_id,
+                filename=f"doc_{i}.pdf",
+                sha256=s_sha,
+                size_bytes=1000,
+                num_pages=1,
+                status="indexed",
+                upload_time="2026-10-12T00:00:00Z",
+            )
+        )
+        store.record_chunks([Chunk(chunk_id=f"c_{i}", doc_id=d_id, filename=f"doc_{i}.pdf", page=1, content="Text")])
+
+    assert store.count_documents() == 3
+    store.purge_all()
+    assert store.count_documents() == 0
+    assert store.list_documents() == []

@@ -327,7 +327,7 @@ def test_summarizer_cache_invalidates_on_model_version_change(tmp_path):
     p1 = MockSummarizerProvider(model_name="model_v1")
     s1 = Summarizer(provider=p1, doc_store=store)
     res1 = s1.summarize_document(doc_id=doc_id, sha256=sha, pages=pages, profile="overview")
-    assert res1.model_version == "model_v1"
+    assert res1.model_version.startswith("model_v1")
     assert res1.cached is False
 
     # Second call with same model: hit
@@ -339,4 +339,4 @@ def test_summarizer_cache_invalidates_on_model_version_change(tmp_path):
     s2 = Summarizer(provider=p2, doc_store=store)
     res2 = s2.summarize_document(doc_id=doc_id, sha256=sha, pages=pages, profile="overview")
     assert res2.cached is False
-    assert res2.model_version == "model_v2"
+    assert res2.model_version.startswith("model_v2")

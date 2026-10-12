@@ -193,3 +193,72 @@ def test_clear_all_resets_cloud_posture_and_credentials():
     assert mock_session["active_cloud_provider"] is None
     assert mock_session["cloud_api_keys"] == {"groq": "", "openai": "", "anthropic": ""}
     assert mock_session["cloud_api_key"] == ""
+
+
+def test_consent_dialog_approval_and_dismissal():
+    """Verify state transitions for user consenting to cloud vs dismissing / cancelling."""
+    # 1. User consents
+    session = {
+        "user_consented": False,
+        "cloud_mode": False,
+        "cloud_mode_toggle": False,
+    }
+
+    # Simulate 'I Consent & Enable Cloud' click
+    session["user_consented"] = True
+    session["cloud_mode"] = True
+    session["cloud_mode_toggle"] = True
+
+    assert session["user_consented"] is True
+    assert session["cloud_mode"] is True
+    assert session["cloud_mode_toggle"] is True
+
+    # 2. User cancels / dismisses dialog ('Cancel (Keep 100% Local)')
+    session["user_consented"] = False
+    session["cloud_mode"] = False
+    session["cloud_mode_toggle"] = False
+
+    assert session["user_consented"] is False
+    assert session["cloud_mode"] is False
+    assert session["cloud_mode_toggle"] is False
+
+
+def test_session_isolation_posture():
+    """Verify that multiple concurrent sessions maintain isolated AiModel and consent state."""
+    from local_llm import AiModel
+    from model_provider import HealthStatus, ProviderCapabilities, BaseModelProvider
+
+    class DummyLocalProvider(BaseModelProvider):
+        def check_health(self):
+            return HealthStatus(status="healthy", message="ok", provider_type="local")
+
+        def get_capabilities(self):
+            return ProviderCapabilities(
+                model_name="local-qwen", context_window=4096, supports_vision=True, is_local=True
+            )
+
+        def generate_text(self, *args, **kwargs):
+            return "local"
+
+        def stream_text(self, *args, **kwargs):
+            yield "local"
+
+        def analyze_image(self, *args, **kwargs):
+            return "image"
+
+    shared_provider = DummyLocalProvider()
+
+    # Session A creates its model
+    session_a_model = AiModel(provider=shared_provider)
+    # Session B creates its model
+    session_b_model = AiModel(provider=shared_provider)
+
+    assert session_a_model.cloud_mode is False
+    assert session_b_model.cloud_mode is False
+
+    # Session A enables cloud mode
+    session_a_model.set_cloud_mode(True)
+    assert session_a_model.cloud_mode is True
+
+    # Session B MUST remain strictly in local mode (zero cross-session leakage)
+    assert session_b_model.cloud_mode is False

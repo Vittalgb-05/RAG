@@ -158,3 +158,18 @@ def test_sanitize_xml_boundary_case_and_whitespace() -> None:
     assert "&lt;/DOCUMENT_CONTEXT&gt;" in cleaned
     assert "&lt;document_context &gt;" in cleaned
     assert "&lt;/document_context &gt;" in cleaned
+
+
+def test_assemble_grounded_messages_truncation_meta() -> None:
+    """Verify truncation_meta dictionary captures context and history truncation flags."""
+    meta: dict[str, bool] = {}
+    huge_context = "Word " * 2000
+    _ = assemble_grounded_messages(
+        prompt="Short prompt",
+        context_text=huge_context,
+        max_context_tokens=500,
+        max_output_tokens=100,
+        truncation_meta=meta,
+    )
+    assert meta["context_truncated"] is True
+    assert meta["prompt_truncated"] is False

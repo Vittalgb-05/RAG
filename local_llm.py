@@ -124,6 +124,11 @@ class AiModel:
         self.model_name = self.provider.get_capabilities().model_name
         self.last_retrieval_result: RetrievalResult | None = None
         self.last_verification_result: CitationVerificationResult | None = None
+        self.last_truncation_warning: dict[str, bool] = {
+            "prompt_truncated": False,
+            "context_truncated": False,
+            "history_truncated": False,
+        }
 
     def close(self) -> None:
         """Close underlying provider resources."""
@@ -276,6 +281,7 @@ class AiModel:
             context_text=relevant_sections,
             history=chat_history,
             max_context_tokens=caps.context_window,
+            truncation_meta=self.last_truncation_warning,
         )
 
         system_prompt = messages[0]["content"]

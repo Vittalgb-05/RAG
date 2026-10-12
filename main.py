@@ -15,6 +15,7 @@ PDF upload → validate_pdf_bytes → DocStore dedup check → PdfReader (text e
 import datetime
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -36,6 +37,8 @@ from resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from summarizer import Summarizer
 from upload_validation import MAX_FILE_MB, validate_pdf_bytes
 from visual_analyzer import VisualAnalyzer
+
+logger = logging.getLogger(__name__)
 
 MAX_CHAT_TURNS = 50
 
@@ -77,23 +80,30 @@ for key, default in [
 
 
 # ------------------------------------------------------------------
-# Cached helpers
+# Cached helpers & Anchored Storage Paths
 # ------------------------------------------------------------------
 
-
-@st.cache_resource(show_spinner=False)
-def load_ai_model() -> AiModel:
-    """
-    Loads AiModel exactly once for the lifetime of the Streamlit server process.
-    @st.cache_resource returns the same instance on every subsequent call,
-    so the LLM is never loaded more than once regardless of reruns.
-    """
-    load_dotenv()
-    return AiModel()
-
-
-DOC_STORE_PATH = Path(__file__).resolve().parent / "data" / "documents.db"
+APP_DIR = Path(__file__).resolve().parent
+DOC_STORE_PATH = APP_DIR / "data" / "documents.db"
+CACHE_DIR = APP_DIR / ".cache"
 doc_store = DocStore(DOC_STORE_PATH)
+
+
+def get_session_ai_model() -> AiModel:
+    """Retrieve or initialize session-scoped AiModel instance.
+
+    Guarantees that user consent, model selection, and cloud mode toggling
+    remain strictly isolated to the active browser session, preventing
+    cross-session routing contamination in multi-user deployments (P1 audit).
+    """
+    if "ai_model" not in st.session_state or st.session_state.ai_model is None:
+        load_dotenv()
+        st.session_state.ai_model = AiModel()
+    return st.session_state.ai_model
+
+
+# Backwards compatibility alias
+load_ai_model = get_session_ai_model
 
 
 # ------------------------------------------------------------------
@@ -284,9 +294,9 @@ with st.sidebar:
     # Document upload
     st.markdown("#### Document")
 
-    col1, col2 = st.columns([2, 1])
-    with col2:
-        if st.button("Clear All", use_container_width=True):
+    col_clear, col_purge = st.columns(2)
+    with col_clear:
+        if st.button("Clear Session", use_container_width=True, help="Reset in-memory chat and session state"):
             st.session_state.doc_ids = set()
             st.session_state.indexed_files = set()
             st.session_state.document_metadata = {}
@@ -314,6 +324,57 @@ with st.sidebar:
             st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
             if hasattr(st.session_state, "cloud_api_key"):
                 st.session_state.cloud_api_key = ""
+            st.rerun()
+
+    with col_purge:
+        if st.button(
+            "Purge All Data",
+            type="secondary",
+            use_container_width=True,
+            help="Permanently delete all indexed documents, SQLite records, LanceDB tables, and disk caches",
+        ):
+            doc_store.purge_all()
+            if st.session_state.get("hybrid_retriever"):
+                st.session_state.hybrid_retriever.purge_all()
+                st.session_state.hybrid_retriever.close()
+            else:
+                temp_retriever = HybridRetriever()
+                temp_retriever.purge_all()
+                temp_retriever.close()
+
+            if CACHE_DIR.exists():
+                import shutil
+
+                try:
+                    shutil.rmtree(CACHE_DIR, ignore_errors=True)
+                except Exception as err:
+                    logger.warning("Failed to remove cache dir %s: %s", CACHE_DIR, err)
+
+            st.session_state.doc_ids = set()
+            st.session_state.indexed_files = set()
+            st.session_state.document_metadata = {}
+            st.session_state.local_embedding = None
+            st.session_state.hybrid_retriever = None
+            st.session_state.chat_history = []
+            for k in list(st.session_state.keys()):
+                if k.startswith("summary_"):
+                    del st.session_state[k]
+
+            if st.session_state.get("active_cloud_provider"):
+                try:
+                    st.session_state.active_cloud_provider.close()
+                except Exception:
+                    pass
+            st.session_state.active_cloud_provider = None
+            st.session_state._cached_cloud_model = None
+            st.session_state._cached_cloud_key = None
+            st.session_state.cloud_mode = False
+            st.session_state.cloud_mode_toggle = False
+            st.session_state.user_consented = False
+            st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
+            if hasattr(st.session_state, "cloud_api_key"):
+                st.session_state.cloud_api_key = ""
+            st.toast("Purged all persistent databases, vectors, and disk caches.")
             st.rerun()
 
     uploaded_files = st.file_uploader(
@@ -477,7 +538,7 @@ with st.sidebar:
 
                 # 7. Best-effort disk cache write (STORE-03)
                 try:
-                    cache_dir = cache_dir_for(Path(".cache"), validated.sha256)
+                    cache_dir = cache_dir_for(CACHE_DIR, validated.sha256)
                     cache_dir.mkdir(parents=True, exist_ok=True)
                     with open(cache_dir / "pages.json", "w", encoding="utf-8") as f:
                         json.dump([p.model_dump() for p in page_records], f, indent=2)
@@ -739,6 +800,11 @@ with tab_chat:
                                 st.divider()
                     elif sources:
                         st.info(f"**Sources used:** {', '.join(sources)}", icon="ℹ️")
+
+                    if getattr(ai_model, "last_truncation_warning", {}).get("context_truncated"):
+                        st.caption(
+                            "ℹ️ Retrieved evidence context was truncated to fit the active model's token context budget."
+                        )
 
                     append_chat_turn(
                         {

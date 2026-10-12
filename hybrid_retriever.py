@@ -225,6 +225,29 @@ class HybridRetriever:
 
     contains_document = has_document
 
+    def purge_all(self) -> None:
+        """Purge all stored vectors, chunks, and LanceDB tables across persistent and fallback stores."""
+        if self._has_lancedb and self._db is not None:
+            try:
+                existing_tables = self._db.table_names()
+                if "chunks" in existing_tables:
+                    self._db.drop_table("chunks")
+                    logger.info("Dropped LanceDB 'chunks' table.")
+            except Exception as err:
+                logger.warning("Error dropping LanceDB 'chunks' table: %s", err)
+            self._table = None
+
+        self._fallback_store = VectorIndex(
+            distance_metric="cosine",
+            embedding_fn=self.embedding_fn,
+        )
+        if self._fallback_file.exists():
+            try:
+                self._fallback_file.unlink(missing_ok=True)
+                logger.info("Unlinked fallback persistent file at %s", self._fallback_file)
+            except OSError as err:
+                logger.warning("Failed to remove fallback file %s: %s", self._fallback_file, err)
+
     def index_chunks(
         self,
         chunks: list[dict[str, Any] | Chunk],

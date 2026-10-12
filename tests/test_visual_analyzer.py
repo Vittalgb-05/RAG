@@ -367,3 +367,17 @@ def test_crop_failure_description_attribution():
     assert "vision analysis unsupported" not in elements[0].content
     # Must correctly attribute to cropping failure
     assert "cropping failed, image unavailable" in elements[0].content
+
+
+def test_max_regions_cap_enforced():
+    """Verify analyze_visual_elements respects max_regions parameter to prevent resource exhaustion."""
+    mock_detector = MagicMock(
+        return_value=[{"page": 1, "kind": "chart", "bbox": BBox(x0=10.0, y0=10.0, x1=50.0, y1=50.0)} for _ in range(50)]
+    )
+    analyzer = VisualAnalyzer(region_detector=mock_detector, cropper=lambda *args: b"mock_png")
+    elements = analyzer.analyze_visual_elements(
+        pdf_bytes=b"%PDF...",
+        doc_id="doc_cap",
+        max_regions=5,
+    )
+    assert len(elements) == 5

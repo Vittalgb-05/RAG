@@ -15,6 +15,32 @@ from vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
 
+# Process-level model cache to avoid duplicate SentenceTransformer instances across sessions (P1 audit)
+_MODEL_CACHE: dict[tuple[str, str], SentenceTransformer] = {}
+
+
+def get_shared_sentence_transformer(model_name: str = "all-MiniLM-L6-v2", device: str = "cpu") -> SentenceTransformer:
+    """Retrieve or lazily initialize a shared process-level SentenceTransformer model.
+
+    Args:
+        model_name: HuggingFace model identifier.
+        device: Hardware device ('cpu' or 'cuda').
+
+    Returns:
+        Shared SentenceTransformer instance.
+    """
+    cache_key = (model_name, device)
+    if cache_key not in _MODEL_CACHE:
+        logger.info("Loading SentenceTransformer model %s on %s...", model_name, device)
+        _MODEL_CACHE[cache_key] = SentenceTransformer(model_name, device=device)
+        logger.info("SentenceTransformer model %s ready and cached in process memory.", model_name)
+    return _MODEL_CACHE[cache_key]
+
+
+def clear_shared_model_cache() -> None:
+    """Clear process-level model cache (useful for testing and memory reclamation)."""
+    _MODEL_CACHE.clear()
+
 
 class LocalEmbedding:
     def __init__(
@@ -36,9 +62,7 @@ class LocalEmbedding:
         """
         self.model_name = model_name
         self.device = device
-        logger.info("Loading SentenceTransformer model %s on %s...", self.model_name, self.device)
-        self.model = SentenceTransformer(self.model_name, device=self.device)
-        logger.info("SentenceTransformer model %s ready.", self.model_name)
+        self.model = get_shared_sentence_transformer(self.model_name, self.device)
 
         self.store = VectorIndex(distance_metric=distance_metric, embedding_fn=self._embed_one)
 

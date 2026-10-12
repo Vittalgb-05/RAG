@@ -182,6 +182,11 @@ Open your browser to `http://localhost:8501`.
 | **User Consent** | Not required (stays local) | Mandatory modal confirmation required |
 | **API Key Storage** | N/A | Session memory only; never written to disk |
 
+### 🖥️ Workstation Scoping & Deployment Architecture
+- **Single-User Workstation Target**: The application is designed and benchmarked as a local desktop tool where both Streamlit and `llama-server` execute on the user's workstation (`127.0.0.1`).
+- **Session-Scoped Routing**: Inference routing preferences, provider choices, and cloud consent flags are scoped strictly to individual Streamlit sessions (`st.session_state.ai_model`). One session enabling Cloud Mode never mutates or affects other concurrent sessions.
+- **Remote / Hosted Cloud Caveat**: Hosting Streamlit on external cloud platforms (such as Streamlit Community Cloud) cannot automatically reach a `llama-server` running on a user's laptop loopback. Cloud deployment requires either dedicated remote model endpoints or private network tunneling (e.g., WireGuard/Tailscale).
+
 ---
 
 ## 🧪 Running Tests & Quality Gates

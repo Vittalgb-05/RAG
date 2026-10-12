@@ -574,7 +574,7 @@ class DocStore:
 
     def delete_document(self, doc_id: str) -> bool:
         """
-        Delete a document and cascade delete associated pages, chunks, and evidence elements.
+        Delete a document and cascade delete associated pages, chunks, evidence elements, and summaries.
 
         Args:
             doc_id: Unique document identifier.
@@ -582,10 +582,29 @@ class DocStore:
         Returns:
             bool: True if a document was deleted, False otherwise.
         """
+        if not isinstance(doc_id, str):
+            raise TypeError("doc_id must be a string")
+
         with self._connect() as conn:
+            conn.execute("DELETE FROM chunks WHERE doc_id = ?;", (doc_id,))
+            conn.execute("DELETE FROM pages WHERE doc_id = ?;", (doc_id,))
+            conn.execute("DELETE FROM evidence_elements WHERE doc_id = ?;", (doc_id,))
+            conn.execute("DELETE FROM document_summaries WHERE doc_id = ?;", (doc_id,))
             cursor = conn.execute("DELETE FROM documents WHERE doc_id = ?;", (doc_id,))
             conn.commit()
             return cursor.rowcount > 0
+
+    def purge_all(self) -> None:
+        """
+        Purge all document records, chunks, pages, evidence elements, and cached summaries from SQLite.
+        """
+        with self._connect() as conn:
+            conn.execute("DELETE FROM chunks;")
+            conn.execute("DELETE FROM pages;")
+            conn.execute("DELETE FROM evidence_elements;")
+            conn.execute("DELETE FROM document_summaries;")
+            conn.execute("DELETE FROM documents;")
+            conn.commit()
 
     def count_documents(self) -> int:
         """Count total persisted documents in SQLite.

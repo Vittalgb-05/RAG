@@ -26,11 +26,13 @@ def test_local_embedding_cpu_pinning():
 
     original_st = local_embedding.SentenceTransformer
     try:
+        local_embedding.clear_shared_model_cache()
         local_embedding.SentenceTransformer = mock_st_class
         embedder = LocalEmbedding(model_name="all-MiniLM-L6-v2")
         assert embedder.device == "cpu"
         mock_st_class.assert_called_once_with("all-MiniLM-L6-v2", device="cpu")
     finally:
+        local_embedding.clear_shared_model_cache()
         local_embedding.SentenceTransformer = original_st
 
 
@@ -388,3 +390,23 @@ def test_hybrid_retriever_lifecycle_and_setter(tmp_path):
     # Exiting context manager closes retriever
     assert retriever._db is None
     assert retriever._table is None
+
+
+def test_hybrid_retriever_purge_all(tmp_path):
+    """Verify purge_all removes all indexed chunks and unlinks fallback store on disk."""
+    db_dir = tmp_path / "purge_lancedb"
+    retriever = HybridRetriever(db_uri=db_dir)
+
+    v1 = _make_unit_vector(50)
+    v2 = _make_unit_vector(60)
+    chunks = [
+        Chunk(content="A", filename="a.pdf", page=1, chunk_id="c1", doc_id="d1"),
+        Chunk(content="B", filename="b.pdf", page=1, chunk_id="c2", doc_id="d2"),
+    ]
+    retriever.index_chunks(chunks, embeddings=[v1, v2])
+    assert retriever.count_chunks() == 2
+
+    retriever.purge_all()
+    assert retriever.count_chunks() == 0
+    assert not retriever.has_document("d1")
+    assert not retriever.has_document("d2")

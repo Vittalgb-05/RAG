@@ -94,7 +94,7 @@ class OcrEngine:
             return self._renderer(pdf_bytes, page_num)
 
         if fitz is not None:
-            eff_dpi = max(72, int(dpi))
+            eff_dpi = min(300, max(72, int(dpi)))
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             try:
                 if page_num < 1 or page_num > len(doc):

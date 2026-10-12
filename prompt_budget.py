@@ -60,6 +60,7 @@ def assemble_grounded_messages(
     history: list[dict[str, str]] | None = None,
     max_context_tokens: int = 4096,
     max_output_tokens: int = 1024,
+    truncation_meta: dict[str, bool] | None = None,
 ) -> list[dict[str, str]]:
     """Assemble bounded chat messages with XML injection defense and oldest-first history truncation.
 
@@ -69,10 +70,17 @@ def assemble_grounded_messages(
         history: Optional list of previous chat messages [{"role": "...", "content": "..."}].
         max_context_tokens: Upper bound on total model context window (default 4096).
         max_output_tokens: Reserved tokens for generation (default 1024).
+        truncation_meta: Optional dictionary to record truncation occurrences
+                         ({"prompt_truncated": bool, "context_truncated": bool, "history_truncated": bool}).
 
     Returns:
         List of message dicts formatted for chat completion endpoints.
     """
+    if truncation_meta is not None:
+        truncation_meta["prompt_truncated"] = False
+        truncation_meta["context_truncated"] = False
+        truncation_meta["history_truncated"] = False
+
     # Total token budget available for input messages (system + context + history + prompt)
     total_input_budget = max(256, max_context_tokens - max_output_tokens)
 
@@ -86,6 +94,8 @@ def assemble_grounded_messages(
     if estimate_tokens(bounded_prompt) > max_prompt_budget:
         char_cap = max(0, max_prompt_budget * 4)
         bounded_prompt = bounded_prompt[:char_cap] + "\n[... prompt truncated ...]"
+        if truncation_meta is not None:
+            truncation_meta["prompt_truncated"] = True
 
     user_prompt_tokens = estimate_tokens(bounded_prompt)
 
@@ -98,6 +108,8 @@ def assemble_grounded_messages(
         if context_tokens > available_for_context:
             char_limit = max(0, available_for_context * 4)
             clean_context = clean_context[:char_limit] + "\n[... truncated ...]"
+            if truncation_meta is not None:
+                truncation_meta["context_truncated"] = True
 
     system_content = SYSTEM_GROUNDING_TEMPLATE.format(context_text=clean_context)
     system_tokens = estimate_tokens(system_content)
@@ -116,6 +128,8 @@ def assemble_grounded_messages(
                 history_acc.append({"role": turn["role"], "content": turn_content})
                 remaining_budget -= turn_tokens
             else:
+                if truncation_meta is not None:
+                    truncation_meta["history_truncated"] = True
                 break
         retained_history = list(reversed(history_acc))
         while retained_history and retained_history[0].get("role") == "assistant":

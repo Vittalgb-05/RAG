@@ -1,0 +1,74 @@
+{
+  "timestamp": "2026-10-12T19:07:15.528512+00:00",
+  "provider": "qwen3-vl-2b-instruct-q4_k_m",
+  "is_live_server": false,
+  "metrics": {
+    "factual_accuracy_pct": 100.0,
+    "visual_accuracy_pct": 100.0,
+    "abstention_quality_pct": 100.0,
+    "citation_precision_pct": 100.0,
+    "average_latency_seconds": 0.087
+  },
+  "cases": [
+    {
+      "case_id": "table_q1_lookup",
+      "category": "table",
+      "query": "What was the Q1 2025 revenue and gross margin reported in the financial table?",
+      "response": "Based on the quarterly financial table, the Q1 2025 revenue was $124.5M and the gross margin was 68.2% [E1].",
+      "status": "PASS",
+      "latency_s": 0.103,
+      "kw_accuracy": true,
+      "abstention_matched": null,
+      "citation_precision": 1.0,
+      "hallucinated_citations": []
+    },
+    {
+      "case_id": "table_fy_total",
+      "category": "table",
+      "query": "What was the FY Total revenue and compute cost from the operational metrics table?",
+      "response": "According to the financial metrics, the FY Total revenue was $630.9M with a compute cost of $203.8k [E1].",
+      "status": "PASS",
+      "latency_s": 0.097,
+      "kw_accuracy": true,
+      "abstention_matched": null,
+      "citation_precision": 1.0,
+      "hallucinated_citations": []
+    },
+    {
+      "case_id": "visual_diagram_steps",
+      "category": "visual",
+      "query": "What are the three steps in the system workflow diagram in order?",
+      "response": "The workflow diagram illustrates three sequential steps: 1. Ingestion, 2. Hybrid Search, and 3. Local VLM [E1].",
+      "status": "PASS",
+      "latency_s": 0.09,
+      "kw_accuracy": true,
+      "abstention_matched": null,
+      "citation_precision": 1.0,
+      "hallucinated_citations": []
+    },
+    {
+      "case_id": "digital_claim_lookup",
+      "category": "text",
+      "query": "What is the unique system latency metric on page 1 of the digital document?",
+      "response": "On page 1, the unique claim states that the system latency metric is target-10 milliseconds [E1].",
+      "status": "PASS",
+      "latency_s": 0.085,
+      "kw_accuracy": true,
+      "abstention_matched": null,
+      "citation_precision": 1.0,
+      "hallucinated_citations": []
+    },
+    {
+      "case_id": "absent_abstention_check",
+      "category": "abstention",
+      "query": "What is the employee turnover rate and CEO bonus in 2025?",
+      "response": "The document does not contain sufficient evidence to answer this question.",
+      "status": "PASS",
+      "latency_s": 0.058,
+      "kw_accuracy": true,
+      "abstention_matched": true,
+      "citation_precision": 1.0,
+      "hallucinated_citations": []
+    }
+  ]
+}
