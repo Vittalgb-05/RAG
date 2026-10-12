@@ -13,3 +13,4 @@ pymupdf>=1.24.0
 pillow>=10.2.0
 lancedb>=0.17.0
 pyarrow>=14.0.0
+psutil>=6.1.0
