@@ -265,6 +265,7 @@ def run_resource_profile() -> dict:
         print(f"  - Final Process RSS:   {final_proc_mem['rss_mb']} MB (Growth: +{rss_delta} MB)")
 
         # Projected VRAM calculation based on live hardware audit
+        # Fall back to 487.0 MB (empirical Windows 11 DWM baseline) in headless/CI environments where nvidia-smi is absent
         dwm_overhead_mb = initial_gpu_mem["used_mb"] if initial_gpu_mem else 487.0
         model_weights_mb = 1450.0
         vision_proj_mb = 450.0

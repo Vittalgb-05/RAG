@@ -88,6 +88,29 @@ def test_inference_gate_reentrancy_in_same_thread() -> None:
     assert not InferenceGate.is_locked()
 
 
+def test_unauthorized_release_does_not_corrupt_active_counter() -> None:
+    """Test that unauthorized release attempt from foreign thread does not corrupt gate state (CR-01)."""
+    assert not InferenceGate.is_locked()
+    acquired = InferenceGate.acquire(timeout=1.0)
+    assert acquired is True
+    assert InferenceGate.is_locked()
+
+    # Attempt release from a separate thread that does not hold the lock
+    def rogue_release_worker() -> None:
+        InferenceGate.release()
+
+    t = threading.Thread(target=rogue_release_worker)
+    t.start()
+    t.join()
+
+    # Gate must still remain locked because primary thread still holds it
+    assert InferenceGate.is_locked() is True, "Gate state must remain locked after unauthorized release"
+
+    # Primary thread releases its lock
+    InferenceGate.release()
+    assert not InferenceGate.is_locked()
+
+
 def test_inference_gate_blocks_parallel_threads() -> None:
     """Test that second thread is blocked when first thread holds gate."""
     acquired_by_t2: list[bool] = []

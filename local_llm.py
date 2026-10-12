@@ -55,10 +55,10 @@ class InferenceGate:
     def release(cls) -> None:
         """Release previously acquired inference access."""
         try:
+            cls._lock.release()
             with cls._state_lock:
                 if cls._active_threads > 0:
                     cls._active_threads -= 1
-            cls._lock.release()
         except RuntimeError:
             pass
 

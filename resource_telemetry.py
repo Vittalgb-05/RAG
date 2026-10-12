@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import logging
 import subprocess
+import threading
 import time
 from typing import Any
 
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Global latency history registry for benchmarking and diagnostic introspection
 _LATENCY_HISTORY: dict[str, list[float]] = defaultdict(list)
+_LATENCY_LOCK = threading.Lock()
+MAX_STAGE_HISTORY: int = 200
 
 
 def get_gpu_memory_info() -> dict[str, float] | None:
@@ -133,7 +136,11 @@ class LatencyTracker:
             self.error = str(exc_val)
 
         if self.record_history:
-            _LATENCY_HISTORY[self.stage_name].append(self.elapsed_ms)
+            with _LATENCY_LOCK:
+                history = _LATENCY_HISTORY[self.stage_name]
+                history.append(self.elapsed_ms)
+                if len(history) > MAX_STAGE_HISTORY:
+                    _LATENCY_HISTORY[self.stage_name] = history[-MAX_STAGE_HISTORY:]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert tracker outcome to dictionary."""
@@ -155,17 +162,23 @@ def track_stage(stage_name: str) -> Generator[LatencyTracker, None, None]:
 
 def record_stage_latency(stage_name: str, elapsed_ms: float) -> None:
     """Directly record an elapsed duration into latency history."""
-    _LATENCY_HISTORY[stage_name].append(round(elapsed_ms, 2))
+    with _LATENCY_LOCK:
+        history = _LATENCY_HISTORY[stage_name]
+        history.append(round(elapsed_ms, 2))
+        if len(history) > MAX_STAGE_HISTORY:
+            _LATENCY_HISTORY[stage_name] = history[-MAX_STAGE_HISTORY:]
 
 
 def get_latency_history() -> dict[str, list[float]]:
-    """Return a copy of the recorded latency history."""
-    return {stage: list(durations) for stage, durations in _LATENCY_HISTORY.items()}
+    """Return a thread-safe copy of the recorded latency history."""
+    with _LATENCY_LOCK:
+        return {stage: list(durations) for stage, durations in _LATENCY_HISTORY.items()}
 
 
 def clear_latency_history() -> None:
     """Clear recorded latency history."""
-    _LATENCY_HISTORY.clear()
+    with _LATENCY_LOCK:
+        _LATENCY_HISTORY.clear()
 
 
 def get_system_telemetry_snapshot() -> dict[str, Any]:
@@ -177,8 +190,11 @@ def get_system_telemetry_snapshot() -> dict[str, Any]:
     gpu_info = get_gpu_memory_info()
     proc_info = get_process_memory_info()
 
+    with _LATENCY_LOCK:
+        history_copy = {stage: list(durations) for stage, durations in _LATENCY_HISTORY.items()}
+
     stage_summaries: dict[str, dict[str, float]] = {}
-    for stage, times in _LATENCY_HISTORY.items():
+    for stage, times in history_copy.items():
         if times:
             stage_summaries[stage] = {
                 "count": len(times),

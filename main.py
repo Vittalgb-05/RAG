@@ -29,6 +29,7 @@ from local_embedding import LocalEmbedding
 from local_llm import AiModel
 from models import Chunk, Document, Page, cache_dir_for
 from ocr_fallback import apply_conditional_ocr
+from prompt_budget import bound_chat_history
 from resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from summarizer import Summarizer
 from upload_validation import MAX_FILE_MB, validate_pdf_bytes
@@ -388,8 +389,10 @@ with st.sidebar:
 def append_chat_turn(turn: dict[str, Any]) -> None:
     """Append a message turn to chat history and enforce MAX_CHAT_TURNS memory bounding."""
     st.session_state.chat_history.append(turn)
-    if len(st.session_state.chat_history) > MAX_CHAT_TURNS:
-        st.session_state.chat_history = st.session_state.chat_history[-MAX_CHAT_TURNS:]
+    st.session_state.chat_history = bound_chat_history(
+        st.session_state.chat_history,
+        max_turns=MAX_CHAT_TURNS,
+    )
 
 
 # ------------------------------------------------------------------

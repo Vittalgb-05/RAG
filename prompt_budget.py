@@ -8,6 +8,7 @@ truncating conversation history oldest-first when budget is exceeded.
 
 import math
 import re
+from typing import Any
 
 SYSTEM_GROUNDING_TEMPLATE = """You are a helpful, precise AI assistant. Answer the user's question based strictly on the provided Document Context and conversation history.
 CRITICAL GROUNDING & CITATION RULES:
@@ -117,9 +118,35 @@ def assemble_grounded_messages(
             else:
                 break
         retained_history = list(reversed(history_acc))
+        while retained_history and retained_history[0].get("role") == "assistant":
+            retained_history.pop(0)
 
     messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
     messages.extend(retained_history)
     messages.append({"role": "user", "content": bounded_prompt})
 
     return messages
+
+
+def bound_chat_history(
+    history: list[dict[str, Any]],
+    max_turns: int = 50,
+) -> list[dict[str, Any]]:
+    """Bound chat history to at most max_turns and ensure it does not start with an orphan assistant turn.
+
+    Args:
+        history: List of chat message dictionaries.
+        max_turns: Maximum allowed turns in conversation history.
+
+    Returns:
+        Pruned list of chat turns starting with a user turn or empty.
+    """
+    if not history:
+        return []
+
+    bounded = list(history[-max_turns:]) if len(history) > max_turns else list(history)
+    # Prune any leading assistant turns so conversation history starts with user turn
+    while bounded and bounded[0].get("role") == "assistant":
+        bounded.pop(0)
+
+    return bounded

@@ -1,66 +1,66 @@
 {
-  "timestamp": "2026-10-12T11:01:33.501442+00:00",
+  "timestamp": "2026-10-12T14:51:01.204556+00:00",
   "target_gpu": "NVIDIA GeForce RTX 3050 Laptop GPU (4,096 MB VRAM)",
   "memory_safety_target_mb": 3800.0,
-  "projected_peak_vram_mb": 3171.0,
-  "vram_headroom_mb": 925.0,
+  "projected_peak_vram_mb": 3445.0,
+  "vram_headroom_mb": 651.0,
   "compliant_with_qual_01": true,
   "hardware_live": {
     "initial_gpu": {
       "total_mb": 4096.0,
-      "used_mb": 411.0,
-      "free_mb": 3552.0,
-      "utilization_pct": 10.0
+      "used_mb": 685.0,
+      "free_mb": 3278.0,
+      "utilization_pct": 16.7
     },
     "final_gpu": {
       "total_mb": 4096.0,
-      "used_mb": 420.0,
-      "free_mb": 3543.0,
-      "utilization_pct": 10.3
+      "used_mb": 664.0,
+      "free_mb": 3299.0,
+      "utilization_pct": 16.2
     },
-    "initial_rss_mb": 639.09,
-    "final_rss_mb": 720.18,
-    "rss_growth_mb": 81.09
+    "initial_rss_mb": 638.07,
+    "final_rss_mb": 718.77,
+    "rss_growth_mb": 80.7
   },
   "ingestion": {
     "clean_digital.pdf": {
       "pages": 20,
       "characters": 11934,
       "chunks": 20,
-      "extraction_ms": 57.63,
-      "ms_per_page": 2.88
+      "extraction_ms": 92.83,
+      "ms_per_page": 4.64
     },
     "dense_table.pdf": {
       "pages": 1,
       "characters": 258,
       "chunks": 1,
-      "extraction_ms": 5.63,
-      "ms_per_page": 5.63
+      "extraction_ms": 8.19,
+      "ms_per_page": 8.19
     },
     "multi_column.pdf": {
       "pages": 2,
       "characters": 685,
       "chunks": 2,
-      "extraction_ms": 4.92,
-      "ms_per_page": 2.46
+      "extraction_ms": 7.48,
+      "ms_per_page": 3.74
     }
   },
   "embeddings": {
     "model": "all-MiniLM-L6-v2",
     "device": "cpu",
     "sample_count": 10,
-    "total_duration_ms": 232.68,
-    "ms_per_chunk": 23.27
+    "total_duration_ms": 386.9,
+    "ms_per_chunk": 38.69
   },
   "retrieval": {
     "total_chunks_indexed": 23,
-    "indexing_duration_ms": 11.34,
-    "cold_query_ms": 12.64,
-    "warm_query_avg_ms": 14.52
+    "indexing_duration_ms": 11.47,
+    "cold_query_ms": 17.16,
+    "warm_query_avg_ms": 14.18
   },
   "summarization": {
-    "cold_duration_ms": 30.31,
-    "warm_cache_duration_ms": 2.79,
+    "cold_duration_ms": 31.79,
+    "warm_cache_duration_ms": 5.4,
     "cache_sla_met": true
   },
   "concurrency_lock": {

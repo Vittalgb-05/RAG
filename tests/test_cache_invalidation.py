@@ -7,25 +7,39 @@ import tempfile
 from doc_store import DocStore
 from hybrid_retriever import HybridRetriever
 from models import Document, SummaryResult
+from prompt_budget import bound_chat_history
 from resource_telemetry import get_gpu_memory_info, get_process_memory_info
 
 MAX_CHAT_TURNS = 50
 
 
 def test_chat_history_bounding_drops_oldest_turns() -> None:
-    """Test that chat history bounding retains at most MAX_CHAT_TURNS items."""
+    """Test that bound_chat_history retains at most MAX_CHAT_TURNS items and prunes orphan assistant turns."""
     history = []
-    # Simulate appending 75 message turns
+    # Append 75 message turns alternating user / assistant
     for i in range(75):
         history.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"})
-        if len(history) > MAX_CHAT_TURNS:
-            history = history[-MAX_CHAT_TURNS:]
+        history = bound_chat_history(history, max_turns=MAX_CHAT_TURNS)
 
-    assert len(history) == MAX_CHAT_TURNS
+    assert len(history) <= MAX_CHAT_TURNS
     assert MAX_CHAT_TURNS == 50
-    # Oldest retained message should be message 25
-    assert history[0]["content"] == "msg 25"
+    # First message must be a user turn
+    assert history[0]["role"] == "user"
     assert history[-1]["content"] == "msg 74"
+
+    # Test orphan assistant pruning explicitly
+    orphan_start = [
+        {"role": "assistant", "content": "stray answer"},
+        {"role": "user", "content": "actual question"},
+        {"role": "assistant", "content": "actual answer"},
+    ]
+    pruned = bound_chat_history(orphan_start, max_turns=10)
+    assert len(pruned) == 2
+    assert pruned[0]["role"] == "user"
+    assert pruned[0]["content"] == "actual question"
+
+    # Test empty history
+    assert bound_chat_history([], max_turns=50) == []
 
 
 def test_doc_store_count_helpers() -> None:
