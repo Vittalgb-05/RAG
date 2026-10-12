@@ -63,7 +63,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Quality, Performance & Process Assurance
 
-- [ ] **QUAL-01**: System guarantees memory safety on 4 GB VRAM (RTX 3050 Laptop) by enforcing max one active LLM on GPU and cold/warm memory benchmarks.
+- [x] **QUAL-01**: System guarantees memory safety on 4 GB VRAM (RTX 3050 Laptop) by enforcing max one active LLM on GPU and cold/warm memory benchmarks.
 - [ ] **QUAL-02**: System maintains an automated Pytest test suite covering ingestion, retrieval, citation precision, and provider fallbacks.
 - [ ] **QUAL-03**: Agents and workflows execute structured git commits per planning, execution, review, and verification phases.
 - [ ] **QUAL-04**: Agents inspect `.planning/codebase/` documentation prior to planning and update `CONCERNS.md` and CI/CD workflows across every phase.
@@ -128,7 +128,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | UI-02 | Phase 5 | Pending |
 | UI-03 | Phase 5 | Pending |
 | UI-04 | Phase 7 | Pending |
-| QUAL-01 | Phase 6 | Pending |
+| QUAL-01 | Phase 6 | Complete (Phase 6 verified) |
 | QUAL-02 | Phase 0 & Phase 8 | Complete (Phase 0 verified) |
 | QUAL-03 | Phase 0 through 8 | In Progress (Phase 0 & 1 verified) |
 | QUAL-04 | Phase 0 through 8 | In Progress (Phase 0 & 1 verified) |

@@ -223,6 +223,8 @@ class HybridRetriever:
                 pass
         return any(d.get("doc_id") == doc_id for d in self._fallback_store.documents)
 
+    contains_document = has_document
+
     def index_chunks(
         self,
         chunks: list[dict[str, Any] | Chunk],

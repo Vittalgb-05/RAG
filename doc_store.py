@@ -586,3 +586,25 @@ class DocStore:
             cursor = conn.execute("DELETE FROM documents WHERE doc_id = ?;", (doc_id,))
             conn.commit()
             return cursor.rowcount > 0
+
+    def count_documents(self) -> int:
+        """Count total persisted documents in SQLite.
+
+        Returns:
+            Total integer count of document records.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM documents;")
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    def count_summaries(self) -> int:
+        """Count total cached multi-profile summaries in SQLite.
+
+        Returns:
+            Total integer count of summary records.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM document_summaries;")
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0

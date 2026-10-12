@@ -121,8 +121,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 06-01: Profile and benchmark VRAM/RAM under cold and warm workloads on RTX 3050, tuning llama.cpp -ngl and context
-- [ ] 06-02: Implement multi-tier cache invalidation, memory limits, and performance monitoring telemetry
+- [x] 06-01: Profile and benchmark VRAM/RAM under cold and warm workloads on RTX 3050, tuning llama.cpp -ngl and context
+- [x] 06-02: Implement multi-tier cache invalidation, memory limits, and performance monitoring telemetry
 
 ### Phase 7: Optional Cloud Provider & Privacy Controls
 **Goal**: Provide optional cloud model fallback via LiteLLM with strict user consent, privacy guardrails, and transparent UI indicators.  

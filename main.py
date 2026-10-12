@@ -29,9 +29,12 @@ from local_embedding import LocalEmbedding
 from local_llm import AiModel
 from models import Chunk, Document, Page, cache_dir_for
 from ocr_fallback import apply_conditional_ocr
+from resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from summarizer import Summarizer
 from upload_validation import MAX_FILE_MB, validate_pdf_bytes
 from visual_analyzer import VisualAnalyzer
+
+MAX_CHAT_TURNS = 50
 
 # ------------------------------------------------------------------
 # Page configuration  (must be the very first Streamlit call)
@@ -99,33 +102,34 @@ with st.sidebar:
         st.session_state.ai_model = ai_model
         health = ai_model.check_health()
         caps = ai_model.get_capabilities()
-        if health.status == "healthy":
-            if caps.is_local:
+        if model_status is not None:
+            if health.status == "healthy":
+                if caps.is_local:
+                    model_status.update(
+                        label=f"🟢 Inference: Local ({caps.model_name})",
+                        state="complete",
+                        expanded=False,
+                    )
+                else:
+                    model_status.update(
+                        label=f"🔵 Inference: Groq Cloud ({caps.model_name})",
+                        state="complete",
+                        expanded=False,
+                    )
+            elif health.status == "loading":
                 model_status.update(
-                    label=f"🟢 Inference: Local ({caps.model_name})",
-                    state="complete",
-                    expanded=False,
+                    label=f"⏳ Inference: Loading ({caps.model_name})...",
+                    state="running",
+                    expanded=True,
                 )
+                st.info(health.message)
             else:
                 model_status.update(
-                    label=f"🔵 Inference: Groq Cloud ({caps.model_name})",
-                    state="complete",
-                    expanded=False,
+                    label="⚠️ Inference: Offline (setup required)",
+                    state="error",
+                    expanded=True,
                 )
-        elif health.status == "loading":
-            model_status.update(
-                label=f"⏳ Inference: Loading ({caps.model_name})...",
-                state="running",
-                expanded=True,
-            )
-            st.info(health.message)
-        else:
-            model_status.update(
-                label="⚠️ Inference: Offline (setup required)",
-                state="error",
-                expanded=True,
-            )
-            st.warning(health.message)
+                st.warning(health.message)
 
     st.divider()
 
@@ -204,16 +208,15 @@ with st.sidebar:
                         "chunks": existing_doc.num_chunks if existing_doc else 0,
                     }
                     # CR-01: On dedup hit after restart (empty session index), restore chunks from DocStore
-                    if st.session_state.local_embedding is None:
+                    if st.session_state.hybrid_retriever is None:
                         persisted_chunks = doc_store.get_chunks_for_doc(doc_id)
                         if persisted_chunks:
-                            st.session_state.local_embedding = LocalEmbedding()
+                            if st.session_state.local_embedding is None:
+                                st.session_state.local_embedding = LocalEmbedding()
+                            st.session_state.hybrid_retriever = HybridRetriever(
+                                embedding_fn=st.session_state.local_embedding._embed_one
+                            )
                             chunk_dicts = [c.model_dump() for c in persisted_chunks]
-                            st.session_state.local_embedding.build_index(chunk_dicts)
-                            if st.session_state.hybrid_retriever is None:
-                                st.session_state.hybrid_retriever = HybridRetriever(
-                                    embedding_fn=st.session_state.local_embedding._embed_one
-                                )
                             embeddings = st.session_state.local_embedding.get_embeddings(
                                 [c["content"] for c in chunk_dicts]
                             )
@@ -271,11 +274,10 @@ with st.sidebar:
                     if page.status == "failed":
                         st.warning(f"Page {page.page_num} in `{filename}` skipped ({page.error})")
 
-                # 5. Build vector embeddings and persistent LanceDB hybrid index
+                # 5. Build vector embeddings and persistent LanceDB hybrid index (QUAL-01: sole index in session)
                 st.write(f"Building index for `{filename}` ({len(paragraphs)} chunks)…")
                 if st.session_state.local_embedding is None:
                     st.session_state.local_embedding = LocalEmbedding()
-                st.session_state.local_embedding.build_index(paragraphs)
 
                 if st.session_state.hybrid_retriever is None:
                     st.session_state.hybrid_retriever = HybridRetriever(
@@ -350,7 +352,44 @@ with st.sidebar:
         st.info("Upload a PDF to get started.")
 
     st.divider()
+
+    # System Telemetry & Resource Monitoring (QUAL-01)
+    with st.expander("📊 System Telemetry & VRAM", expanded=False):
+        gpu_info = get_gpu_memory_info()
+        proc_info = get_process_memory_info()
+        total_docs = doc_store.count_documents()
+        total_sums = doc_store.count_summaries()
+
+        if gpu_info is not None:
+            vram_used = gpu_info["used_mb"]
+            vram_total = gpu_info["total_mb"]
+            util_pct = gpu_info["utilization_pct"]
+            st.metric(
+                label="GPU VRAM",
+                value=f"{vram_used:.0f} / {vram_total:.0f} MB",
+                delta=f"{util_pct:.1f}% used",
+            )
+            st.progress(min(1.0, max(0.0, vram_used / max(1.0, vram_total))))
+            if vram_used < 3500.0:
+                st.caption("🟢 VRAM Healthy (< 3.5 GB)")
+            elif vram_used <= 3800.0:
+                st.caption("🟡 VRAM Headroom Limited (3.5–3.8 GB)")
+            else:
+                st.caption("🔴 High VRAM (> 3.8 GB)")
+        else:
+            st.caption("ℹ️ CPU-only Mode (No NVIDIA GPU detected)")
+
+        st.caption(f"**Process RAM (RSS):** {proc_info['rss_mb']:.1f} MB")
+        st.caption(f"**Persistent Cache:** {total_docs} docs · {total_sums} summaries")
+
     st.caption(f"Powered by **Groq ({ai_model.model_name})** + **MiniLM-L6-v2**")
+
+
+def append_chat_turn(turn: dict[str, Any]) -> None:
+    """Append a message turn to chat history and enforce MAX_CHAT_TURNS memory bounding."""
+    st.session_state.chat_history.append(turn)
+    if len(st.session_state.chat_history) > MAX_CHAT_TURNS:
+        st.session_state.chat_history = st.session_state.chat_history[-MAX_CHAT_TURNS:]
 
 
 # ------------------------------------------------------------------
@@ -362,7 +401,7 @@ tab_chat, tab_summary = st.tabs(["💬 Ask Your Document", "📑 Document Summar
 with tab_chat:
     st.markdown("## Chat & Grounded Question Answering")
 
-    if st.session_state.local_embedding is None:
+    if st.session_state.hybrid_retriever is None and st.session_state.local_embedding is None:
         st.markdown("> **Upload a PDF in the sidebar** to begin asking questions.")
     else:
         total_chunks = sum(meta["chunks"] for meta in st.session_state.document_metadata.values())
@@ -431,7 +470,7 @@ with tab_chat:
             st.error(f"Inference backend unavailable: {health.message}")
         else:
             # Show the user's message immediately
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            append_chat_turn({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
@@ -512,7 +551,7 @@ with tab_chat:
                     elif sources:
                         st.info(f"**Sources used:** {', '.join(sources)}", icon="ℹ️")
 
-                    st.session_state.chat_history.append(
+                    append_chat_turn(
                         {
                             "role": "assistant",
                             "content": full_response,
@@ -523,7 +562,7 @@ with tab_chat:
                     )
                 except Exception as err:
                     st.error(f"Inference streaming failed: {err}")
-                    st.session_state.chat_history.append(
+                    append_chat_turn(
                         {
                             "role": "assistant",
                             "content": f"*[Response generation interrupted: {err}]*",
