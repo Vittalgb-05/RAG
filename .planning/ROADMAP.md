@@ -13,12 +13,13 @@ This roadmap transforms an existing in-memory Streamlit RAG prototype into a loc
 - [x] **Phase 0: Baseline and Audit** - Benchmark existing brownfield pipeline, assemble test corpus, and verify initial test/CI setup
 - [x] **Phase 1: Canonical Document Models & Storage Foundation** - Implement Pydantic data models, SQLite metadata store, and robust file validation
 - [x] **Phase 2: Local Inference Pipeline** - Deploy llama-server runtime with Qwen3-VL 2B GGUF, provider abstraction, and streaming support
-- [ ] **Phase 3: Multimodal Ingestion & Conditional OCR** - Integrate Docling layout parser, conditional RapidOCR, and selective visual element analysis
-- [ ] **Phase 4: Persistent Hybrid Retrieval** - Integrate LanceDB with local dense embeddings (CPU-pinned) and BM25 full-text search
-- [ ] **Phase 5: Grounded Summarization & Question Answering** - Build hierarchical summary profiles, evidence-grounded streaming QA, and citation verification
-- [ ] **Phase 6: Performance Optimization & Resource Profiling** - Benchmark VRAM/RAM on RTX 3050, tune context and KV-cache, and establish cache limits
-- [ ] **Phase 7: Optional Cloud Provider & Privacy Controls** - Implement LiteLLM adapter with explicit user opt-in and privacy guardrails
+- [x] **Phase 3: Multimodal Ingestion & Conditional OCR** - Integrate Docling layout parser, conditional RapidOCR, and selective visual element analysis
+- [x] **Phase 4: Persistent Hybrid Retrieval** - Integrate LanceDB with local dense embeddings (CPU-pinned) and BM25 full-text search
+- [x] **Phase 5: Grounded Summarization & Question Answering** - Build hierarchical summary profiles, evidence-grounded streaming QA, and citation verification
+- [x] **Phase 6: Performance Optimization & Resource Profiling** - Benchmark VRAM/RAM on RTX 3050, tune context and KV-cache, and establish cache limits
+- [x] **Phase 7: Optional Cloud Provider & Privacy Controls** - Implement LiteLLM adapter with explicit user opt-in and privacy guardrails
 - [ ] **Phase 8: Release Hardening & Evaluation** - Pin dependencies, execute full regression suite, synchronize CI/CD, and document runbooks
+
 
 ## Phase Details
 
@@ -135,8 +136,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 07-01: Implement LiteLLM cloud provider adapter supporting Groq, OpenAI, and Anthropic with timeout/retry bounds
-- [ ] 07-02: Add Streamlit cloud/local mode switch, privacy guardrails, and credential management dialog
+- [x] 07-01: Implement LiteLLM cloud provider adapter supporting Groq, OpenAI, and Anthropic with timeout/retry bounds
+- [x] 07-02: Add Streamlit cloud/local mode switch, privacy guardrails, and credential management dialog
 
 ### Phase 8: Release Hardening & Evaluation
 **Goal**: Pin tested dependencies, run the complete Pytest regression suite, verify CI/CD pipelines, audit CONCERNS.md resolutions, and prepare release documentation.  
@@ -166,6 +167,7 @@ Phases execute in numeric order: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 →
 | 3. Multimodal Ingestion & Conditional OCR | 3/3 | Complete | 2026-10-11 |
 | 4. Persistent Hybrid Retrieval | 2/2 | Complete | 2026-10-11 |
 | 5. Grounded Summarization & Question Answering | 3/3 | Complete | 2026-10-11 |
-| 6. Performance Optimization & Resource Profiling | 0/2 | Not started | - |
-| 7. Optional Cloud Provider & Privacy Controls | 0/2 | Not started | - |
+| 6. Performance Optimization & Resource Profiling | 2/2 | Complete | 2026-10-12 |
+| 7. Optional Cloud Provider & Privacy Controls | 2/2 | Complete | 2026-10-12 |
 | 8. Release Hardening & Evaluation | 0/2 | Not started | - |
+
