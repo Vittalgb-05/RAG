@@ -73,6 +73,8 @@ flowchart TD
 
 ```
 RAG/
+├── start.py                    # One-command application launcher (pre-flight checks + Streamlit)
+├── setup.py                    # Standard setuptools package & CLI entry points
 ├── main.py                     # Streamlit frontend & application lifecycle
 ├── local_llm.py                # Unified AiModel interface & provider orchestration
 ├── model_provider.py           # BaseModelProvider interface & data contracts
@@ -80,24 +82,28 @@ RAG/
 ├── litellm_provider.py         # LiteLLM cloud provider adapter with consent gating
 ├── groq_provider.py            # Dedicated Groq cloud adapter
 ├── doc_store.py                # SQLite document metadata & chunk storage
-├── docling_parser.py           # Docling structured layout & table extraction
+├── docling_reader.py           # Docling structured layout & table extraction
 ├── visual_analyzer.py          # Visual element detection, cropping, and VLM analysis
 ├── ocr_fallback.py             # RapidOCR conditional optical character recognition
-├── lancedb_index.py            # Persistent LanceDB hybrid vector database
-├── hybrid_retriever.py         # Reciprocal Rank Fusion (RRF) retrieval engine
+├── hybrid_retriever.py         # LanceDB + BM25 Reciprocal Rank Fusion (RRF) retrieval engine
 ├── summarizer.py               # Single-pass and map-reduce multi-profile summarizer
-├── citation_verifier.py        # Strict citation validation & verification
+├── citation_validator.py       # Strict citation validation & verification
 ├── prompt_budget.py            # Context window allocation & XML boundary security
 ├── resource_telemetry.py       # GPU VRAM, process RAM, and latency profiling
-├── local_embedding.py          # Sentence-transformers embedding wrapper
+├── local_embedding.py          # Sentence-transformers embedding wrapper with shared RAM cache
 ├── vector_index.py             # In-memory cosine fallback vector index
 ├── pdf_reader.py               # Memory-safe PDF reader with pypdf fallback
+├── upload_validation.py        # PDF magic-byte, size, and page-count validation
+├── scripts/
+│   ├── benchmark_multimodal.py # Multimodal evaluation benchmark (tables, diagrams, abstention)
+│   ├── benchmark_baseline.py   # Baseline retrieval performance suite
+│   └── profile_resources.py    # Live VRAM & RAM hardware profiling script
 ├── docs/
 │   ├── RUNBOOK.md              # Installation, model acquisition, and operation guide
 │   └── EVALUATION.md           # Benchmark evaluation, VRAM profile, and test metrics
-├── tests/                      # Automated Pytest suite (217 tests, 100% passing)
-├── requirements.txt            # Production dependencies
-└── requirements-lock.txt       # Deterministic deployment lockfile
+├── tests/                      # Automated Pytest suite (226 tests, 100% passing)
+├── requirements.txt            # Production runtime dependencies
+└── requirements-lock.txt       # Deterministic deployment lockfile (universal, Python 3.11)
 ```
 
 ---
@@ -129,6 +135,9 @@ source .venv/bin/activate
 
 # Install dependencies from lockfile
 pip install -r requirements-lock.txt
+
+# Or install in editable mode:
+pip install -e .
 ```
 
 ### 3. Acquire Local Models
@@ -161,7 +170,19 @@ llama-server \
 
 ### 5. Launch RAG Assistant
 
-In a separate terminal:
+**Option A: One-Command Launcher (Recommended)**
+
+Run `start.py`, which performs environment pre-flight checks, verifies directory structures, probes `llama-server` connectivity, and automatically boots the Streamlit application:
+
+```bash
+python start.py
+```
+
+Options:
+- `python start.py --port 8501 --host localhost`
+- `python start.py --headless`
+
+**Option B: Direct Streamlit Run**
 
 ```bash
 streamlit run main.py

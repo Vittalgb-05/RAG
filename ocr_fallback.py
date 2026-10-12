@@ -95,17 +95,21 @@ class OcrEngine:
 
         if fitz is not None:
             eff_dpi = min(300, max(72, int(dpi)))
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             try:
-                if page_num < 1 or page_num > len(doc):
-                    return None
-                page = doc.load_page(page_num - 1)
-                zoom = eff_dpi / 72.0
-                matrix = fitz.Matrix(zoom, zoom)
-                pix = page.get_pixmap(matrix=matrix)
-                return pix.tobytes("png")
-            finally:
-                doc.close()
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                try:
+                    if page_num < 1 or page_num > len(doc):
+                        return None
+                    page = doc.load_page(page_num - 1)
+                    zoom = eff_dpi / 72.0
+                    matrix = fitz.Matrix(zoom, zoom)
+                    pix = page.get_pixmap(matrix=matrix)
+                    return pix.tobytes("png")
+                finally:
+                    doc.close()
+            except Exception as e:
+                logger.warning("Rendering page %d via fitz failed: %s", page_num, e)
+                return None
 
         return None
 

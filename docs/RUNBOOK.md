@@ -124,8 +124,15 @@ curl http://127.0.0.1:8080/health
 
 ---
 
-## 5. Starting the Streamlit Application
+## 5. Starting the Application
 
+### Option A: Launcher Script (Recommended)
+Run `start.py` to perform automatic pre-flight checks, verify directories, probe `llama-server`, and launch the web interface:
+```bash
+python start.py
+```
+
+### Option B: Direct Streamlit Run
 ```bash
 streamlit run main.py
 ```
