@@ -1,6 +1,13 @@
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+extend-exclude = [
+    ".planning",
+    ".cache",
+    "data",
+    "docs",
+    "*.md",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
