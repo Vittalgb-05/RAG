@@ -1,6 +1,6 @@
 # External Integrations
 
-**Analysis Date:** 2026-10-11
+**Analysis Date:** 2026-10-12
 
 ## APIs & External Services
 
@@ -12,6 +12,7 @@
   - Server launch (external binary, not pip): `llama-server -m models/qwen3-vl-2b-instruct-q4_k_m.gguf --mmproj models/mmproj-f16.gguf -c 4096 -ngl 28 --port 8080 --host 127.0.0.1` (`docs/LOCAL_INFERENCE.md:52-60`; health message reproduces the command at `llama_cpp_provider.py:79-82`)
   - Auth: none — bound to `127.0.0.1` only (`docs/LOCAL_INFERENCE.md:66-68`)
   - Capabilities: `supports_vision=True, is_local=True, supports_streaming=True` (`llama_cpp_provider.py:96-108`)
+  - Phase-5 reuse: `Summarizer` calls the same provider via `provider.generate_text(prompt, system_prompt, max_tokens, temperature=0.2)` for single-pass (1500 tokens), map (800), consolidate (1000), and reduce (1500) steps (`summarizer.py:225-298`); sequential execution preserves the single-active-LLM 4 GB VRAM envelope (`summarizer.py:232-244`)
 
 **Cloud inference (optional fallback, only egress path):**
 - Groq Cloud — chat completions via the `groq` Python SDK (`groq==0.15.0`, guarded `try/except ImportError → Groq=None` in `groq_provider.py:12-15`)
@@ -30,13 +31,15 @@
 ## Data Storage
 
 **Databases:**
-- SQLite via stdlib `sqlite3` (`doc_store.py:12,78-413`)
-  - Connection: file path `data/documents.db`, passed to `DocStore(...)` in the `main.py:150` upload loop; parent dirs auto-created (`doc_store.py:90-91`); `data/` is gitignored (`.gitignore:10`)
-  - Tables v1 (`SCHEMA_V1_DDL`, `doc_store.py:16-54`): `documents` (PK `doc_id`, UNIQUE `sha256`), `pages` (PK `doc_id,page_num`), `chunks` (PK `chunk_id`)
-  - Tables v2 (`SCHEMA_V2_DDL`, `doc_store.py:56-70`): `evidence_elements` (PK `element_id`, FK `doc_id → documents` with `ON DELETE CASCADE`)
-  - Mode: WAL + `busy_timeout=5000` + `foreign_keys=ON` (`doc_store.py:106-110`); schema versioned via `PRAGMA user_version` with `MIGRATIONS = {1: V1, 2: V2}` dict (`doc_store.py:72-75,116-129`)
-  - Lifecycle: per-operation connection opened/closed inside `_connect()` context manager — Windows-lock and Streamlit-rerun safe (`doc_store.py:97-114`)
-  - Writes: `upsert_document` / `record_page` / `record_chunks` (single-transaction `executemany`) / `record_evidence_elements` (`doc_store.py:131-371`); reads: `get_by_sha` (dedup), `get_chunks_for_doc` (CR-01 index restore after restart), `get_evidence_for_doc` (`doc_store.py:188-398`); `bbox` round-trips as `bbox_json` (`doc_store.py:283,319-324`)
+- SQLite via stdlib `sqlite3` (`doc_store.py:12,103-588`)
+  - Connection: file path `data/documents.db`, passed to `DocStore(...)` in the `main.py:150` upload loop; parent dirs auto-created (`doc_store.py:115-116`); `data/` is gitignored (`.gitignore:10`)
+  - Tables v1 (`SCHEMA_V1_DDL`, `doc_store.py:17-55`): `documents` (PK `doc_id`, UNIQUE `sha256`), `pages` (PK `doc_id,page_num`), `chunks` (PK `chunk_id`)
+  - Tables v2 (`SCHEMA_V2_DDL`, `doc_store.py:57-71`): `evidence_elements` (PK `element_id`, FK `doc_id → documents` with `ON DELETE CASCADE`)
+  - Tables v3 — Phase 5 summaries (`SCHEMA_V3_DDL`, `doc_store.py:73-94`): `document_summaries` (PK `summary_id`, UNIQUE `(sha256, profile)`, FK `doc_id → documents` with `ON DELETE CASCADE`; columns `summary_id/doc_id/sha256/profile/summary_text/page_references_json/created_at/model_version`) plus indexes `idx_summaries_sha256` and `idx_summaries_doc_id`
+  - Mode: WAL + `busy_timeout=5000` + `foreign_keys=ON` (`doc_store.py:131-135`); schema versioned via `PRAGMA user_version` with `MIGRATIONS = {1: V1, 2: V2, 3: V3}` dict (`doc_store.py:96-100,141-154`)
+  - Lifecycle: per-operation connection opened/closed inside `_connect()` context manager — Windows-lock and Streamlit-rerun safe (`doc_store.py:122-139`)
+  - Writes: `upsert_document` / `record_page` / `record_chunks` (single-transaction `executemany`) / `record_evidence_elements` / `save_summary` (upsert on `(sha256, profile)`, `doc_store.py:425-463`) (`doc_store.py:156-423`); reads: `get_by_sha` (dedup), `get_chunks_for_doc` (CR-01 index restore after restart + summarizer page reconstruction fallback), `get_evidence_for_doc`, `get_summary(sha256, profile, model_version)` (returns `SummaryResult(cached=True)` or `None` on miss/version-mismatch, `doc_store.py:465-514`), `list_summaries_for_doc`, `delete_summaries_for_doc` (`doc_store.py:188-573`); `bbox` round-trips as `bbox_json` (`doc_store.py:308,344-349`); `page_references` round-trips as `page_references_json` with tolerant `json.loads` fallback to `[]` (`doc_store.py:435,501-503,539-541`)
+  - Phase-5 access pattern: `Summarizer.summarize_document` checks `doc_store.get_summary(sha256, profile, model_version)` before generation and calls `doc_store.save_summary(result)` after (`summarizer.py:330-335,414-416`); `force_refresh=True` bypasses the read path; `main.py:586-588` constructs `Summarizer(provider=ai_model.provider, doc_store=doc_store)` per summary request
 - LanceDB embedded store via `lancedb>=0.17.0` + `pyarrow>=14.0.0` (`hybrid_retriever.py:18-24`, `requirements.txt:14-15`)
   - Connection: local filesystem directory `DEFAULT_DB_URI = Path(__file__).resolve().parent / "data" / "lancedb"` (repo-root anchored, never CWD-relative) opened with `lancedb.connect(str(db_uri))` (`hybrid_retriever.py:27,96,115`); parent dirs auto-created (`hybrid_retriever.py:114,167`); `data/` is gitignored (`.gitignore:10`); verified anchored-absolute in `tests/test_hybrid_retriever.py:37-43`
   - Table `chunks`: one persistent table holding `chunk_id` (merge key) / `doc_id` / `filename` / `page` / `content` / `vector` (384-dim `float` list) / `extraction` / `char_start` / `char_end` / `bbox_json` (`hybrid_retriever.py:296-309`); reopened on restart via `db.table_names()` → `open_table("chunks")` (`hybrid_retriever.py:189-200`); row count via `len(table)` (`hybrid_retriever.py:206-213`)
@@ -45,6 +48,10 @@
   - Persistence verified across re-instantiation in `tests/test_hybrid_retriever.py:98-124` (write → close → reopen → identical chunks + cosine scores); deletion isolation in `tests/test_hybrid_retriever.py:127-151`
   - Fallback when LanceDB missing/unhealthy: in-memory `VectorIndex(distance_metric="cosine")` (`hybrid_retriever.py:105-108`) + disk JSON `db_uri / "fallback_store.json"` (`hybrid_retriever.py:110,126-141,162-187`) loaded on init, flushed on `close()` / non-LanceDB `index_chunks` / `delete_document`; lifecycle `close()` + `__enter__`/`__exit__` (`hybrid_retriever.py:149-160`); dynamic `set_embedding_fn(fn)` re-wires both retriever and fallback store (`hybrid_retriever.py:143-147`); covered in `tests/test_hybrid_retriever.py:154-171,344-390`
   - Wiring: `main.py` owns one `HybridRetriever` in `st.session_state.hybrid_retriever` (`main.py:58`), constructs it with `embedding_fn=local_embedding._embed_one` on upload (`main.py:205-206`) and on restart restore (`main.py:272-273`), indexes via `index_chunks(chunk_dicts, embeddings.tolist())` (`main.py:212,277`), closes on Clear All (`main.py:137-139`), and prefers it as `active_retriever = hybrid_retriever or local_embedding` for chat (`main.py:407`); `AiModel.ask_a_question_from_pdf_stream` dispatches `isinstance(local_embedding, HybridRetriever) → search_hybrid(query, k=10)` (`local_llm.py:105,142-144`)
+
+**In-process services (no network, no new pip deps — Phase 5, verified 2026-10-12):**
+- `Summarizer` (`summarizer.py:152-418`): hierarchical multi-profile summarization over canonical `Page` models; fast path (`total_tokens <= 2500` → `_summarize_single_pass`, `summarizer.py:387-389`) vs map-reduce (`_bundle_pages(max_tokens=2000)` → per-batch `MAP_PROMPT_TEMPLATE` → optional two-half consolidation when `combined > 2500 tokens and > 3 batches` → `REDUCE_PROMPT_TEMPLATE`, `summarizer.py:232-298`); page refs extracted via `extract_page_references(text, max_page)` and clamped to document max (`summarizer.py:135-149,395-396`); result `SummaryResult(summary_id=summ_<hex16>, cached=False)` then persisted (`summarizer.py:401-416`)
+- `citation_validator.py` (`citation_validator.py:52-181`): `extract_citations` (unique sorted `[En]` ranks via `CITATION_REGEX`), `is_abstention` (12 `CANONICAL_ABSTENTION_MARKERS`), `validate_citations(response_text, retrieval_result)` — empty → invalid; abstention without citations → valid (`precision=1.0`); abstention with citations → invalid; zero-citation non-abstention → invalid ungrounded; otherwise `precision = valid/total`, `is_valid = precision >= 0.95` (`citation_validator.py:96-181`); consumed by `AiModel.validate_response` storing `last_retrieval_result`/`last_verification_result` (`local_llm.py:44-45,171,192-210`)
 
 **Embedding pipeline (CPU-only, zero VRAM):**
 - `LocalEmbedding(model_name="all-MiniLM-L6-v2", device="cpu")` → `SentenceTransformer(model_name, device="cpu")` (`local_embedding.py:20-40`); batch `get_embeddings` with `normalize_embeddings=True` L2 normalisation (`local_embedding.py:52-57`); `_embed_one(text)` single-string helper wired as both `VectorIndex` and `HybridRetriever` query embedder (`local_embedding.py:45-50`, `main.py:206,273`); CPU pinning asserted in `tests/test_hybrid_retriever.py:22-33` (`SentenceTransformer` called once with `("all-MiniLM-L6-v2", device="cpu")`)
@@ -61,7 +68,7 @@
 - Local filesystem only
   - LanceDB files under `data/lancedb/` (live `fallback_store.json` observed; full `*.lance` tables materialise once `index_chunks` runs with `lancedb` installed); gitignored (`.gitignore:10`)
   - Deterministic JSON cache under `.cache/<sha256>/<CONFIG_VERSION>/{pages.json,chunks.json,manifest.json}` written best-effort in `main.py:278-289`; path computed by `cache_dir_for` with strict 64-hex validation (`models.py:17-30`); `CONFIG_VERSION = "docling-1000-200-v1"` (`models.py:14`); `.cache/` is gitignored (`.gitignore:17`)
-  - SQLite file `data/documents.db` (see above)
+  - SQLite file `data/documents.db` (see above; now includes `document_summaries` table from v3 migration)
   - Local GGUF weights in `models/` (external to pip; see local-inference section)
   - Synthetic test PDFs `tests/data/corpus/*.pdf` (6 files: `clean_digital.pdf`, `dense_table.pdf`, `multi_column.pdf`, `chart_diagram.pdf`, `scanned_sample.pdf`, `corrupt_invalid.pdf`) generated by `tests/data/corpus/generate_corpus.py` (reportlab)
 
@@ -73,7 +80,8 @@
 - pyarrow `>=14.0.0`: LanceDB columnar/file-format layer (`hybrid_retriever.py:21`); no direct app-code API surface — indirect via `lancedb.connect` / `create_table` / `merge_insert` / `search`
 
 **Caching:**
-- In-process Streamlit cache: `@st.cache_resource(show_spinner=False)` memoizes one `AiModel` (and its active provider) per server process (`main.py:68-76`)
+- In-process Streamlit cache: `@st.cache_resource(show_spinner=False)` memoizes one `AiModel` (and its active provider) per server process (`main.py:68-76`); `Summarizer` is constructed per request from the cached `ai_model.provider` so summaries always use the active backend (`main.py:586`)
+- SQLite summary cache: `document_summaries` keyed UNIQUE `(sha256, profile)` with `model_version` invalidation (`doc_store.py:73-94,465-514`); second request for the same document+profile returns `cached=True` without any LLM call (`summarizer.py:330-335`)
 - Per-session persistent retriever: `HybridRetriever` in `st.session_state` backed by `data/lancedb/` on disk, surviving server restarts (`main.py:58,205-212,272-277`); legacy per-session in-memory `VectorIndex` inside `LocalEmbedding` remains as the degraded path (`main.py:57,254-256`); dedup-hit-after-restart restores both `DocStore.get_chunks_for_doc` and `HybridRetriever.index_chunks` (`main.py:193-200,272-277`)
 - No Redis / external cache
 
@@ -88,22 +96,22 @@
 - None (no Sentry/OpenTelemetry).
 
 **Logs:**
-- `logging` module (`getLogger(__name__)`) in the Phase 3–4 modules: `logger.info` for Docling fallback paths (`docling_reader.py:96,184,281`), LanceDB connect/open-table/index lifecycle (`hybrid_retriever.py:117,139,198,315`), `logger.warning` for conversion/crop failures (`docling_reader.py:289`, `ocr_fallback.py:68,128`, `visual_analyzer.py:60,228`), LanceDB init/search/persistence degradation (`hybrid_retriever.py:119,141,187,200,390,402,503,540`), `logger.error` for page-level OCR faults and VLM failures (`ocr_fallback.py:307`, `visual_analyzer.py:133,238`) plus LanceDB persist/delete faults (`hybrid_retriever.py:336,361`), `logger.debug` for FTS-index notices and BM25 table-read fallback (`hybrid_retriever.py:413,430`)
+- `logging` module (`getLogger(__name__)`) in the Phase 3–5 modules: `logger.info` for Docling fallback paths (`docling_reader.py:96,184,281`), LanceDB connect/open-table/index lifecycle (`hybrid_retriever.py:117,139,198,315`), summarizer fast-path/map-reduce routing and cache hits (`summarizer.py:334,388,391,416`); `logger.warning` for conversion/crop failures (`docling_reader.py:289`, `ocr_fallback.py:68,128`, `visual_analyzer.py:60,228`), LanceDB init/search/persistence degradation (`hybrid_retriever.py:119,141,187,200,390,402,503,540`); `logger.error` for page-level OCR faults and VLM failures (`ocr_fallback.py:307`, `visual_analyzer.py:133,238`) plus LanceDB persist/delete faults (`hybrid_retriever.py:336,361`); `logger.debug` for FTS-index notices and BM25 table-read fallback (`hybrid_retriever.py:413,430`)
 - Module-prefixed `print()` for developer diagnostics in legacy modules: `[LocalEmbedding]` (`local_embedding.py:21,23,58`), `[DocStore]` migrations (`doc_store.py:129`), `[UploadValidation]` (`upload_validation.py:106`), pypdf success line (`pdf_reader.py:113`)
-- User-facing feedback via Streamlit (`st.status`, `st.error`, `st.warning`, `st.info`, `st.success`, `st.progress`) — never `print` (`main.py:90-121,148-310,351-410`)
-- Provider health surfaced through the `HealthStatus` schema rendered in the sidebar (`main.py:93-121`); VLM provenance kept separate as `EvidenceElement(source="vlm:<model_name>")` so visual approximations never contaminate ground-truth tables (`visual_analyzer.py:240-262`); retrieval provenance carried per-snippet (`dense_rank`/`fts_rank`/`search_mode`) from `HybridRetriever.search_hybrid` through `RetrievalResult` into prompts and citations (`hybrid_retriever.py:590-611`, `models.py:141-200`)
+- User-facing feedback via Streamlit (`st.status`, `st.error`, `st.warning`, `st.info`, `st.success`, `st.progress`) — never `print` (`main.py:90-121,148-310,351-410`); summarizer tab surfaces `st.info` when no document is indexed (`main.py:542`) and streams summary progress inline (`main.py:538-622`)
+- Provider health surfaced through the `HealthStatus` schema rendered in the sidebar (`main.py:93-121`); VLM provenance kept separate as `EvidenceElement(source="vlm:<model_name>")` so visual approximations never contaminate ground-truth tables (`visual_analyzer.py:240-262`); retrieval provenance carried per-snippet (`dense_rank`/`fts_rank`/`search_mode`) from `HybridRetriever.search_hybrid` through `RetrievalResult` into prompts and citations (`hybrid_retriever.py:590-611`, `models.py:141-200`); citation precision diagnostics carried in `CitationVerificationResult(message, precision, valid/hallucinated_citations)` (`citation_validator.py:35-49`, `local_llm.py:192-210`)
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Primary: local Windows workstation (RTX 3050, 4 GB VRAM ceiling) — zero-egress local inference (`docs/LOCAL_INFERENCE.md`, `llama_cpp_provider.py:1-6`); embeddings (`sentence-transformers` CPU) and retrieval (LanceDB disk / BM25) add zero VRAM load by construction
+- Primary: local Windows workstation (RTX 3050, 4 GB VRAM ceiling) — zero-egress local inference (`docs/LOCAL_INFERENCE.md`, `llama_cpp_provider.py:1-6`); embeddings (`sentence-transformers` CPU) and retrieval (LanceDB disk / BM25) add zero VRAM load by construction; summarizer map-reduce runs sequentially for the same reason (`summarizer.py:232-244`)
 - Fallback: Streamlit Community Cloud with `GROQ_API_KEY` in the Cloud secrets panel; ephemeral disk (LanceDB + SQLite + `.cache/` best-effort only)
 - Devcontainer/Codespaces: `mcr.microsoft.com/devcontainers/python:1-3.11-bookworm` with Streamlit on port 8501 (`.devcontainer/devcontainer.json`)
 
 **CI Pipeline:**
 - GitHub Actions — `.github/workflows/ci.yml` (sole workflow)
   - Triggers: push / pull_request on `main` (`.github/workflows/ci.yml:3-7`)
-  - Job `test` on `ubuntu-latest`: checkout (`actions/checkout@v4`) → setup Python `"3.11"` with pip cache (`actions/setup-python@v5`) → `pip install -r requirements.txt` (now 15 lines incl. `lancedb`/`pyarrow`) + `pip install -r requirements-test.txt` → `ruff check .` + `ruff format --check .` → `python tests/data/corpus/generate_corpus.py` → `pytest tests/ -v` (`.github/workflows/ci.yml:9-41`); Phase-4 suite adds `tests/test_hybrid_retriever.py` (14 tests) to the run
+  - Job `test` on `ubuntu-latest`: checkout (`actions/checkout@v4`) → setup Python `"3.11"` with pip cache (`actions/setup-python@v5`) → `pip install -r requirements.txt` (15 lines, unchanged by Phase 5) + `pip install -r requirements-test.txt` → `ruff check .` + `ruff format --check .` → `python tests/data/corpus/generate_corpus.py` → `pytest tests/ -v` (`.github/workflows/ci.yml:9-41`); suite now includes `tests/test_summarizer.py` + `tests/test_citation_validator.py` alongside the 14-file pre-existing set
   - No deploy job, no artifact upload, no coverage gate
 - Benchmark (manual): `python scripts/benchmark_baseline.py` measures pypdf extraction latency, 1000/200 chunking, CPU `SentenceTransformer("all-MiniLM-L6-v2", device="cpu")` load + batch encode latency, `VectorIndex` linear-scan latency over 100/500/1000 vectors, and RSS via `psutil`; writes `.planning/research/BASELINE_BENCHMARK.json` (`scripts/benchmark_baseline.py:1-174`)
 
@@ -119,7 +127,7 @@
 
 **Local runtime state (gitignored, existence-only):**
 - `.env` — API key (`main.py:75`)
-- `data/documents.db` — SQLite store (`.gitignore:10`, `main.py:150`)
+- `data/documents.db` — SQLite store including `document_summaries` (`.gitignore:10`, `main.py:150`)
 - `data/lancedb/` — LanceDB tables + `fallback_store.json` (`hybrid_retriever.py:27,110`; `.gitignore:10`; observed live `data/lancedb/fallback_store.json`)
 - `.cache/<sha256>/<CONFIG_VERSION>/` — extraction cache (`.gitignore:17`, `main.py:278-289`)
 - `models/` — local GGUF weights (downloaded per `docs/LOCAL_INFERENCE.md:31-44`, served by external `llama-server`)
@@ -131,9 +139,11 @@
 - `MagicMock` Groq client (`mock_groq_client`, `tests/conftest.py:18-48`) yielding canned `delta.content` tokens `["This ", "is ", "a ", "grounded ", "answer."]`; `fake_env_groq_key` sets a dummy `GROQ_API_KEY` (`tests/conftest.py:11-16`)
 - `MagicMock` SentenceTransformer (`mock_sentence_transformer`, `tests/conftest.py:51-81`) returning deterministic 384-dim L2-normalised `numpy.float32` vectors; CPU-pinning asserted via `MagicMock` class replacement in `tests/test_hybrid_retriever.py:22-33`
 - `MockLlamaCppProvider(BaseModelProvider)` healthy/unhealthy double recording `stream_calls` (`tests/conftest.py:91-161`)
+- `MockSummarizerProvider(BaseModelProvider)` recording `generate_calls` and returning deterministic citation-bearing summaries (`tests/test_summarizer.py:16-50`); `CitationFreeProvider` variant covers citation-less output (`tests/test_summarizer.py:288`); `tmp_path`-isolated `DocStore` covers cache lifecycle + `model_version` invalidation (`tests/test_summarizer.py:198-341`)
+- Citation fixtures: `tests/test_citation_validator.py` covers perfect precision, hallucinated rank, valid abstention, abstention-with-citations, empty response, and ungrounded response (`tests/test_citation_validator.py:54-140`)
 - `tmp_path`-isolated `HybridRetriever(db_uri=tmp_path / ...)` per test (no shared `data/lancedb/` mutation) plus `monkeypatch.setattr("hybrid_retriever.lancedb", None)` / `monkeypatch.setattr(hybrid_retriever, "lancedb", None)` for fallback-path tests (`tests/test_hybrid_retriever.py:46-390`); deterministic `_make_unit_vector(seed, dim=384)` numpy helper (`tests/test_hybrid_retriever.py:12-19`)
 - Constructor injection seams (no network/install required): `DoclingReader(converter=...)` (`docling_reader.py:37-71`), `OcrEngine(recognizer=..., renderer=...)` (`ocr_fallback.py:49-61`), `VisualAnalyzer(region_detector=..., cropper=...)` (`visual_analyzer.py:33-45`); `FakeFitz` module double via `monkeypatch.setattr("visual_analyzer.fitz", FakeFitz)` (`tests/test_visual_analyzer.py:286-332`)
-- Corpus fixtures: `sample_pdf_path` → `tests/data/corpus/clean_digital.pdf` (`tests/conftest.py:84-88`); full 14-file suite `tests/test_*.py` (doc_store, docling_reader, hybrid_retriever, llama_cpp_provider, local_embedding, local_llm, model_provider, models, ocr_fallback, pdf_reader, prompt_budget, upload_validation, vector_index, visual_analyzer)
+- Corpus fixtures: `sample_pdf_path` → `tests/data/corpus/clean_digital.pdf` (`tests/conftest.py:84-88`); full 16-file suite `tests/test_*.py` (citation_validator, doc_store, docling_reader, hybrid_retriever, llama_cpp_provider, local_embedding, local_llm, main_ui, model_provider, models, ocr_fallback, pdf_reader, prompt_budget, summarizer, upload_validation, vector_index, visual_analyzer)
 
 ## Webhooks & Callbacks
 
@@ -141,8 +151,8 @@
 - None
 
 **Outgoing:**
-- None (Groq fallback is a direct SDK call, not a webhook; llama-server is localhost REST, not external; LanceDB is an embedded in-process library, not a network service)
+- None (Groq fallback is a direct SDK call, not a webhook; llama-server is localhost REST, not external; LanceDB is an embedded in-process library, not a network service; summarizer/citation_validator are in-process pure-Python services with no network surface)
 
 ---
 
-*Integration audit: 2026-10-11*
+*Integration audit: 2026-10-12*
