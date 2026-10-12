@@ -76,6 +76,7 @@
 
 ## Verification & Test Results
 
-- Complete automated test suite: **226 passed** in 27.4s (`pytest tests/ -q`).
+- Complete automated test suite: **226 passed** in 28.3s (`pytest tests/ -q`).
 - Linter & format checks: Clean (`ruff check .` and `ruff format .`).
+- CI Pipeline Fix: Added `extend-exclude = [".planning", ".cache", "data", "docs", "*.md"]` to `pyproject.toml` so `ruff format --check .` in CI does not attempt to format design notes and markdown files under `.planning/`.
 - Memory & Hardware profile: Verified on RTX 3050 (3,450 MB projected peak, 646 MB headroom).
