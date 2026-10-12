@@ -2,543 +2,420 @@
 
 **Analysis Date:** 2026-10-12
 
+## Release Verdict — Go / No-Go
+
+**One NO-GO item blocks release sign-off:** the `requirements-lock.txt` ↔ `requirements.txt` version conflict (see Tech Debt §1). The lockfile disagrees with the pinned requirements on 6 packages, omits 4 shipped runtime deps, and is not consumed by CI — while `README.md:131` and `docs/RUNBOOK.md:48` instruct users to install from it. A user following the docs gets a different (and partly untested) dependency set than CI validated. Regenerate the lockfile from the CI-verified environment (or delete it and pin `requirements.txt` fully) before release.
+
+All 5 findings from `.planning/phases/08-release-hardening-and-evaluation/08-REVIEW.md` are **FIXED** per `08-REVIEW-FIX.md` and re-verified against current source on 2026-10-12 (line-level claims below confirmed via grep/read; `08-REVIEW-FIX.md` reports 218/218 tests, `ruff check` + `ruff format --check` clean).
+
 ## Review Fix Status — Phase 08 (Release Hardening & Evaluation)
 
-All release hardening items from Phase 8 are **FIXED** and verified against current source (test suite: 217/217 passed, `ruff check` + `ruff format --check` clean):
+- **WR-01 Incomplete loopback validation — FIXED.** `llama_cpp_provider.py:44-56` normalises scheme-less input, accepts literal `localhost`, and validates IPs via `ipaddress.ip_address(host).is_loopback` (covers `127.0.1.1`, `127.0.0.2`, full `127.0.0.0/8`, `::1`); non-loopback raises `ValueError` unless `allow_remote=True` (`llama_cpp_provider.py:29,53-56`). Tests: `tests/test_llama_cpp_provider.py:272-275` (remote opt-in) plus loopback-variation cases per `08-REVIEW-FIX.md`.
+- **WR-02 Clear All leaves cloud posture — FIXED.** `main.py:302-316` closes `active_cloud_provider`, nulls `_cached_cloud_model`/`_cached_cloud_key`, sets `cloud_mode=False`, `cloud_mode_toggle=False`, `user_consented=False`, resets `cloud_api_keys` to empty per-provider dict, and blanks the legacy `cloud_api_key`. Test: `tests/test_main_ui.py:159` (`test_clear_all_resets_cloud_posture_and_credentials`).
+- **WR-03 Missing LICENSE — FIXED.** `LICENSE` exists in repo root (verified on disk); `README.md:9,213` badge/link now resolve. `README.md:77-91` also lists all current modules (`local_llm.py`, `llama_cpp_provider.py`, `litellm_provider.py`, `groq_provider.py`, `resource_telemetry.py`) — the stale-module-names concern is resolved.
+- **IN-01 Telemetry sampling lock — FIXED.** `resource_telemetry.py:30` adds `_SAMPLING_LOCK = threading.Lock()`; sampling path double-checks the timestamp inside the lock (`resource_telemetry.py:50`), eliminating redundant concurrent `nvidia-smi` spawns.
+- **IN-02 Missing Clear All cloud test — FIXED.** `tests/test_main_ui.py:159-195` asserts provider close plus reset of all cloud flags, per-provider keys, and legacy key.
 
-- **TEL-01 Telemetry rerun overhead — FIXED.** `resource_telemetry.py` implements thread-safe `_GPU_CACHE_TTL_SECONDS = 5.0` caching with `_GPU_CACHE_LOCK` in `get_gpu_memory_info(force_refresh: bool = False)`. Eliminates 10-100ms `nvidia-smi` process-spawn overhead during frequent Streamlit reruns. Tested in `tests/test_resource_telemetry.py::test_get_gpu_memory_info_ttl_caching`.
-- **SEC-01 SSRF loopback endpoint protection — FIXED.** `llama_cpp_provider.py` validates `base_url` host against local loopback addresses (`{"127.0.0.1", "localhost", "::1"}`). Non-loopback endpoints raise `ValueError("Restricted endpoint...")` unless `allow_remote=True` is explicitly passed. Tested in `tests/test_llama_cpp_provider.py` (3 dedicated tests).
-- **PRIV-01 OCR/visual disclosure in consent dialog — FIXED.** `main.py:111-125` (`_render_consent_dialog_content`) explicitly discloses that transmitted document excerpts include extracted OCR text and visual figure descriptions.
-- **PRIV-02 Legacy `cloud_api_key` string write removed — FIXED.** `main.py:200-205` eliminates legacy `st.session_state.cloud_api_key = entered_key` assignment, relying strictly on `cloud_api_keys: dict[str, str]` and preventing cross-provider contamination.
-- **TEST-01 Stale `mock_groq_client` fixture — FIXED.** `tests/conftest.py:19-50` safely targets `groq_provider.Groq` within a guarded try/except block instead of the non-existent `local_llm.Groq`.
-- **DOC-01 README modernization — FIXED.** `README.md` completely overhauled to document the production local-first multimodal architecture (Docling, RapidOCR, Qwen3-VL 2B, LanceDB hybrid search, 4 GB VRAM budget, and LiteLLM privacy controls).
-- **DOC-02 Operational runbooks & evaluation reports — FIXED.** Authored comprehensive `docs/RUNBOOK.md` (Windows 11 + Linux deployment, model acquisition, flags, troubleshooting) and `docs/EVALUATION.md` (217 test metrics, benchmarks, citation precision, VRAM budget audit).
-- **QUAL-02 Dependency pinning & deterministic lockfile — FIXED.** Pinned `httpx==0.28.1` and `psutil==6.1.1` in `requirements.txt`, created `requirements-lock.txt` capturing exact environment versions, and validated CI pipeline synchronization.
+**Prior Phase 8 hardening (still verified present):** TEL-01 TTL caching (`resource_telemetry.py`, `_GPU_CACHE_TTL_SECONDS = 5.0`); SEC-01 loopback SSRF guard (now WR-01-hardened); PRIV-01 OCR/visual disclosure in consent dialog (`main.py:111-125`-area); PRIV-02 legacy write removal — **partially regressed, see Residual §2**; TEST-01 fixture repair (`tests/conftest.py:19-50` targets `groq_provider.Groq`); QUAL-02 `httpx==0.28.1` + `psutil==6.1.1` pins; DOC-01/DOC-02 (`README.md` overhaul, `docs/RUNBOOK.md`, `docs/EVALUATION.md`).
 
 ## Review Fix Status — Phase 02 (Local Inference Pipeline)
 
+All 3 Criticals, 6 Warnings, 3 Info items from `.planning/phases/02-local-inference-pipeline/02-REVIEW.md` are **FIXED** per `02-REVIEW-FIX.md` (verified in the prior audit):
 
-All 3 Criticals, 6 Warnings, 3 Info items from `.planning/phases/02-local-inference-pipeline/02-REVIEW.md` are **FIXED** per `02-REVIEW-FIX.md` and verified against current source:
-
-- **CR-01 XML boundary escape — FIXED.** `sanitize_xml_boundary()` exists in `prompt_budget.py:25` and is applied to both user prompt (`prompt_budget.py:83`) and document context (`prompt_budget.py:94`). Test: `tests/test_prompt_budget.py::test_sanitize_xml_boundary`.
-- **CR-02 unbounded user prompt — FIXED.** `assemble_grounded_messages` truncates oversized prompts; `local_llm.py` passes the bounded user turn to `stream_text` instead of the raw prompt. Test: `tests/test_prompt_budget.py::test_assemble_grounded_messages_truncates_huge_user_prompt`.
-- **CR-03 unguarded `st.write_stream` — FIXED.** `main.py` wraps generator creation + `st.write_stream` in `try/except Exception`, renders `st.error`, and appends an `[interrupted]` history entry instead of crashing.
-- **WR-01 stale provider lock-in — FIXED.** `local_llm.py` `check_health()` re-runs `_detect_provider()` when the current provider is unhealthy (dynamic self-healing). Test: `tests/test_local_llm.py` dynamic-recovery case. Note: re-probe only fires on unhealthy status, so a healthy-but-wrong (Groq fallback while llama-server later appears) session stays on Groq until health degrades — residual stickiness, see Fragile Areas.
-- **WR-02 missing `close()` lifecycle — FIXED.** `model_provider.py` defines `close()` + context-manager protocol; `groq_provider.py` and `local_llm.py` implement it.
-- **WR-03 Groq error encapsulation — FIXED.** `groq_provider.py` wraps SDK calls in `try/except Exception` → `RuntimeError("Groq API error: ...")`.
-- **WR-04 `ProviderCapabilities` validation — FIXED.** `model_provider.py` constrains `model_name` (`min_length=1`) and `context_window` (`gt=0`).
-- **WR-05 dual health probes — FIXED.** `main.py` evaluates provider health once per lifecycle block and reuses it for input gating; no second probe per rerun.
-- **WR-06 empty image bytes — FIXED.** `llama_cpp_provider.py` raises `ValueError("image_bytes cannot be empty.")`.
-- **IN-01/02/03 — FIXED.** Health-string formatting cleaned; `isinstance(content, str)` guard in `local_llm.py`; temperature clamped `max(0.0, min(2.0, ...))` in `llama_cpp_provider.py` and `groq_provider.py`.
+- **CR-01 XML boundary escape — FIXED.** `sanitize_xml_boundary()` in `prompt_budget.py:25`, applied to user prompt and document context. Test: `tests/test_prompt_budget.py::test_sanitize_xml_boundary`.
+- **CR-02 unbounded user prompt — FIXED.** `assemble_grounded_messages` truncates oversized prompts.
+- **CR-03 unguarded `st.write_stream` — FIXED.** `main.py` wraps stream render in `try/except Exception` with `[interrupted]` history entry.
+- **WR-01…WR-06, IN-01…IN-03 — FIXED.** Provider self-healing re-probe, `close()` lifecycle, Groq error encapsulation, `ProviderCapabilities` validation, single health probe per rerun, empty-image-bytes guard, formatting/instance guards, temperature clamping. Residual provider stickiness retained below (Fragile Areas).
 
 ## Review Fix Status — Phase 03 (Multimodal Ingestion & Conditional OCR)
 
-All 3 Criticals, 6 Warnings, 3 Info items from `.planning/phases/03-multimodal-ingestion-conditional-ocr/03-REVIEW.md` are **FIXED** per `03-REVIEW-FIX.md` and verified against current source:
+All 3 Criticals, 6 Warnings, 3 Info items from `.planning/phases/03-multimodal-ingestion-conditional-ocr/03-REVIEW.md` are **FIXED** per `03-REVIEW-FIX.md`:
 
-- **CR-01 uninitialized `st.session_state.ai_model` — FIXED (variant).** The upload loop uses `getattr(st.session_state, "ai_model", None) or ai_model` (`main.py`) so cold-start/pre-session access can no longer raise `AttributeError` or silently disable VLM descriptions.
-- **CR-02 missing FK pragma — FIXED.** `doc_store.py` executes `PRAGMA foreign_keys = ON;` in `_connect()`, so `evidence_elements(doc_id) ON DELETE CASCADE` is enforced.
-- **CR-03 table prepending destroys reading order — FIXED.** `docling_reader.py` interleaves tables by document/bbox order instead of prepending; fallback aggregation is order-preserving.
-- **WR-01 crop-failure misattribution — FIXED.** `visual_analyzer.py` emits `"[Visual element: cropping failed, image unavailable]"` distinct from the vision-unsupported path.
-- **WR-02 unclipped bboxes — FIXED.** `visual_analyzer.py` clamps zoom (`max(0.5, ...)`), validates positive area, and intersects with `page.rect`, raising `ValueError` on empty intersection.
-- **WR-03 empty bytes to ONNX — FIXED.** `ocr_fallback.py` guards `if not image_data: return "", 0.0` before the recognizer call.
-- **WR-04 OCR discards partial text — FIXED.** `ocr_fallback.py` retains pre-existing digital chunks when OCR yields empty text.
-- **WR-05 `EvidenceElement.doc_id` validation — FIXED.** `models.py` adds the `doc_`-prefix validator and `element_id` `min_length=1`, consistent with `Document`/`Chunk`.
-- **WR-06 raw `print()` in DoclingReader — FIXED.** `docling_reader.py` uses `logging.getLogger(__name__)` (`logger.info/warning/error`).
-- **IN-01 monotonic chunk ids — FIXED.** `ocr_fallback.py` uses a dedicated incrementing `chunk_idx` (`{sha12}_p{page}_{idx:04d}`).
-- **IN-02 char offsets — FIXED for new extractors.** `docling_reader.py` and `ocr_fallback.py` populate `char_start`/`char_end` (asserted in `tests/test_docling_reader.py`, `tests/test_ocr_fallback.py`). **Residual:** the legacy `pdf_reader.py` path still does not populate offsets — see Tech Debt.
-- **IN-03 dpi/zoom clamping — FIXED.** `ocr_fallback.py` (`eff_dpi = max(72, int(dpi))`), `visual_analyzer.py` (`zoom_clamped = max(0.5, float(zoom))`).
+- **CR-01 uninitialized `st.session_state.ai_model` — FIXED (variant).** Upload loop uses `getattr(st.session_state, "ai_model", None) or ai_model`.
+- **CR-02 missing FK pragma — FIXED.** `doc_store.py` executes `PRAGMA foreign_keys = ON;` in `_connect()`.
+- **CR-03 table prepending destroys reading order — FIXED.** `docling_reader.py` interleaves tables by document/bbox order.
+- **WR-01…WR-06, IN-01…IN-03 — FIXED** (crop-failure attribution, bbox clipping, empty-bytes OCR guard, partial-text retention, `EvidenceElement.doc_id` validation, `logging` in DoclingReader, monotonic chunk ids, `char_start`/`char_end` for new extractors, dpi/zoom clamping). **Residual:** legacy `pdf_reader.py` still leaves `char_start`/`char_end` unset — see Tech Debt.
 
 ## Review Fix Status — Phase 04 (Persistent Hybrid Retrieval)
 
-All 3 Criticals, 6 Warnings, 3 Info items from `.planning/phases/04-persistent-hybrid-retrieval/04-REVIEW.md` are **FIXED** per `04-REVIEW-FIX.md` and verified against current source:
+All 3 Criticals, 6 Warnings, 3 Info items from `.planning/phases/04-persistent-hybrid-retrieval/04-REVIEW.md` are **FIXED** per `04-REVIEW-FIX.md`:
 
-- **CR-01 HybridRetriever never wired into `main.py` — FIXED.** `main.py` imports `HybridRetriever`; `st.session_state.hybrid_retriever` is initialised, populated on fresh upload, restored on restart dedup-hit, closed + nulled on Clear All, and used as the primary retriever in the chat loop.
-- **CR-02 redundant dual-query divergence — FIXED (primary path).** `main.py` contextualises the query once, executes one `search_hybrid` producing a single canonical `RetrievalResult`, displays `source_labels()` from it, and passes the same instance via `retrieval_result=`; `local_llm.py:121-122` consumes it without re-searching. **Residual:** the `retrieval_result=None` fallback inside `local_llm.py:123-159` still re-searches with its own contextualised query, and the `LocalEmbedding` (non-hybrid) chat branch still uses raw-vector `search` + filename-only chips — see Fragile Areas.
-- **CR-03 LanceDB filter injection — FIXED.** Single-quote escaping (`replace("'", "''")`) applied at all three interpolation sites: `has_document` (`hybrid_retriever.py:219`), fallback `merge_insert` delete path (`hybrid_retriever.py:328`), and `delete_document` (`hybrid_retriever.py:357`). Regression test coverage in `tests/test_hybrid_retriever.py` per `04-REVIEW-FIX.md`.
-- **WR-01 fallback dedup — FIXED.** `hybrid_retriever.py:267-280` replaces existing `chunk_id` entries in-place instead of appending.
-- **WR-02 post-restart BM25 fallback — FIXED.** `hybrid_retriever.py:424-431` reads chunk rows back from `self._table` (capped at 10 000 rows) when `_fallback_store` is empty. **Residual cap:** corpora above 10 000 rows silently truncate the BM25 candidate pool — see Scaling Limits.
-- **WR-03 quadratic BM25 df — FIXED.** `hybrid_retriever.py:449-452` precomputes `df_map` once outside the document loop (O(N·|Q|)).
-- **WR-04 BBox serialization — FIXED.** `_save_fallback_store` (`hybrid_retriever.py:168-176`) converts `BBox` / `model_dump`-capable objects via `model_dump()`. Note: only the top-level `bbox` key is normalised; other future non-primitive metadata values would still break `json.dump` — see Fragile Areas.
-- **WR-05 missing lifecycle — FIXED.** `HybridRetriever.close()` + `__enter__`/`__exit__` exist (`hybrid_retriever.py:149-160`). **Residual:** `close()` in LanceDB mode drops handles without an explicit flush/`_save_fallback_store`, and nothing in `main.py` calls it on normal session end — only Clear All (`main.py:137-139`).
-- **WR-06 `EvidenceSnippet.doc_id` validation — FIXED.** `models.py:163-167` adds the `doc_`-prefix `@model_validator`, consistent with `Document`/`Chunk`/`EvidenceElement`.
-- **IN-01 citation chip fallback — FIXED.** `models.py:190` (`formatted_evidence` falls back to `doc_id`) and `models.py:200` (`source_labels` falls back to `Page {page}`).
-- **IN-02 embedding setter — FIXED.** `HybridRetriever.set_embedding_fn` exists (`hybrid_retriever.py:143-147`), including propagation to `_fallback_store._embedding_fn`.
-- **IN-03 unstripped evidence — FIXED.** `models.py:192` uses `s.content.strip()`.
+- **CR-01 HybridRetriever never wired — FIXED.** `main.py` imports `HybridRetriever`; session init, upload population, restart restore, Clear All close+null, and primary-retriever chat use all present.
+- **CR-02 dual-query divergence — FIXED (primary path).** Single `search_hybrid` → canonical `RetrievalResult` → `source_labels()` display + `retrieval_result=` pass-through (`local_llm.py:121-122`). **Residuals:** `retrieval_result=None` fallback re-search and non-hybrid chip path — see Fragile Areas.
+- **CR-03 LanceDB filter injection — FIXED.** Quote-doubling at `hybrid_retriever.py:219,328,357`.
+- **WR-01…WR-06, IN-01…IN-03 — FIXED** (fallback dedup, BM25-from-table recovery capped at 10 000 rows, O(N·|Q|) df precompute, BBox serialization, `close()` + context manager, `EvidenceSnippet.doc_id` validation, citation fallbacks, `set_embedding_fn`, evidence stripping). Residuals (10k cap, flush asymmetry, bbox-only normalisation) retained below.
 
 ## Review Fix Status — Phase 05 (Grounded Summarization & QA)
 
-All 3 Criticals, 10 Warnings, 5 Info items from `.planning/phases/05-grounded-summarization-and-qa/05-REVIEW.md` are **FIXED** per `05-REVIEW-FIX.md`. Re-verified against current source on 2026-10-12 (all line-level claims below confirmed via grep):
+All 3 Criticals, 10 Warnings, 5 Info items from `.planning/phases/05-grounded-summarization-and-qa/05-REVIEW.md` are **FIXED** per `05-REVIEW-FIX.md`:
 
-- **CR-01 `current_model._provider` typo — FIXED.** `main.py:255` accesses `current_model.provider` rather than `_provider`, unblocking PDF visual ingestion; covered by `tests/test_main_ui.py::test_ai_model_provider_attribute_contract`.
-- **CR-02 `page_text=None` crash — FIXED.** `summarizer.py:180,199-200,380-384` guards `(getattr(p, "page_text", None) or "").strip()` in `_bundle_pages` and `_format_page_batch`, filters `valid_pages` on non-empty text, and enriches missing text from `doc_store.get_chunks_for_doc(doc_id)`.
-- **CR-03 empty response grounded pass — FIXED.** `citation_validator.py:106-108` evaluates empty responses as `is_valid=False, precision=0.0, message="Empty response: no grounded content generated."`; verified by `tests/test_citation_validator.py::test_validate_citations_empty_response`.
-- **WR-01 page provenance fabrication — FIXED.** `summarizer.py` preserves `page_refs = []` when no page citations are emitted; `main.py:622` renders `st.caption("ℹ️ *No explicit page references cited in summary.*")` instead of fabricating source pages. Test: `test_no_page_citations_yields_empty_list_without_fabrication` (`tests/test_summarizer.py:286`).
-- **WR-02 summary cache model version invalidation — FIXED (partial, see residuals).** `DocStore.get_summary` takes optional `model_version` (`doc_store.py:469-497`) and returns `None` on version mismatch; wired in `summarizer.py:328-332`. **Residual:** `CONFIG_VERSION`/chunking/estimator changes still not keyed — see Phase 05 residuals.
-- **WR-03 fast-path prompt-injection guard — FIXED.** `summarizer.py:110,130,219` carries non-execution directives in single-pass user prompt and profile instructions.
-- **WR-04 `AiModel.validate_response` bypass & singleton state — FIXED (wiring) / DOCUMENTED (leak).** `main.py:484` invokes `ai_model.validate_response(full_response, retrieval_res)`; `local_llm.py:202` documents the process-singleton scoping caveat. **Residual:** `last_retrieval_result` (`local_llm.py:44,171,207`) is still shared process-wide — see residuals.
-- **WR-05 Clear All summary session purge — FIXED.** `main.py:147` purges `summary_*` keys (`if k.startswith("summary_")`); verified by `tests/test_main_ui.py::test_clear_all_purges_summary_keys`.
-- **WR-06 unbounded page references — FIXED.** `summarizer.py:135-148` clamps `extract_page_references` with `max_page: int | None = None`; verified by `tests/test_summarizer.py::test_extract_page_references_clamped`.
-- **WR-07 abstention matcher over-firing — FIXED.** `citation_validator.py:18-28` tightens `CANONICAL_ABSTENTION_MARKERS` to require complete phrases; `citation_validator.py:78` matches against lowered text.
-- **WR-08 empty document summarization — FIXED.** `summarizer.py:382` raises `ValueError("No extractable text found ...")` before inference or persistence; verified by `tests/test_summarizer.py` (`pytest.raises(ValueError, match="No extractable text found")`, `tests/test_summarizer.py:269`).
-- **WR-09 XML boundary case/whitespace bypass — FIXED.** `prompt_budget.py` uses case-insensitive regex sanitization; verified by `tests/test_prompt_budget.py::test_sanitize_xml_boundary_case_and_whitespace`.
-- **WR-10 mock fidelity gap — FIXED (partial, see residuals).** `MockSummarizerProvider` dynamically echoes batch page ranges and asserts full preservation of `[1, 2, 3, 4, 5]`. **Residual:** `test_main_ui.py` still asserts string formatting, never Streamlit widgets — see residuals.
-- **IN-01 through IN-05 — FIXED/RESOLVED.** Unique-rank precision metric preserved per D2 design lock (IN-01); abstention message clarifies unexpected citations (IN-02); token thresholds documented with context window budget explanations (IN-03); doc_store cascade notes recorded (IN-04, still open — see residuals); case-insensitive `[e1]` regex compiled (`citation_validator.py:16`, `re.IGNORECASE`) (IN-05).
-
-## Phase 05 Residuals (partial fixes — ordered by severity)
-
-**Summary cache ignores pipeline version (WR-02 remainder):**
-- Issue: cache key is now `(sha256, profile, model_version)` (`doc_store.py:469-497`, `summarizer.py:328-332`), but `CONFIG_VERSION` (`models.py`), chunking parameters (`chunk_size=1000, chunk_overlap=200`), and the `estimate_tokens` heuristic are still not part of the key. Same bytes re-chunked under a bumped pipeline still hit the stale row with a "cached" badge.
-- Files: `doc_store.py:469-497`, `summarizer.py:328-332`, `models.py` (`CONFIG_VERSION`)
-- Impact: silent stale summaries after any chunking/pipeline upgrade — the exact class WR-02 was meant to kill, narrowed to model upgrades only.
-- Fix approach: add a `pipeline_version`/`config_version` column to the summaries table and include it in the `get_summary` lookup predicate, same shape as the `model_version` fix.
-
-**Singleton `AiModel` retrieval state still shared process-wide (WR-04 remainder):**
-- Issue: wiring is fixed (`main.py:484` passes the explicit result), but `last_retrieval_result` (`local_llm.py:44,171,207`) and the `@st.cache_resource` singleton loader remain; any future caller using the `retrieval_result=None` fallback validates against whoever queried last. Documented in the docstring (`local_llm.py:202`), not eliminated.
-- Files: `local_llm.py:44,157-158,171,202-207`, `main.py:59-67`-area cached loader
-- Impact: evidence cross-contamination on a shared server the moment a second call site uses the fallback; tests even enshrine the fallback (`tests/test_citation_validator.py:148-161`).
-- Fix approach: scope retrieval state per-call (return it alongside the stream) or require explicit `retrieval_result` and raise when absent.
-
-**`pages`/`chunks` tables still lack FK cascade (IN-04, deferred):**
-- Issue: only `evidence_elements` and summaries cascade; `delete_document` orphans `pages`/`chunks` rows. `doc_store.py:68,85` show cascade on two tables; `pages`/`chunks` DDL has none. Explicitly deferred to Phase 6+/future cleanup per `05-REVIEW-FIX.md`.
-- Files: `doc_store.py` (DDL + `delete_document`)
-- Impact: orphan-row growth; stale page text can enrich future summaries via the `get_chunks_for_doc` fallback path.
-- Fix approach: follow-up migration adding `ON DELETE CASCADE` FKs, same pattern as the evidence/summary tables.
-
-**UI tests still assert formatting, never widgets (WR-10b remainder):**
-- Issue: `tests/test_main_ui.py` (5 tests) covers the provider-attribute contract and Clear All purge logic but never imports `main.py`'s upload loop, tab layout, drawer rendering, or badge logic — the CR-01-class outage surface is still untestable.
-- Files: `tests/test_main_ui.py`, `main.py` upload loop (~150+ lines)
-- Impact: the next ingestion-wiring typo will again be green in CI and broken in the browser.
-- Fix approach: extract the per-file upload processing into a testable helper and add a smoke test for the provider/visual wiring.
+- **CR-01 `current_model._provider` typo — FIXED.** `main.py:255` uses `current_model.provider`. Test: `tests/test_main_ui.py::test_ai_model_provider_attribute_contract`.
+- **CR-02 `page_text=None` crash — FIXED.** `summarizer.py:180,199-200,380-384` guards + enriches from `doc_store.get_chunks_for_doc`.
+- **CR-03 empty-response grounded pass — FIXED.** `citation_validator.py:106-108` returns `is_valid=False, precision=0.0`.
+- **WR-01…WR-10, IN-01…IN-05 — FIXED / DOCUMENTED** (provenance fabrication, model-version cache key, injection directives, `validate_response` wiring, Clear All summary purge, page-ref clamping, abstention matcher, empty-doc `ValueError`, case-insensitive sanitization, mock fidelity). Partial-fix residuals retained below.
 
 ## Review Fix Status — Phase 06 (Performance Optimization & Resource Profiling)
 
-All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-optimization-and-resource-profiling/06-REVIEW.md` are **FIXED** per `06-REVIEW-FIX.md` and verified against current source:
+All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-optimization-and-resource-profiling/06-REVIEW.md` are **FIXED** per `06-REVIEW-FIX.md`:
 
-- **CR-01 `InferenceGate.release()` counter corruption — FIXED.** `local_llm.py:55-63` now calls `cls._lock.release()` BEFORE decrementing `_active_threads`, so an unowned release raises `RuntimeError` immediately without corrupting the counter; `is_locked()` (`local_llm.py:66-69`) can no longer report False while the owner holds the lock. Regression test: `tests/test_concurrency_lock.py::test_unauthorized_release_does_not_corrupt_active_counter`.
-- **WR-01 unlocked/unbounded `_LATENCY_HISTORY` — FIXED.** `resource_telemetry.py:22-23` adds `_LATENCY_LOCK = threading.Lock()` + `MAX_STAGE_HISTORY = 200`; all record/retrieve/clear/snapshot paths hold the lock (`resource_telemetry.py:139-143,165-169,174-180,193`). Covered by `tests/test_resource_telemetry.py` (10 tests).
-- **WR-02 orphan leading assistant turn — FIXED.** `prompt_budget.py:131-152` adds `bound_chat_history(history, max_turns)` pruning leading `"assistant"` turns after tail-slicing; `assemble_grounded_messages` prunes `retained_history` the same way (`prompt_budget.py:121-122`); `main.py:389-395` routes all appends through `append_chat_turn` → `bound_chat_history(..., max_turns=MAX_CHAT_TURNS)`.
-- **WR-03 bounding test fidelity — FIXED.** `tests/test_cache_invalidation.py:15-38` now imports and exercises production `bound_chat_history` directly (capacity bounding, assistant-pruning, empty-list contracts) instead of an inline slice.
-- **IN-01/IN-02 — FIXED/DOCUMENTED.** Negative unauthorized-release test added (`tests/test_concurrency_lock.py:88-110`); `scripts/profile_resources.py:268` documents the 487.0 MB headless DWM fallback as an empirical Windows 11 baseline.
-
-## Phase 06 Residuals (partial fixes + new risks — ordered by severity)
-
-**Projected VRAM number is analytical, not measured (WR-era methodology gap, now the top release risk):**
-- Issue: `scripts/profile_resources.py:267-278` computes `projected_peak_vram_mb` (3,445 MB) as an arithmetic sum of one live term (`dwm_overhead_mb` from `nvidia-smi`) plus four constants (`model_weights_mb=1450.0`, `vision_proj_mb=450.0`, `kv_cache_4k_mb=510.0`, `cuda_scratch_mb=350.0`). On headless/CI even the DWM term falls back to the 487.0 constant, so the CI-reported number is fully analytical. No llama-server process RSS/VRAM is ever sampled — the model is not loaded during profiling.
-- Files: `scripts/profile_resources.py:258-296`, `.planning/research/RESOURCE_PROFILE.json:4-5`
-- Impact: QUAL-01 compliance (≤ 3,800 MB) is asserted, not demonstrated; a real RTX 3050 run with the model resident could exceed the estimate (allocator fragmentation, driver variance, concurrent OCR pixmaps).
-- Fix approach: before release, run `scripts/profile_resources.py` on the target RTX 3050 with llama-server resident and record live `nvidia-smi` used-MB at each stage into `RESOURCE_PROFILE.json`; treat 3,445 MB as a planning estimate until then.
-
-**Sidebar telemetry spawns `nvidia-smi` on every Streamlit rerun (new, Phase 6):**
-- Issue: `main.py:359` calls `get_gpu_memory_info()` (a `subprocess` `nvidia-smi` spawn with 2 s timeout, `resource_telemetry.py:26-71`) unconditionally on every full-script rerun with no `ttl`/`cache_resource` memoization. Every keystroke in chat input re-renders the sidebar and re-spawns the process.
-- Files: `main.py:359-381`, `resource_telemetry.py:26-71`
-- Impact: ~10–100 ms added to every rerun plus process-spawn churn; under a hung GPU driver the 2 s timeout blocks the whole UI thread (single-threaded Streamlit model).
-- Fix approach: memoize with `@st.cache_data(ttl=5)` or equivalent so the gauge refreshes at most every few seconds; keep the CPU-only `None` path as-is.
-
-**`InferenceGate` has no deadlock/timeout observability (residual):**
-- Issue: `acquire(timeout=60.0)` (`local_llm.py:39-52`) blocks the single Streamlit script thread up to 60 s with no UI feedback; `hold()` raises bare `TimeoutError` with no badge or retry hint. No logging on acquire/release/timeout paths.
-- Files: `local_llm.py:26-90`
-- Impact: a stuck inference call freezes the UI for a minute, then surfaces an unhandled exception page.
-- Fix approach: wrap the chat-loop gate hold in `st.status`/spinner with timeout → `st.error` + retry guidance; add debug logging on gate transitions.
-
-**`MAX_CHAT_TURNS=50` bounds count, not tokens (residual):**
-- Issue: `bound_chat_history` (`prompt_budget.py:131-152`) caps turn count, but 50 long turns can still exceed the 4 096-token input budget; the token-budget path (`prompt_budget.py:108-122`) then silently drops oldest turns mid-request without surfacing a "context truncated" indicator.
-- Files: `prompt_budget.py:105-152`, `main.py:38,389-395`
-- Impact: long sessions get silent context loss; no UI signal when truncation fires.
-- Fix approach: surface a truncation indicator when either bound fires; consider sizing `MAX_CHAT_TURNS` from the token budget rather than a fixed 50.
+- **CR-01 `InferenceGate.release()` corruption — FIXED.** `local_llm.py:55-63` releases before decrementing. Test: `tests/test_concurrency_lock.py::test_unauthorized_release_does_not_corrupt_active_counter`.
+- **WR-01 `_LATENCY_HISTORY` race — FIXED.** `resource_telemetry.py:22-23` (`_LATENCY_LOCK`, `MAX_STAGE_HISTORY = 200`).
+- **WR-02 orphan assistant turn — FIXED.** `prompt_budget.py:131-152` (`bound_chat_history` pruning); `main.py:389-395` routes appends through it.
+- **WR-03/IN-01/IN-02 — FIXED/DOCUMENTED.** Production-function bounding tests, unauthorized-release test, DWM baseline doc. Residuals (analytical VRAM figure, per-rerun telemetry spawn, gate observability, turn-count vs tokens) retained below.
 
 ## Review Fix Status — Phase 07 (Optional Cloud Provider & Privacy Controls)
 
-All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/07-optional-cloud-provider-and-privacy-controls/07-REVIEW.md` are **FIXED** per `07-REVIEW-FIX.md` and verified against current source (suite: 213/213 passed, `ruff check` + `ruff format --check` clean per `07-REVIEW-FIX.md`):
+All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/07-optional-cloud-provider-and-privacy-controls/07-REVIEW.md` are **FIXED** per `07-REVIEW-FIX.md`:
 
-- **CR-01 cloud vision egress during ingestion — FIXED (two layers).** `main.py:406-415` filters `active_provider` to `local_vlm_provider` (only passed when `get_capabilities().is_local`), and `visual_analyzer.py:211-223` adds defense-in-depth: a non-local provider is rejected with `supports_vision = False` + `logger.warning` enforcing the INF-03 local-only ingestion invariant. Regression test: `tests/test_cloud_privacy.py::test_ingestion_visual_analyzer_never_calls_cloud_vision_even_in_cloud_mode` (asserts filter yields `None` for cloud providers).
-- **WR-01 shared `cloud_api_key` cross-provider pollution — FIXED.** `main.py:72,191-202` stores `st.session_state.cloud_api_keys: dict[str, str]` keyed by provider (`groq`/`openai`/`anthropic`); `litellm_provider.py:56-65` resolves via `_resolve_api_key_for_model` from the per-provider dict. Test: `test_per_provider_api_key_lookup`. **Residual:** legacy `cloud_api_key` string fallback still read at `litellm_provider.py:67-71` and still written at `main.py:201` — see Phase 07 Residuals.
-- **WR-02 `set_cloud_mode` connection-pool churn — FIXED.** `local_llm.py:146-152` returns early as a no-op when mode/provider are unchanged; `main.py:219-237` caches `active_cloud_provider`/`_cached_cloud_model`/`_cached_cloud_key` and only constructs a new `LiteLLMProvider` on model/key change (closing the old one), and closes + nulls on switch back to local (`main.py:239-245`). Test: `test_ai_model_set_cloud_mode_idempotent_preserves_connections`.
-- **WR-03 consent-dialog toggle desync — FIXED.** `st.toggle` now carries `key="cloud_mode_toggle"` (`main.py:147-152`); cancel/off/revoke paths explicitly set `st.session_state.cloud_mode_toggle = False` (`main.py:131-134,156-160,204-208`). **Residual:** dialog-loop/dismiss edge cases remain UI-layer-only — see Phase 07 Residuals.
-- **IN-01 hardcoded `image/png` data URI — FIXED.** `litellm_provider.py:88-98` adds `_detect_image_mime_type` (JPEG/PNG/GIF/WebP magic-byte sniffing), used at `litellm_provider.py:314`. Covered in `tests/test_litellm_provider.py` (JPEG/WebP assertions).
-- **IN-02 missing ingestion-privacy test — FIXED.** Dedicated test added to `tests/test_cloud_privacy.py` (8 tests in file, all passing per `07-REVIEW-FIX.md`).
+- **CR-01 cloud vision egress at ingestion — FIXED (two layers).** `main.py:406-415` local-only provider filter + `visual_analyzer.py:211-223` defense-in-depth rejection. Test: `tests/test_cloud_privacy.py::test_ingestion_visual_analyzer_never_calls_cloud_vision_even_in_cloud_mode`.
+- **WR-01 shared key pollution — FIXED (dict-first).** `main.py:72,191-202` per-provider `cloud_api_keys`; `litellm_provider.py:56-65` resolution. **Residual:** legacy fallback read/write still live — see Residual §2.
+- **WR-02 pool churn — FIXED.** `local_llm.py:146-152` idempotent no-op; `main.py:219-245` cached provider lifecycle.
+- **WR-03 toggle desync — FIXED (button paths).** `key="cloud_mode_toggle"` + explicit resets (`main.py:131-134,147-160,204-208`). **Residual:** framework-dismiss loop — see Residual §3.
+- **IN-01/IN-02 — FIXED.** MIME sniffing (`litellm_provider.py:88-98,314`); ingestion-privacy test (8 tests in `tests/test_cloud_privacy.py`).
 
-## Phase 07 Residuals (partial fixes + UI-layer-only enforcement — ordered by severity)
-
-**Consent invariant holds but is UI-layer-only (no server-side enforcement or audit trail):**
-- Issue: the privacy guarantee rests on three UI/session-state mechanisms — `cloud_mode=False` default (`main.py:67`), the `@st.dialog` consent gate (`main.py:137-160`), and `LiteLLMProvider._assert_consent` (`litellm_provider.py:132-136`). There is no persistent record of consent (no timestamp/scope log), no per-request re-confirmation, and `main.py:231` constructs the provider with a literal `user_consented=True` rather than threading the session flag — correctness depends entirely on the outer `if cloud_mode and user_consented` gate (`main.py:219`). Any future call site constructing `LiteLLMProvider(..., user_consented=True)` directly bypasses the dialog.
-- Files: `main.py:67-72,137-160,219-237`, `litellm_provider.py:124-136`, `local_llm.py:162-180` (`_detect_provider`)
-- Impact: consent is revocable per-session only; no auditability for compliance claims; a single wiring mistake reintroduces silent egress.
-- Fix approach (Phase 8): require the session consent flag at `set_cloud_mode` time (raise unless `user_consented` is passed explicitly); log consent grant/revoke with timestamp to session + optionally `DocStore`; add a negative test constructing without consent and asserting `PermissionError` on `stream_text` (partially exists — extend to `AiModel.set_cloud_mode(True)` with an unconsented provider).
-
-**Consent dialog dismiss/loop edge cases (WR-03 remainder + dialog-loop risk):**
-- Issue: `show_consent_dialog()` fires on every rerun while `cloud_toggle_val and not user_consented` (`main.py:154-155`). Dismissal via dialog ✕/ESC/outside-click (not the Cancel button) runs no handler, so the toggle stays `True` in the widget tree and the dialog re-fires on the next rerun — a re-trigger loop with no explicit `on_dismiss` reset. The Cancel-button path is fixed; the framework-dismiss path is not.
-- Files: `main.py:137-160`
-- Impact: user confusion (modal keeps returning); no egress risk (unconsented state still blocks `_assert_consent`), but a UX-level hardening item before release.
-- Fix approach: add an `on_dismiss` callback (or post-dialog reconciliation) that resets `cloud_mode_toggle`/`cloud_mode` to `False` when the dialog closes without consent; add a widget-level test if Streamlit test harness allows, else a state-machine unit test.
-
-**Locally-derived artifacts still egress at query time (OCR-promise disclosure gap):**
-- Issue: the consent dialog promises "Extracted text and image OCR" stays on-device (`main.py:116-118`) — true at ingestion (CR-01 fixed, OCR is local ONNX, embeddings local CPU). But once Cloud Mode is consented, retrieved excerpts sent to the cloud *include* those same OCR texts and local VLM descriptions (they are chunks like any other). The dialog does disclose "retrieved document excerpts will be transmitted" (`main.py:113-115`), so the invariant technically holds, but a user reading only the "stays on your device" list may not realise OCR/VLM output re-enters the egress path at query time.
-- Files: `main.py:111-121`, `main.py:580,688` (cloud-generation captions)
-- Impact: informed-consent fidelity gap; low exploitability, medium trust impact.
-- Fix approach: amend the dialog's "what leaves" wording to name OCR text/VLM descriptions explicitly as included in transmitted excerpts; keep the per-answer `☁️ Generated via external cloud provider` captions (already present).
-
-**Legacy `cloud_api_key` fallback still live (WR-01 remainder):**
-- Issue: `litellm_provider.py:67-71` still honours the old shared `cloud_api_key` string when the per-provider dict misses, and `main.py:201` still writes it on every keystroke. A stale legacy value from an earlier session state shape could still supply a mismatched key.
-- Files: `litellm_provider.py:56-71`, `main.py:72-73,199-202`
-- Impact: low (dict hits first; legacy only fires when dict is empty), but the exact WR-01 failure mode survives on that path.
-- Fix approach: delete the legacy read/write (dict is initialised for all three providers at `main.py:72`); migrate once and drop `cloud_api_key` from session init.
-
-**Clear All does not reset cloud posture (new, Phase 7 × Clear All interaction):**
-- Issue: Clear All resets docs/index/chat/summaries (`main.py:288-300`) but leaves `cloud_mode`, `cloud_mode_toggle`, `user_consented`, `cloud_api_keys`, `active_cloud_provider`, and `_cached_cloud_*` untouched. After "forget everything," session API keys remain in memory and Cloud Mode stays active.
-- Files: `main.py:288-300`
-- Impact: keys persist longer than the user expects from a reset button; next upload in the same session is immediately cloud-eligible.
-- Fix approach: extend Clear All to revoke consent, close + null `active_cloud_provider`, and clear `cloud_api_keys` (or decide session-keys survive and document it).
-
-**`groq_provider.py` now redundant beside `litellm_provider.py` (new, dead-code risk):**
-- Issue: `GroqProvider` (`groq_provider.py`) remains wired as a fallback-adjacent provider while `LiteLLMProvider` covers `groq/llama-3.3-70b-versatile` via the same API. Two Groq paths = two consent/error-handling contracts to keep in sync (`_assert_consent` exists only on the LiteLLM path).
-- Files: `groq_provider.py`, `litellm_provider.py`, `local_llm.py:162-180`
-- Impact: future edits may fix one path and miss the other; consent coverage depends on which path `_detect_provider` takes.
-- Fix approach: route Groq exclusively through `LiteLLMProvider` and delete `groq_provider.py`, or document why both exist and assert consent on both.
-
-## Phase 06 Readiness — VRAM Ceiling & Performance Risks (post-Phase 6 status)
-
-**Runtime VRAM measurement now exists (Phase 6 — RESOLVED with methodology caveat):**
-- Status: `resource_telemetry.py` (`get_gpu_memory_info` via `nvidia-smi` with 2 s timeout, `get_process_memory_info` via `psutil`, `LatencyTracker`, `get_system_telemetry_snapshot`) plus `scripts/profile_resources.py` (6-stage ingest → embed → hybrid-index → gate → footprint audit) and the sidebar `📊 System Telemetry & VRAM` widget (`main.py:359-384`, green < 3,500 / amber ≤ 3,800 / red > 3,800 MB) close the instrumentation gap.
-- Files: `resource_telemetry.py`, `scripts/profile_resources.py`, `main.py:359-384`, `.planning/research/RESOURCE_PROFILE.json`
-- Caveat: the headline 3,445 MB figure is analytical (see Phase 06 Residuals) — live per-rerun sampling exists, but release still needs a model-resident measurement on the RTX 3050.
-
-**Unbounded caches, partially bounded (Phase 6 — chat history FIXED, disk caches open):**
-- Status: session chat history is now bounded (`MAX_CHAT_TURNS=50` via `append_chat_turn`, `main.py:38,389-395`, tested in `tests/test_cache_invalidation.py:15-38`); summary cache has model-version invalidation (`doc_store.py:469-497`).
-- Issue: SQLite summaries (`UNIQUE(sha256,profile)` upsert, never pruned) and LanceDB rows (`data/lancedb/`, append-mostly, no `compact_files`/`vacuum`) still grow monotonically; per-doc/profile `summary_*` session keys accumulate within the session.
-- Files: `doc_store.py:438-460`, `hybrid_retriever.py:318-334`, `main.py:622-636`
-- Impact: disk footprint grows without bound across long use; release hardening (Phase 8) still needs per-cache caps/compaction cadence.
-- Fix approach: define per-cache caps (max summaries per doc, LanceDB compaction cadence); counts already exposed in the sidebar (`main.py:383-384`).
-
-**Dual-index double-write per upload (Phase 6 — RESOLVED in the main path):**
-- Status: per `06-02-SUMMARY.md`, redundant `LocalEmbedding.build_index(...)` calls were removed from the upload and dedup-restore paths — `main.py:218-224,285-288` now computes embeddings via `get_embeddings` and writes ONLY to `HybridRetriever.index_chunks(..., embeddings=...)`; `LocalEmbedding` is retained strictly as the CPU vectorizer (`embedding_fn=..._embed_one`). No `build_index` call remains in `main.py`.
-- Residual: `local_llm.py:211` (the `retrieval_result=None` fallback branch) still calls `build_index`, and the `LocalEmbedding.store: VectorIndex` object still exists per session — the classes are not removed, only unused on the hot path.
-- Files: `main.py:218-224,285-288`, `local_llm.py:211`, `local_embedding.py:59-76`
-- Fix approach: remove the `local_llm.py:211` fallback branch (see Dead fallback branch below) and the `VectorIndex` will be fully dead code on all app paths.
-
-**VLM + OCR resource pressure against the 4 GB ceiling (standing):**
-- Problem: visual analysis (`visual_analyzer.py` crop → `analyze_image` → llama-server VLM) and RapidOCR (ONNX on CPU) add per-document latency and memory that the Phase 2 budget did not account for. Large pages at high zoom/DPI inflate pixmap + OCR tensor memory; concurrent uploads serialize on the single model.
-- Files: `visual_analyzer.py:143-190` (render/crop/zoom), `ocr_fallback.py:80-135` (render at `eff_dpi`, ONNX recognizer), `llama_cpp_provider.py:220-268` (`analyze_image`)
-- Cause: per-visual-element VLM round-trips; full-page rasterization before OCR; no batching or pixel budget; floor clamps exist (`max(72, ...)` DPI, `max(0.5, ...)` zoom) but no ceilings.
-- Improvement path: add a DPI/pixel-area ceiling (e.g. 300 DPI), skip vision for thumbnails/decorations by bbox-area threshold, batch VLM calls or defer them to query time; measure before/after with the Phase 6 harness.
-
-**BM25 fallback is full-corpus Python scoring:**
-- Problem: `_bm25_search_fallback` tokenises every stored document per query and scores in pure Python (`hybrid_retriever.py:415-476`); the df fix removed the quadratic term but per-query cost is still O(N·|Q|) with regex tokenisation of all contents.
-- Files: `hybrid_retriever.py:415-476`; LanceDB native FTS attempted first (`hybrid_retriever.py:491-504`)
-- Cause: no persistent inverted index; fallback path pays full scan on every query when native FTS is unavailable.
-- Improvement path: cache tokenised corpus between queries with invalidation on `index_chunks`/`delete_document`; ensure native FTS index creation (`create_fts_index`, `hybrid_retriever.py:405-413` — currently never called from `main.py`).
-
-**Per-session embedding model copy:**
-- Problem: `LocalEmbedding` is stored in `st.session_state`, so each browser session loads its own `SentenceTransformer`.
-- Files: `main.py:49-57`-area session init, `local_embedding.py:12-23`
-- Cause: not cached with `@st.cache_resource` (deliberate, to keep the index per-session).
-- Improvement path: cache the model weights separately from the per-session index to share one weight set in RAM — directly reclaims RAM headroom for the VRAM-adjacent budget.
-
-## Phase 07 Readiness — Cloud Fallback & Privacy Risks (RESOLVED by Phase 7, residuals above)
-
-**Silent Groq fallback with no opt-in (Phase 7 — RESOLVED):**
-- Status: `local_llm.py:162-180` `_detect_provider` stays strictly local when `cloud_mode` is `False` (default); cloud routing requires explicit `set_cloud_mode(True)` + a consented `LiteLLMProvider` (`_assert_consent`, `litellm_provider.py:132-136`); UI gates on `cloud_mode and user_consented` (`main.py:219`) with `🔒 Local Mode` / `☁️ Cloud Mode` captions (`main.py:169,210`) and per-answer cloud attribution (`main.py:580,688`).
-- Files: `local_llm.py:139-180`, `litellm_provider.py:102-136`, `main.py:108-245`
-- Residuals: UI-layer-only enforcement, dialog dismiss loop, legacy key fallback, Clear All posture — see Phase 07 Residuals. The provider-stickiness note under Fragile Areas is superseded for the cloud direction (explicit mode switch replaces health-based fallback); the local-switchback direction (cloud → local recovery) is now the manual Revoke button.
-
-**llama-server URL is injectable without validation (SSRF surface — still open after Phase 7):**
-- Risk: `LlamaCppProvider(base_url=...)` accepts an arbitrary URL (`llama_cpp_provider.py:23-36`) and `check_health`/streaming issue HTTP requests to it. No scheme/host allowlist; a caller passing an attacker-controlled `base_url` turns the provider into an SSRF primitive against internal services.
-- Files: `llama_cpp_provider.py:23-45`, `local_llm.py` (only constructs the default loopback today)
-- Current mitigation: all production construction uses the default `http://127.0.0.1:8080`; no user input reaches `base_url`.
-- Recommendations: validate `base_url` (allow `http://127.0.0.1:*` / `http://localhost:*` only, or require explicit opt-in for remote hosts); add a test asserting non-loopback URLs are rejected unless explicitly permitted. Phase 8 must resolve this before any remote-server configuration UI ships.
+---
 
 ## Tech Debt (ordered by severity)
 
-**Dual-index write path (Phase 6 — RESOLVED in the main path, classes retained):**
-- Status: `main.py` no longer calls `LocalEmbedding.build_index` on upload or dedup-restore (`main.py:218-224,285-288` write only to `HybridRetriever.index_chunks` with precomputed embeddings); `HybridRetriever` is the sole authoritative index and `LocalEmbedding` is the CPU vectorizer only. The double-embedding/compute cost and the two-sources-of-truth divergence risk are gone on the hot path.
-- Residual: `local_llm.py:211` still `build_index`es into an ephemeral `LocalEmbedding` on the `retrieval_result=None` fallback, and `LocalEmbedding.store: VectorIndex` still allocates per session — dead weight, not divergence.
-- Files: `main.py:218-224,285-288`, `local_llm.py:211`, `local_embedding.py:43,59-76`
-- Fix approach: delete the fallback branch (see Dead fallback branch) and remove `VectorIndex` from the session entirely.
+**1. Lockfile conflicts with pinned requirements — NO-GO, fix before release:**
+- Issue: `requirements-lock.txt` contradicts `requirements.txt` on six pins and omits shipped runtime deps:
+  - `streamlit 1.42.0` vs `1.65.0`, `sentence-transformers 3.4.1` vs `5.2.3`, `pypdf 5.3.0` vs `6.12.1`, `groq 0.15.0` vs `1.1.1`, `langchain-text-splitters 0.3.6` vs `1.1.3`, `python-dotenv 1.0.1` vs `1.2.2`
+  - Lockfile omits `docling`, `rapidocr-onnxruntime`, `pymupdf`, `lancedb` (all shipped features) and instead pins dev-only `pytest`, `ruff`, `reportlab`
+- Files: `requirements-lock.txt:1-27`, `requirements.txt:1-17`
+- Impact: `README.md:131` + `docs/RUNBOOK.md:48` tell users to `pip install -r requirements-lock.txt`, but CI (`.github/workflows/ci.yml:27-28`) installs `requirements.txt` + `requirements-test.txt` — docs and CI describe different environments, and the docs path is untested. `pypdf` 6.x vs 5.x and `sentence-transformers` 5.x vs 3.x are major-line jumps with real API-break risk.
+- Fix approach: regenerate `requirements-lock.txt` from the exact CI-verified environment (`pip freeze` after the `requirements.txt` install passes), or delete the lockfile and point docs at `requirements.txt` until a real freeze exists. Add a CI step that installs from the lockfile (or diffs it) so the two cannot drift again.
 
-**Clear All resets session but not persistent stores (still open after 06-02 hardening):**
-- Issue: Clear All nulls `st.session_state.hybrid_retriever` (after `close()`), resets `doc_ids`/`indexed_files`/`document_metadata`/`chat_history` and deletes every `summary_*` key (`main.py:142-156`; hardened in 06-02), but never calls `delete_document` per doc, never drops the LanceDB `chunks` table, never deletes `data/lancedb/`, and never removes `DocStore` rows (`data/documents.db`).
-- Files: `main.py:132-141`-area; persistent state lives in `data/lancedb/` and `DocStore(Path("data/documents.db"))`
-- Impact: after Clear All, re-uploading the same PDFs hits the `DocStore` dedup path and restores from SQLite rather than re-extracting — the button reads as "forget everything" but is actually "clear session view". Stale LanceDB rows for never-re-uploaded docs remain queryable in future sessions that re-create the retriever. Disk usage grows monotonically.
-- Fix approach: decide the intended semantic (session-clear vs full-purge) and implement accordingly — either delete per-`doc_id` from `HybridRetriever` + `DocStore` on Clear All, or rename the button to reflect session-only reset. Phase 8 must also decide whether Clear All revokes cloud consent and clears session API keys (`main.py:288-300` currently leaves `cloud_mode`/`user_consented`/`cloud_api_keys` intact — see Phase 07 Residuals).
+**2. Unpinned heavy + native + cloud floors (still open, pre-existing QUAL-02 remainder):**
+- Issue: `numpy>=1.26.0,<3.0.0`, `docling>=2.0.0`, `rapidocr-onnxruntime>=1.3.0`, `pymupdf>=1.24.0`, `pillow>=10.2.0`, `lancedb>=0.17.0`, `pyarrow>=14.0.0`, `litellm>=1.50.0` remain open ranges. Only `httpx==0.28.1` and `psutil==6.1.1` were exactly pinned.
+- Files: `requirements.txt:7,9-17`
+- Impact: non-reproducible installs; native wheels (`lancedb`/`pyarrow`/`pymupdf`/onnxruntime) are Windows-sensitive; `litellm` moves fast with a large transitive tree.
+- Fix approach: subsume into the lockfile fix (§1) — exact pins for all runtime deps verified on Windows + CPU-only.
 
-**Unpinned heavy + persistent + cloud dependencies (expanded in Phases 4 and 7):**
-- Issue: `numpy>=1.26.0,<3.0.0`, `httpx>=0.28.0`, `docling>=2.0.0`, `rapidocr-onnxruntime>=1.3.0`, `pymupdf>=1.24.0`, `pillow>=10.2.0` remain open ranges, Phase 4 added `lancedb>=0.17.0` + `pyarrow>=14.0.0`, and Phase 7 adds `litellm>=1.50.0` — also an open floor on a fast-moving LLM-gateway package with a large transitive tree.
-- Files: `requirements.txt:7,9-15`
-- Impact: non-reproducible installs; `lancedb`/`pyarrow` minor bumps can change table schema handling, FTS availability, or Windows wheel compatibility, silently shifting retrieval behaviour. Highest blast radius after the dual-index debt. Phase 8 (release hardening) must pin these.
-- Fix approach: pin exact versions for `lancedb`, `pyarrow`, `docling`, `rapidocr-onnxruntime`, `pymupdf`, and `litellm` (verify on Windows + CPU-only), or adopt a lockfile (none exists).
+**3. Clear All resets session but not persistent stores (still open):**
+- Issue: Clear All (now cloud-aware, `main.py:289-317`) still never calls `delete_document` per doc, never drops the LanceDB `chunks` table or `data/lancedb/`, and never removes `DocStore` rows (`data/documents.db`). Re-upload hits the dedup path and restores from SQLite rather than re-extracting.
+- Files: `main.py:289-317`; persistent state in `data/lancedb/`, `DocStore(Path("data/documents.db"))`
+- Impact: "forget everything" button is session-clear only; stale rows remain queryable in future sessions; disk grows monotonically.
+- Fix approach: decide session-clear vs full-purge semantics and implement (per-`doc_id` delete from `HybridRetriever` + `DocStore`) or rename the button to reflect session-only reset.
 
-**Private `_embed_one` passed as the hybrid embedding function:**
-- Issue: `main.py` wires `HybridRetriever(embedding_fn=st.session_state.local_embedding._embed_one)` — a private method of another module's class is now load-bearing for all hybrid queries.
-- Files: `main.py:206,273`-area, `local_embedding.py:28` (`_embed_one`), `hybrid_retriever.py:143-147`
-- Impact: renaming or changing the private helper silently breaks hybrid retrieval construction; `set_embedding_fn` exists as the public seam but construction still reaches through the underscore.
-- Fix approach: expose a public `embed_one`/`embed_query` method on `LocalEmbedding` and construct the retriever from that (keeping `set_embedding_fn` for late binding).
+**4. Private `_embed_one` passed as the hybrid embedding function:**
+- Issue: `main.py` wires `HybridRetriever(embedding_fn=st.session_state.local_embedding._embed_one)` — a private method is load-bearing for all hybrid queries.
+- Files: `main.py:206,273`-area, `local_embedding.py:28`, `hybrid_retriever.py:143-147`
+- Impact: renaming the private helper silently breaks hybrid construction.
+- Fix approach: expose public `embed_one`/`embed_query` on `LocalEmbedding`; keep `set_embedding_fn` for late binding.
 
-**Legacy `PdfReader` chunk offsets never populated:**
-- Issue: `Chunk.char_start`/`char_end` are populated by `docling_reader.py` and `ocr_fallback.py`, but the legacy `pdf_reader.py` construction path still leaves them `None`.
-- Files: `pdf_reader.py:77-88` (construction), `models.py:68-69` (fields)
-- Impact: citations for documents ingested via the legacy path resolve to page granularity only; mixed provenance (some chunks with offsets, some without) complicates the citation renderer.
-- Fix approach: compute spans during `text_splitter.split_text` in `PdfReader.extract_text`, or route the legacy path through the same offset helper used by `docling_reader.py`.
+**5. Legacy `PdfReader` chunk offsets never populated:**
+- Issue: `Chunk.char_start`/`char_end` populated by `docling_reader.py` and `ocr_fallback.py`, but the legacy `pdf_reader.py:77-88` path leaves them `None`.
+- Files: `pdf_reader.py:77-88`, `models.py:68-69`
+- Impact: legacy-path citations resolve to page granularity only; mixed provenance complicates the citation renderer.
+- Fix approach: compute spans during `text_splitter.split_text`, or route through the `docling_reader.py` offset helper.
 
-**Hand-rolled provider dispatch:**
-- Issue: `AiModel._detect_provider` constructs and probes concrete providers directly instead of consulting configuration/factory.
-- Files: `local_llm.py:48-69`
-- Impact: adding or reordering backends (LiteLLM in Phase 7) requires editing the orchestrator.
-- Fix approach: introduce a provider factory/config selection.
+**6. Hand-rolled provider dispatch:**
+- Issue: `AiModel._detect_provider` constructs/probes concrete providers directly instead of consulting a factory.
+- Files: `local_llm.py:48-69`-area (dispatch), `local_llm.py:162-180`-area (selection)
+- Impact: adding/reordering backends requires editing the orchestrator.
+- Fix approach: provider factory/config selection.
 
-**Dead fallback branch (still present, narrowed):**
-- Issue: `ask_a_question_from_pdf_stream` can still build its own `PdfReader` + `LocalEmbedding` when no index is passed (`local_llm.py:124-128`), but `main.py` always passes `active_retriever` + `retrieval_result` (`main.py:427-433`-area). The untested inline-build path now additionally bypasses `HybridRetriever`/persistence entirely.
+**7. Dead fallback branch (narrowed, still present):**
+- Issue: `ask_a_question_from_pdf_stream` can still build its own `PdfReader` + `LocalEmbedding` when no index is passed (`local_llm.py:124-128`), bypassing `HybridRetriever`/persistence; `main.py` always passes `active_retriever` + `retrieval_result`.
 - Files: `local_llm.py:124-128`; caller in `main.py` chat loop
-- Impact: duplicated ingestion concerns inside the inference layer; untested by the app; results from this path are dense-only and ephemeral.
-- Fix approach: remove the branch or expose it as a documented standalone entry point.
+- Impact: duplicated ingestion inside inference; dense-only ephemeral results; untested by the app.
+- Fix approach: remove the branch or expose as a documented standalone entry point.
 
-**Working-directory-relative artifact paths:**
-- Issue: `data/documents.db`, `data/lancedb/`, and `.cache` are resolved against the process CWD.
-- Files: `main.py` upload loop (`DocStore(Path("data/documents.db"))`), cache handling, `hybrid_retriever.py` default `db_uri`
-- Impact: launching Streamlit from a different directory silently creates databases/caches in the wrong place; LanceDB persistence (`data/lancedb/`, present on disk) is location-dependent, so a different CWD starts with an empty index while `DocStore` dedup claims docs are already indexed.
+**8. Working-directory-relative artifact paths:**
+- Issue: `data/documents.db`, `data/lancedb/`, `.cache` resolve against process CWD.
+- Files: `main.py` upload loop (`DocStore(Path("data/documents.db"))`), `hybrid_retriever.py` default `db_uri`
+- Impact: launching from another directory silently forks databases; LanceDB persistence is location-dependent.
 - Fix approach: anchor all three to `Path(__file__).resolve().parent`.
+
+## Release Residuals (partial Phase 7/8 fixes — ordered by severity)
+
+**1. Legacy `cloud_api_key` fallback still live (PRIV-02 / WR-01 remainder):**
+- Issue: Phase 8 removed the legacy *write* from the key-entry path, but the legacy string survives three places: initialised at `main.py:73` (`("cloud_api_key", "")`), blanked (not deleted) on Clear All (`main.py:315-316`), and honoured as a cross-provider fallback at `litellm_provider.py:67-71` when the per-provider dict misses. A stale legacy value supplies a mismatched provider's key — the exact WR-01 failure mode on that path. The fallback chain is documented as deliberate (`CONVENTIONS.md` secrets-precedence rule), so this is a known-accepted residual, not an oversight — but it must be a conscious release decision.
+- Files: `main.py:73,315-316`, `litellm_provider.py:56-71`
+- Impact: low (dict hits first) but nonzero: cross-provider key contamination on the fallback path.
+- Fix approach: delete the legacy read/write entirely (dict is initialised for all three providers at `main.py:72`); or record explicit acceptance with an expiry (e.g. remove in next minor).
+
+**2. Consent invariant is UI-layer-only (no server-side enforcement or audit trail):**
+- Issue: privacy guarantee rests on `cloud_mode=False` default (`main.py:67`), the `@st.dialog` consent gate (`main.py:137-160`), and `LiteLLMProvider._assert_consent` (`litellm_provider.py:132-136`). No persistent consent record, no per-request re-confirmation, and `main.py:231` constructs with literal `user_consented=True` — correctness depends on the outer `if cloud_mode and user_consented` gate (`main.py:219`).
+- Files: `main.py:67-72,137-160,219-237`, `litellm_provider.py:124-136`, `local_llm.py:162-180`
+- Impact: no auditability for compliance claims; a single future wiring mistake reintroduces silent egress.
+- Fix approach: require the session consent flag at `set_cloud_mode` time; log grant/revoke with timestamp; extend negative tests to `AiModel.set_cloud_mode(True)` with an unconsented provider.
+
+**3. Consent-dialog dismiss loop (WR-03 remainder):**
+- Issue: `show_consent_dialog()` fires on every rerun while `cloud_toggle_val and not user_consented` (`main.py:154-155`). Framework dismiss (✕/ESC/outside-click) runs no handler, so the toggle stays `True` and the dialog re-fires — a re-trigger loop. No egress risk (unconsented state still blocks `_assert_consent`).
+- Files: `main.py:137-160`
+- Impact: user confusion; UX-level hardening item before release.
+- Fix approach: `on_dismiss` reconciliation resetting `cloud_mode_toggle`/`cloud_mode` to `False`; state-machine unit test.
+
+**4. OCR/VLM disclosure gap at query time:**
+- Issue: dialog promises "Extracted text and image OCR" stays on-device (`main.py:116-118`) — true at ingestion — but once Cloud Mode is consented, retrieved excerpts sent to the cloud *include* those OCR texts and VLM descriptions. The "retrieved excerpts will be transmitted" line (`main.py:113-115`) covers it technically, but a user reading only the stays-on-device list may miss it.
+- Files: `main.py:111-121`, `main.py:580,688` (cloud captions)
+- Impact: informed-consent fidelity gap; low exploitability, medium trust impact.
+- Fix approach: name OCR text/VLM descriptions explicitly in the dialog's "what leaves" wording (PRIV-01 follow-up).
+
+**5. Summary cache ignores pipeline version (Phase 05 WR-02 remainder):**
+- Issue: cache key is `(sha256, profile, model_version)` (`doc_store.py:469-497`, `summarizer.py:328-332`), but `CONFIG_VERSION` (`models.py`), chunking params, and the `estimate_tokens` heuristic are not keyed. Same bytes re-chunked under a bumped pipeline hit a stale row with a "cached" badge.
+- Files: `doc_store.py:469-497`, `summarizer.py:328-332`, `models.py` (`CONFIG_VERSION`)
+- Impact: silent stale summaries after chunking/pipeline upgrades.
+- Fix approach: add `pipeline_version`/`config_version` column, include in lookup predicate.
+
+**6. Singleton `AiModel` retrieval state shared process-wide (Phase 05 WR-04 remainder):**
+- Issue: `last_retrieval_result` (`local_llm.py:44,171,207`) plus the `@st.cache_resource` singleton loader; any future `retrieval_result=None` fallback caller validates against whoever queried last. Documented (`local_llm.py:202`), not eliminated.
+- Files: `local_llm.py:44,157-158,171,202-207`
+- Impact: evidence cross-contamination on a shared server the moment a second call site uses the fallback.
+- Fix approach: scope retrieval state per-call or require explicit `retrieval_result`.
 
 ## Known Bugs
 
-**Stale `mock_groq_client` fixture (still open):**
-- Symptoms: `tests/conftest.py`'s `mock_groq_client` patches `local_llm.Groq`, but `local_llm` no longer imports `Groq` (it moved to `groq_provider.py`). Any test requesting the fixture raises `AttributeError`.
-- Files: `tests/conftest.py:19-50`; the import now lives at `groq_provider.py:12-14`
-- Trigger: add `mock_groq_client` as a test parameter.
-- Workaround: none — the fixture is currently unused, so the suite passes. `fake_env_groq_key` (`tests/conftest.py:13-16`) is likewise unused.
-- Fix approach: repoint the patch target at `groq_provider.Groq` or delete the dead fixtures.
-
-**README describes a superseded architecture:**
-- Symptoms: `README.md` states the app "uses Groq API for … Llama 3 generation" and lists only the original 5 modules, omitting `model_provider.py`, `groq_provider.py`, `llama_cpp_provider.py`, `prompt_budget.py`, `doc_store.py`, `models.py`, `upload_validation.py`, `docling_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`, `hybrid_retriever.py`, `summarizer.py`, `citation_validator.py`, and local llama-server inference entirely.
-- Files: `README.md` (feature list / "What Is This?" / file-responsibility table)
-- Impact: onboarding documentation contradicts the code and the local-first persistent-hybrid design.
-- Fix approach: rewrite the README against `STACK.md`/`ARCHITECTURE.md`; note it is user-facing and may be intentionally preserved for the cloud demo.
+*No open Known Bugs — the two previously listed items are resolved: the `mock_groq_client` fixture now targets `groq_provider.Groq` (`tests/conftest.py:19-50`, TEST-01), and `README.md` documents the production architecture including all current modules (`README.md:77-91`, DOC-01 + module-name verification above).*
 
 ## Security Considerations
 
-**Cloud fallback exfiltrates document context without consent (new, Phase 7 precursor — highest security item):**
-- Risk: when llama-server is down, generation requests carrying full retrieved context go to Groq Cloud with no opt-in and no egress warning. See Phase 07 Readiness above.
-- Files: `groq_provider.py:36-50`, `local_llm.py:48-69`
-- Current mitigation: provider badge shows the active backend; `.env` is gitignored and the key is never printed.
-- Recommendations: consent-gate the cloud path before Phase 7; treat every `stream_text` call site as an egress point in review.
+**Loopback SSRF guard is robust but `allow_remote` is an unguarded escape hatch:**
+- Risk: `LlamaCppProvider(base_url=...)` validation is now correct for loopback detection (`llama_cpp_provider.py:44-56`), but any caller passing `allow_remote=True` with an attacker-controlled URL turns the provider into an SSRF primitive. No user input reaches `base_url` or `allow_remote` today (all production construction uses the default `http://127.0.0.1:8080`).
+- Files: `llama_cpp_provider.py:23-62`, `local_llm.py` (construction sites)
+- Current mitigation: default-deny; loopback-only unless explicitly opted in.
+- Recommendations: keep `allow_remote=True` out of any future remote-server configuration UI without an explicit user opt-in + scheme/host allowlist; add a test asserting the default constructor rejects a non-loopback URL.
 
 **Prompt injection from document text (residual output-side gap):**
-- Risk: retrieved PDF text is placed in the prompt; a malicious document could try to issue instructions. Input-side isolation is now fixed (CR-01 sanitize + CR-02 bounding + WR-03 fast-path directive + WR-09 case-insensitive regex), but there is no output-side check that the answer doesn't echo injected directives.
-- Files: `prompt_budget.py:25-94` (grounding template with explicit non-execution directive and `<document_context>` isolation plus `sanitize_xml_boundary`), `summarizer.py:110,130,219`
-- Current mitigation: context wrapped in `<document_context>` with boundary escaping; asserted by `tests/test_prompt_budget.py::test_sanitize_xml_boundary` and `test_injection_directive_escaped_in_document_context`.
-- Recommendations: keep directives verbatim when editing templates; consider an output-side check that the answer doesn't echo injected directives. VLM descriptions (`visual_analyzer.py`) are also model-generated text entering the index — treat them as untrusted on retrieval.
+- Risk: input-side isolation is fixed (CR-01 sanitize + CR-02 bounding + WR-03 directive + WR-09 case-insensitive regex), but no output-side check verifies answers don't echo injected directives. VLM descriptions (`visual_analyzer.py`) are model-generated text entering the index — treat as untrusted on retrieval.
+- Files: `prompt_budget.py:25-94`, `summarizer.py:110,130,219`
+- Current mitigation: `<document_context>` isolation + boundary escaping, asserted by `tests/test_prompt_budget.py`.
+- Recommendations: keep directives verbatim when editing templates; consider an answer-side directive-echo scan with an adversarial-chunk test.
 
 **Untrusted PDF parsing in-process:**
-- Risk: `pypdf`/Docling/PyMuPDF parse attacker-controlled bytes in the app process; no sandbox or resource isolation beyond the file/page caps.
+- Risk: `pypdf`/Docling/PyMuPDF parse attacker-controlled bytes in-process; no sandbox beyond caps.
 - Files: `upload_validation.py:64-110` (`MAX_FILE_MB=50`, `MAX_PAGES=500`), `pdf_reader.py:29-113`, `docling_reader.py:135`, `ocr_fallback.py:67,127`
-- Current mitigation: magic-byte check, size and page caps, per-page try/except.
-- Recommendations: pin `pypdf` exactly (already `==5.3.0`) and keep it current for CVE fixes; extend exact pins to `pymupdf` (currently `>=1.24.0`, a native parser with memory-unsafe code); consider a parse timeout / subprocess for hostile input.
-
-**llama-server URL is injectable without validation (SSRF surface):**
-- Risk: `LlamaCppProvider(base_url=...)` accepts an arbitrary URL (`llama_cpp_provider.py:23-36`) and `check_health`/streaming issue HTTP requests to it. No scheme/host allowlist; a caller passing an attacker-controlled `base_url` turns the provider into an SSRF primitive against internal services.
-- Files: `llama_cpp_provider.py:23-45`, `local_llm.py:48-69` (only constructs the default loopback today)
-- Current mitigation: all production construction uses the default `http://127.0.0.1:8080`; no user input reaches `base_url`.
-- Recommendations: validate `base_url` (allow `http://127.0.0.1:*` / `http://localhost:*` only, or require explicit opt-in for remote hosts); add a test asserting non-loopback URLs are rejected unless explicitly permitted.
+- Current mitigation: magic-byte check, size/page caps, per-page try/except; `pypdf==5.3.0` exactly pinned.
+- Recommendations: exact-pin `pymupdf` (native parser, currently `>=1.24.0`) as part of the lockfile fix; consider a parse timeout/subprocess for hostile input.
 
 **LanceDB filter escaping is quote-doubling only (residual after CR-03):**
-- Risk: the CR-03 fix neutralises single-quote breakouts, but escaping is hand-rolled per call site rather than a shared helper; backslash/unicode edge cases and any future `where()`/`delete()` interpolation that forgets the `.replace` reintroduce the same class.
+- Risk: hand-rolled per-call-site escaping rather than a shared helper; future `where()`/`delete()` interpolation that forgets `.replace` reintroduces the class.
 - Files: `hybrid_retriever.py:219,328,357`
-- Current mitigation: quote-doubling at all three current sites, covered by regression tests per `04-REVIEW-FIX.md`.
-- Recommendations: extract a `_escape_filter_literal()` helper and route every filter expression through it; add a negative test with `doc_1' OR '1'='1` against `delete_document` asserting other rows survive.
+- Current mitigation: quote-doubling at all three sites + regression tests.
+- Recommendations: extract `_escape_filter_literal()` helper; negative test with `doc_1' OR '1'='1` against `delete_document`.
 
 **Credential handling:**
-- Risk: `GROQ_API_KEY` could leak into logs or commits.
-- Files: `groq_provider.py:36-50`, `.gitignore:1`
-- Current mitigation: `.env` is gitignored; the key is never printed; `.env` contents are never read into docs.
-- Recommendations: none outstanding.
+- Risk: API keys in session memory / logs / commits.
+- Files: `litellm_provider.py:50-90` (resolution chain), `main.py:72-73,191-202`, `.gitignore:1`
+- Current mitigation: `.env` gitignored; keys never printed; per-provider dict; Clear All now cleanses (`main.py:302-316`).
+- Recommendations: none outstanding beyond the legacy-fallback decision (Residual §1).
 
 ## Performance Bottlenecks
 
-**Dual-index double-write per upload (Phase 6 — RESOLVED, see Tech Debt):**
-- Status: main-path `build_index` calls removed; upload embeds once via `get_embeddings` and writes once to `HybridRetriever.index_chunks` (`main.py:218-224,285-288`). Retained here only as a pointer — the remaining per-upload cost is one embedding pass plus LanceDB `merge_insert`/delete-then-add, which is the designed single-write path, not debt.
+**Projected VRAM number is analytical, not measured (top release-measurement risk):**
+- Problem: `scripts/profile_resources.py:267-278` computes `projected_peak_vram_mb` (3,445 MB) as one live term (`dwm_overhead_mb` from `nvidia-smi`) plus four constants; on headless/CI even the DWM term falls back to a constant, so the CI number is fully analytical. No llama-server resident RSS/VRAM is ever sampled.
+- Files: `scripts/profile_resources.py:258-296`, `.planning/research/RESOURCE_PROFILE.json:4-5`
+- Cause: model not loaded during profiling.
+- Improvement path: run `scripts/profile_resources.py` on the target RTX 3050 with llama-server resident; record live `nvidia-smi` used-MB per stage into `RESOURCE_PROFILE.json`. Treat 3,445 MB as a planning estimate until then. **Release gate along with the lockfile fix.**
 
-**VLM + OCR resource pressure against the 4 GB VRAM ceiling (standing):**
-- Problem: visual analysis and RapidOCR add per-document latency and memory the Phase 2 budget (≈ 3.26 GB) did not account for. See Phase 06 Readiness above.
+**VLM + OCR resource pressure against the 4 GB ceiling (standing):**
+- Problem: visual analysis (`visual_analyzer.py` crop → `analyze_image` → VLM) and RapidOCR (ONNX/CPU) add per-document latency/memory the Phase 2 budget did not account for. Floor clamps exist (`max(72, ...)` DPI, `max(0.5, ...)` zoom) but no ceilings.
 - Files: `visual_analyzer.py:143-190`, `ocr_fallback.py:80-135`, `llama_cpp_provider.py:220-268`
-- Cause: per-visual-element VLM round-trips; full-page rasterization before OCR; no batching or pixel budget.
-- Improvement path: cap crop pixel area and OCR DPI (add a ceiling, e.g. 300 DPI), skip vision for thumbnails/decorations by bbox-area threshold, batch VLM calls or defer them to query time — all measured by the Phase 6 harness.
+- Cause: per-element VLM round-trips; full-page rasterization; no batching/pixel budget.
+- Improvement path: DPI/pixel-area ceiling (e.g. 300 DPI), bbox-area skip threshold, batch/defer VLM calls; measure with the Phase 6 harness.
 
 **BM25 fallback is full-corpus Python scoring:**
-- Problem: `_bm25_search_fallback` tokenises every stored document per query in pure Python (`hybrid_retriever.py:415-476`); per-query cost is O(N·|Q|) with regex tokenisation of all contents.
-- Files: `hybrid_retriever.py:415-476`; LanceDB native FTS attempted first (`hybrid_retriever.py:491-504`)
-- Cause: no persistent inverted index; fallback path pays full scan on every query when native FTS is unavailable.
-- Improvement path: cache tokenised corpus between queries with invalidation on `index_chunks`/`delete_document`; ensure native FTS index creation (`create_fts_index`) is called from `main.py`.
+- Problem: `_bm25_search_fallback` tokenises every document per query in pure Python (`hybrid_retriever.py:415-476`); O(N·|Q|) per query when native FTS is unavailable.
+- Files: `hybrid_retriever.py:415-476`; native FTS first (`hybrid_retriever.py:491-504`)
+- Cause: no persistent inverted index; `create_fts_index` (`hybrid_retriever.py:405-413`) never called from `main.py`.
+- Improvement path: cache tokenised corpus with invalidation on `index_chunks`/`delete_document`; wire `create_fts_index` into `main.py`.
 
 **Context cap truncates multimodal evidence first (standing):**
-- Problem: `prompt_budget.py` bounds total input to 4096 tokens with oldest-first history truncation and `[... truncated ...]` markers. Visual element descriptions and OCR text compete with digital text for the same budget; long multimodal pages can evict conversational history or get silently truncated.
+- Problem: `prompt_budget.py` bounds input to 4096 tokens; vision descriptions and OCR compete with digital text for one flat budget; truncation is silent.
 - Files: `prompt_budget.py:53-98`, `visual_analyzer.py:220-250`
-- Cause: single flat budget shared by text + OCR + vision descriptions.
-- Improvement path: prioritize/weight evidence (e.g. cap vision-description tokens per element), surface a "context truncated" indicator in the UI when truncation fires.
+- Cause: single shared budget.
+- Improvement path: per-element vision-token caps; "context truncated" UI indicator.
 
 **Per-session embedding model copy:**
-- Problem: `LocalEmbedding` is stored in `st.session_state`, so each browser session loads its own `SentenceTransformer`.
+- Problem: `LocalEmbedding` in `st.session_state` → each browser session loads its own `SentenceTransformer`.
 - Files: `main.py` session init, `local_embedding.py:12-23`
-- Cause: not cached with `@st.cache_resource` (deliberate, to keep the index per-session).
-- Improvement path: cache the model separately from the per-session index to share one weight set in RAM.
+- Cause: deliberate (per-session index), but weights could be shared.
+- Improvement path: cache model weights via `@st.cache_resource` separately from the per-session index.
 
 ## Fragile Areas
 
 **Non-hybrid chat branch reintroduces CR-02 divergence (residual):**
-- Files: `main.py` chat loop (`active_retriever = hybrid or local_embedding`; `else` branch uses `search` + filename-only chips), `local_llm.py:141-159` (re-searches with its own contextualised query when `retrieval_result=None`)
-- Why fragile: whenever `hybrid_retriever` is `None` (construction failure, import fallback), the UI chips and the LLM context are built from two different queries on two different code paths — exactly the divergence CR-02 eliminated on the hybrid path. Chips also degrade to filename-only (no page numbers) on this path.
-- Safe modification: unify on the single-`RetrievalResult` shape for both branches (e.g. wrap `LocalEmbedding` results into a `RetrievalResult` in `main.py` and always pass `retrieval_result=`); keep the `else` branch as a degraded-mode shim only.
-- Test coverage: `tests/test_local_llm.py` covers pre-computed `retrieval_result` support; the `None`-retriever degraded path through `main.py` is untested.
+- Files: `main.py` chat loop (`active_retriever = hybrid or local_embedding`; `else` branch), `local_llm.py:141-159`
+- Why fragile: when `hybrid_retriever` is `None`, UI chips and LLM context derive from two different queries on two paths; chips degrade to filename-only.
+- Safe modification: wrap `LocalEmbedding` results into `RetrievalResult` in `main.py`; always pass `retrieval_result=`; keep `else` as degraded-mode shim.
+- Test coverage: pre-computed `retrieval_result` covered (`tests/test_local_llm.py`); degraded path untested.
 
 **Provider selection sticky on healthy fallback:**
-- Files: `local_llm.py` health-check/re-probe logic; the `AiModel` singleton is created once via the `main.py` cached loader.
-- Why fragile: self-healing re-probes only when the current provider is unhealthy. If the app starts on Groq (llama-server down) and the local server later comes up healthy, the app stays on Groq — `check_health()` reports healthy Groq, so the badge never hints a local model is available. Combined with the no-opt-in cloud path, stickiness extends silent-egress duration.
-- Safe modification: add an explicit "prefer local when reachable" re-detect (manual refresh button or periodic background probe), keeping start-degraded behavior.
-- Test coverage: `tests/test_local_llm.py` covers selection at construction and unhealthy→healthy recovery, not healthy-fallback→local switchback.
+- Files: `local_llm.py` health-check/re-probe; `AiModel` singleton via cached loader.
+- Why fragile: re-probe fires only on unhealthy; starting on Groq (llama-server down) then local coming up stays on Groq silently. For the cloud direction this is now explicit mode-switch (superseded); local-switchback is the manual Revoke button.
+- Safe modification: "prefer local when reachable" refresh button or background probe.
+- Test coverage: construction + unhealthy→healthy covered; healthy-fallback→local switchback not.
 
 **Shared singleton retrieval state (Phase 05 remainder):**
 - Files: `local_llm.py:44,157-158,171,202-207`
-- Why fragile: `last_retrieval_result` is process-wide; the documented caveat relies on every caller passing explicit results. One fallback call site contaminates the next.
-- Safe modification: require explicit `retrieval_result` or scope state per call; see Phase 05 residuals.
-- Test coverage: fallback behavior is asserted (`tests/test_citation_validator.py:148-161`), entrenching the shared-state contract.
+- Why fragile: process-wide `last_retrieval_result`; one fallback call site contaminates the next.
+- Safe modification: per-call scoping or mandatory explicit `retrieval_result`.
+- Test coverage: fallback asserted (`tests/test_citation_validator.py:148-161`), entrenching the contract.
 
 **Fallback-store JSON normalises only `bbox` (residual of WR-04/Phase 04):**
 - Files: `hybrid_retriever.py:162-187`
-- Why fragile: any future non-JSON-primitive metadata value (numpy types from embeddings-adjacent code, `datetime`, `Path`) on a chunk dict raises `TypeError` inside `json.dump` and is swallowed as a `logger.warning` — persistence silently stops working with no UI signal.
-- Safe modification: add a generic `default=str`-style sanitiser or a recursive primitive-normalisation pass over the whole chunk dict, not just the `bbox` key; surface persistence failure beyond debug logs.
+- Why fragile: future non-primitive metadata (numpy types, `datetime`, `Path`) raises `TypeError` inside `json.dump`, swallowed as `logger.warning` — persistence silently stops with no UI signal.
+- Safe modification: recursive primitive-normalisation or `default=str`; surface failure beyond debug logs.
 - Test coverage: BBox round-trip covered; arbitrary-metadata robustness not asserted.
 
 **`close()` in LanceDB mode skips persistence flush:**
 - Files: `hybrid_retriever.py:149-154`
-- Why fragile: `close()` only calls `_save_fallback_store()` when LanceDB is absent; in LanceDB mode it nulls `_table`/`_db` with no flush or FTS-index checkpoint. Combined with Clear All nulling the retriever (`main.py:137-139`-area), a session can drop its handles while the on-disk table holds un-checkpointed FTS state.
-- Safe modification: call `create_fts_index`-style checkpoint/flush in `close()` when a table is present, or document that LanceDB handles durability and remove the asymmetry.
-- Test coverage: lifecycle open/close covered; durability-across-close with FTS not asserted.
+- Why fragile: LanceDB mode nulls `_table`/`_db` with no flush/FTS checkpoint; Clear All (`main.py:294-296`) can drop handles holding un-checkpointed FTS state.
+- Safe modification: checkpoint/flush in `close()` when a table is present, or document LanceDB durability and remove the asymmetry.
+- Test coverage: open/close covered; durability-across-close with FTS not asserted.
 
 **Heuristic token counting:**
 - Files: `prompt_budget.py:20-25` (chars ÷ 4)
-- Why fragile: under-counts code/PDF-mangled text; a bad estimate can exceed the real context window and truncate or error at the server. OCR output (noisy, fragmented) skews the heuristic further. Phase 6 KV-cache/context tuning will inherit this error.
-- Safe modification: preserve the conservative reserve (`max_output_tokens`), and consider a real tokenizer for the local model.
-- Test coverage: `tests/test_prompt_budget.py` verifies bounds but not fidelity to a tokenizer.
+- Why fragile: under-counts code/mangled text; OCR noise skews further; bad estimates can exceed the real window.
+- Safe modification: preserve `max_output_tokens` reserve; consider a real tokenizer for the local model.
+- Test coverage: bounds verified (`tests/test_prompt_budget.py`); tokenizer fidelity not asserted.
 
 **Silent SSE frame drops:**
 - Files: `llama_cpp_provider.py:196-215` (malformed `data:` frames `continue` without logging)
-- Why fragile: dropped tokens are invisible; a partial answer looks complete.
-- Safe modification: log skipped frames at debug level rather than swallowing silently.
-- Test coverage: happy-path multi-chunk parsing is covered; malformed-frame handling is not asserted.
+- Why fragile: dropped tokens invisible; partial answers look complete.
+- Safe modification: log skipped frames at debug level.
+- Test coverage: happy-path covered; malformed frames not asserted.
 
-**Large sidebar orchestration loop (grown across Phases 4–5):**
-- Files: `main.py` upload loop (~150+ lines incl. Docling/OCR/visual/LanceDB branches) mixes validation, dedup, extraction, OCR fallback, visual analysis, dual-index writes, persistence, caching, and state updates; chat loop adds summarizer + validator wiring (`main.py:484,594-622`).
-- Why fragile: hard to unit-test; ordering bugs are easy to introduce (CR-01/Phase 05 class).
-- Safe modification: extract the per-file processing into a testable helper.
-- Test coverage: none for `main.py` orchestration paths.
+**Large sidebar orchestration loop (grown across Phases 4–7):**
+- Files: `main.py` upload loop (~150+ lines) + chat loop (summarizer + validator wiring, `main.py:484,594-622`)
+- Why fragile: validation/dedup/extraction/OCR/visual/LanceDB/persistence/state in one untestable block; ordering bugs easy (CR-01/Phase 05 class).
+- Safe modification: extract per-file processing into a testable helper.
+- Test coverage: none for orchestration paths (purge-logic unit tests only).
 
 ## Scaling Limits
 
 **VRAM ceiling (4 GB) — analytical estimate, needs model-resident measurement before release:**
-- Current capacity: projected peak 3,445 MB vs 3,800 MB safety target (651 MB headroom), per `.planning/research/RESOURCE_PROFILE.json:4-5` — but the figure is an analytical sum (one live DWM term + four constants; fully constant on headless/CI). Phase 6 added live sampling (`resource_telemetry.py`, sidebar gauge `main.py:359-384`) and the `InferenceGate` single-resident-model invariant (`local_llm.py:26-90`), so the ceiling holds only if exactly one model stays resident and embeddings/OCR stay on CPU.
-- Limit: any second model, larger context, or GPU-offloaded OCR triggers shared-memory paging (throughput collapses).
-- Scaling path: keep exactly one model resident; reduce `-ngl`/`-c` if needed; cap crop/DPI budgets. Release gate: re-run `scripts/profile_resources.py` on the RTX 3050 with llama-server resident and replace the analytical projection with live numbers.
+- Current capacity: projected 3,445 MB vs 3,800 MB target (651 MB headroom) per `.planning/research/RESOURCE_PROFILE.json:4-5` — analytical (see Bottlenecks). Live sampling exists (`resource_telemetry.py`, sidebar gauge `main.py:359-384`); `InferenceGate` single-resident invariant (`local_llm.py:26-90`) holds only if one model stays resident and embeddings/OCR stay on CPU.
+- Limit: second model, larger context, or GPU-offloaded OCR triggers shared-memory paging.
+- Scaling path: one resident model; reduce `-ngl`/`-c` if needed; cap crop/DPI budgets. Release gate: RTX 3050 model-resident measurement.
 
 **BM25-from-table recovery capped at 10 000 rows:**
-- Current capacity: `_bm25_search_fallback` reads at most 10 000 LanceDB rows into memory (`hybrid_retriever.py:427`).
-- Limit: corpora above ~10k chunks silently exclude tail rows from keyword search after restart; dense search is unaffected (native index), so hybrid fusion degrades asymmetrically with no warning.
-- Scaling path: paginate the recovery read or rebuild the fallback mirror incrementally; log when the cap truncates.
+- Current capacity: at most 10 000 LanceDB rows read into memory (`hybrid_retriever.py:427`).
+- Limit: larger corpora silently exclude tail rows from keyword search after restart; dense unaffected → asymmetric hybrid degradation with no warning.
+- Scaling path: paginate recovery; log on truncation.
 
 **SQLite single-file store:**
-- Current capacity: fine for a single user; per-operation connections with WAL (`doc_store.py:81-95`) plus FK enforcement. Summaries table grows monotonically (no eviction).
-- Limit: concurrent writers on network/OneDrive paths can still contend despite `busy_timeout`.
-- Scaling path: keep the DB on a local disk; LanceDB/multi-user is out of scope.
+- Current capacity: single user fine; WAL + `busy_timeout` + FK enforcement (`doc_store.py:81-95`). Summaries table grows monotonically (no eviction).
+- Limit: concurrent writers on network/OneDrive paths can contend.
+- Scaling path: keep DB on local disk; multi-user out of scope.
 
 **LanceDB on-disk growth is append-mostly:**
-- Current capacity: `merge_insert("chunk_id")` upserts on re-index (`hybrid_retriever.py:318-324`), but the legacy delete-then-add path (`hybrid_retriever.py:325-334`) and Clear All semantics (no table purge — see Tech Debt) leave stale rows and tombstone growth in `data/lancedb/`.
-- Limit: repeated re-index/delete cycles bloat the table; no compaction/vacuum is ever invoked.
-- Scaling path: add periodic `compact_files`/`vacuum` (LanceDB maintenance) or a full re-index utility.
+- Current capacity: `merge_insert("chunk_id")` upserts on re-index (`hybrid_retriever.py:318-324`); legacy delete-then-add (`hybrid_retriever.py:325-334`) + no-purge Clear All leave stale rows/tombstones in `data/lancedb/`.
+- Limit: re-index/delete cycles bloat the table; no `compact_files`/`vacuum` ever invoked.
+- Scaling path: periodic maintenance or full re-index utility.
+
+**Unbounded disk caches (Phase 6 — chat history FIXED, disk open):**
+- Status: session history bounded (`MAX_CHAT_TURNS=50`, `main.py:38,389-395`); summary cache has model-version invalidation (`doc_store.py:469-497`).
+- Issue: SQLite summaries (upsert, never pruned) + LanceDB rows (append-mostly) + per-doc/profile `summary_*` session keys grow monotonically.
+- Files: `doc_store.py:438-460`, `hybrid_retriever.py:318-334`, `main.py:622-636`
+- Fix approach: per-cache caps + LanceDB compaction cadence; counts already in sidebar (`main.py:383-384`).
 
 ## Dependencies at Risk
 
-**Unpinned multimodal + native + persistence + cloud stack (`docling`, `rapidocr-onnxruntime`, `pymupdf`, `pillow`, `lancedb`, `pyarrow`, `litellm`):**
-- Risk: all declared as `>=` floors in `requirements.txt:7,9-15`; `docling` and `rapidocr-onnxruntime` drag in torch/onnxruntime/opencv transitives that are large, fast-moving, and platform-sensitive (Windows wheel availability, CUDA/CPU variants); `lancedb`/`pyarrow` add native query-engine + columnar-format coupling where a minor bump can change FTS availability or table-compat behaviour.
-- Impact: a transitive bump can break layout parsing, OCR decoding, vector search, FTS search, or model-download behavior; `pymupdf`/`pillow` are native parsers with CVE history.
-- Migration plan: pin exact working versions (verify on Windows + CPU-only), or add a lockfile; keep `pypdf==5.3.0` exact as-is. Owned by Phase 8 (release hardening).
+**Lockfile / requirements divergence (NO-GO — see Tech Debt §1):**
+- Risk: two files claim to define the environment and disagree on 6 pins; CI and docs consume different files.
+- Impact: release installs are undefined — neither file alone is trustworthy.
+- Migration plan: regenerate lockfile from CI-verified env; CI-gate the lockfile.
+
+**Unpinned native + cloud floors (`docling`, `rapidocr-onnxruntime`, `pymupdf`, `pillow`, `lancedb`, `pyarrow`, `litellm`):**
+- Risk: `>=` floors on large/fast-moving/native packages (`requirements.txt:7,9-17`); Windows wheel + CUDA/CPU-variant sensitivity; `lancedb`/`pyarrow` minor bumps can shift FTS/table-compat; `pymupdf`/`pillow` have CVE history.
+- Impact: transitive bump can break parsing, OCR, search, or model download.
+- Migration plan: exact pins verified on Windows + CPU-only (fold into lockfile fix).
 
 **Transitive torch / transformers (via sentence-transformers):**
-- Risk: not pinned in `requirements.txt`; large, fast-moving, and platform-sensitive.
-- Impact: a transitive bump can break embeddings or download behavior.
-- Migration plan: pin transitives or add a lock; the model itself (`all-MiniLM-L6-v2`) is stable.
+- Risk: unpinned; large and platform-sensitive.
+- Impact: embedding/download breakage.
+- Migration plan: pin transitives or lock; model (`all-MiniLM-L6-v2`) itself is stable.
+
+**`groq_provider.py` redundant beside `litellm_provider.py` (dead-code risk):**
+- Risk: `GroqProvider` (`groq_provider.py`) remains wired while `LiteLLMProvider` covers `groq/llama-3.3-70b-versatile` via the same API. Two Groq paths = two consent/error contracts (`_assert_consent` only on LiteLLM path).
+- Files: `groq_provider.py`, `litellm_provider.py`, `local_llm.py:162-180`
+- Impact: edits may fix one path and miss the other.
+- Migration plan: route Groq exclusively through `LiteLLMProvider` and delete `groq_provider.py`, or document both and assert consent on both.
 
 **`reportlab` only in `requirements-test.txt`:**
-- Risk: `tests/test_pdf_reader.py` imports `reportlab` at module top, so a plain `pip install -r requirements.txt` cannot run the suite.
-- Impact: local test runs fail on collection unless test deps are installed.
-- Migration plan: document/seed the test deps (CI already installs `requirements-test.txt`).
+- Risk: `tests/test_pdf_reader.py` imports `reportlab` at top; plain `requirements.txt` install cannot run the suite.
+- Impact: local test runs fail on collection without test deps.
+- Migration plan: document test-deps seeding (CI already installs `requirements-test.txt`).
 
 ## Missing Critical Features
 
-**Cloud opt-in + egress guardrails (Phase 7 — SHIPPED, hardening residuals open):**
-- Status: explicit `@st.dialog` consent gate (`main.py:137-160`), per-provider session keys (`main.py:72`), `LiteLLMProvider._assert_consent` (`litellm_provider.py:132-136`), local/cloud captions + per-answer cloud attribution (`main.py:169,210,580,688`), ingestion vision local-only filter + guard (`main.py:406-415`, `visual_analyzer.py:211-223`).
-- Remaining: UI-layer-only enforcement, dialog dismiss loop, OCR-artifact disclosure wording, legacy key fallback, Clear All cloud posture — see Phase 07 Residuals.
-- Blocks: release-grade consent auditability (Phase 8).
+**Reproducible environment (NO-GO — see Tech Debt §1):**
+- Problem: no trustworthy lockfile; docs/CI disagree.
+- Blocks: release sign-off.
+- Fix approach: regenerate + CI-gate `requirements-lock.txt`.
+
+**Model-resident VRAM measurement:**
+- Problem: 3,445 MB headline is analytical (constants + DWM term, no resident sampling).
+- Blocks: 4 GB ceiling sign-off.
+- Fix approach: RTX 3050 run with llama-server resident; live numbers into `RESOURCE_PROFILE.json`.
 
 **Output-side injection check:**
-- Problem: input isolation is fixed (CR-01/CR-02 + sanitize + WR-03/WR-09), but no output guard verifies answers don't echo injected directives from documents or VLM descriptions.
+- Problem: input isolation fixed; no answer-side guard against echoed directives from documents/VLM descriptions.
 - Blocks: full prompt-injection closure.
-- Fix approach: add an answer-side scan (directive-echo detection) plus a test with an adversarial chunk.
+- Fix approach: directive-echo scan + adversarial-chunk test.
 
-**`base_url` allowlisting:**
-- Problem: `LlamaCppProvider` accepts any `base_url` with no loopback restriction.
+**`allow_remote` governance for remote servers:**
+- Problem: loopback validation correct, but `allow_remote=True` bypass exists with no UI/policy guardrails.
 - Blocks: safe remote-server configuration.
-- Fix approach: add scheme/host validation + explicit opt-in flag for non-loopback hosts.
+- Fix approach: explicit opt-in + allowlist before any remote-server UI ships.
 
 **Retrieval quality evaluation:**
-- Problem: Phase 4 ships BM25 + RRF fusion with no measured quality baseline (no recall@k / nDCG harness); `scripts/benchmark_baseline.py` measures scan latency only.
-- Blocks: knowing whether hybrid actually beats dense-only, and tuning RRF weights / k per mode.
-- Fix approach: extend the corpus generator (`tests/data/corpus/generate_corpus.py`, run in CI per `04-REVIEW-FIX.md`) with relevance judgements and a recall@k check.
+- Problem: BM25 + RRF fusion ships with no recall@k / nDCG baseline; `scripts/benchmark_baseline.py` measures latency only.
+- Blocks: knowing hybrid beats dense-only; tuning RRF weights/k.
+- Fix approach: relevance judgements + recall@k on the generated corpus (`tests/data/corpus/generate_corpus.py`).
 
-**VRAM/RAM profiling harness (Phase 6 — SHIPPED with methodology caveat):**
-- Status: `resource_telemetry.py` + `scripts/profile_resources.py` + sidebar gauge (`main.py:359-384`) exist; headline 3,445 MB figure is analytical (constants + DWM term, no model-resident sampling).
-- Blocks: release sign-off on the 4 GB ceiling.
-- Fix approach: run `scripts/profile_resources.py` on the target RTX 3050 with llama-server resident and record live `nvidia-smi` numbers into `RESOURCE_PROFILE.json` before release.
+**Consent auditability (Phase 07 residual):**
+- Status: dialog gate + per-provider keys + `_assert_consent` + captions/attribution all shipped (`main.py:108-245`, `litellm_provider.py:124-136`).
+- Remaining: persistent record, dismiss-loop fix, OCR disclosure wording, legacy-key decision — see Release Residuals §1–4.
+- Blocks: release-grade consent claims.
 
 ## Test Coverage Gaps
 
-**`main.py` UI orchestration (narrowed by Phase 6, still the top gap):**
-- What's not tested: upload flow, dedup handling, Docling/OCR/visual/LanceDB branches, hybrid restore-on-restart, Clear All semantics (purge logic covered, orchestration not), cache writes, chat streaming, error paths, tab/drawer/badge rendering.
-- New in Phase 6 (covered): chat-history bounding via production `bound_chat_history` (`tests/test_cache_invalidation.py:15-38`), `DocStore.count_documents/count_summaries` + sidebar telemetry contracts (`tests/test_cache_invalidation.py`), `InferenceGate` acquire/release/reentrancy/timeout/unauthorized-release (`tests/test_concurrency_lock.py`, 8 tests), telemetry parsing/fallbacks/snapshot (`tests/test_resource_telemetry.py`, 10 tests).
+**`main.py` UI orchestration (still the top gap):**
+- What's not tested: upload flow, dedup, Docling/OCR/visual/LanceDB branches, hybrid restore-on-restart, Clear All orchestration (purge logic covered: `tests/test_main_ui.py:140-195`), cache writes, chat streaming, error paths, tab/drawer/badge rendering.
+- Covered in Phases 6–8: history bounding (`tests/test_cache_invalidation.py:15-38`), telemetry contracts, `InferenceGate` (`tests/test_concurrency_lock.py`, 8 tests), telemetry parsing/snapshot (`tests/test_resource_telemetry.py`, 10 tests), Clear All summary + cloud purge (`tests/test_main_ui.py:140-195`), loopback variations (`tests/test_llama_cpp_provider.py`).
 - Files: `main.py`
-- Risk: regressions in orchestration are only caught manually (Phase 3 criticals, Phase 4 CR-01/CR-02, Phase 5 CR-01 all lived here).
+- Risk: orchestration regressions caught only manually (all prior criticals lived here).
 - Priority: High
 
-**Cloud streaming success path (LiteLLM — covered; legacy Groq path — still open):**
-- What's tested now: `LiteLLMProvider` consent gating, retries, timeouts, MIME sniffing (`tests/test_litellm_provider.py`, 11 tests); consent state transitions + ingestion visual isolation + idempotence (`tests/test_cloud_privacy.py`, 8 tests).
-- What's still not tested: `GroqProvider.stream_text`/`generate_text` happy path (only the unconfigured health path is asserted).
-- Files: `groq_provider.py:94-149`; tests cover only `check_health`/capabilities (`tests/test_local_llm.py`).
-- Risk: payload/stream parsing regressions in the legacy fallback provider — decide whether it survives Phase 8 (see `groq_provider.py` redundancy residual).
-- Priority: Medium (resolves itself if the legacy provider is deleted).
+**Cloud streaming success paths (LiteLLM covered; legacy Groq open):**
+- Tested: consent gating, retries, timeouts, MIME sniffing (`tests/test_litellm_provider.py`, 11 tests); consent transitions + isolation + idempotence (`tests/test_cloud_privacy.py`, 8 tests).
+- Not tested: `GroqProvider.stream_text`/`generate_text` happy path (only unconfigured-health asserted).
+- Files: `groq_provider.py:94-149`
+- Risk: payload/stream regressions in the legacy provider — resolves itself if deleted (see Dependencies at Risk).
+- Priority: Medium
 
-**VLM/OCR integration paths (narrowed by Phase 7, wiring still untested):**
-- What's tested now: vision-unavailable degradation (`tests/test_visual_analyzer.py`, 7 tests, passing per `07-REVIEW-FIX.md`); ingestion visual-isolation filter logic (`tests/test_cloud_privacy.py::test_ingestion_visual_analyzer_never_calls_cloud_vision_even_in_cloud_mode` — asserts the `local_vlm_provider` filter shape, not the live `main.py` upload loop).
-- What's still not tested: end-to-end upload → OCR → visual description → indexed evidence; the `main.py:402-417` wiring (provider → `VisualAnalyzer`) itself; consent-dialog state machine (toggle/dialog/revoke transitions through `main.py`).
-- Files: `main.py` upload loop (`main.py:402-417`), `main.py:108-245` (privacy controls), `visual_analyzer.py:211-250`, `ocr_fallback.py:232-290`
-- Risk: CR-01-class wiring regressions (provider never passed, vision silently off) and dialog-loop regressions are still green-in-CI/broken-in-browser.
+**VLM/OCR integration wiring:**
+- Tested: vision-unavailable degradation (`tests/test_visual_analyzer.py`, 7 tests); isolation filter shape (`tests/test_cloud_privacy.py`).
+- Not tested: end-to-end upload → OCR → visual → indexed evidence; `main.py:402-417` wiring; consent-dialog state machine.
+- Files: `main.py:402-417`, `main.py:108-245`, `visual_analyzer.py:211-250`, `ocr_fallback.py:232-290`
+- Risk: CR-01-class wiring regressions green-in-CI/broken-in-browser.
 - Priority: High
 
 **Hybrid degraded-mode paths:**
-- What's not tested: `LocalEmbedding`-only chat branch, `retrieval_result=None` re-search inside `local_llm.py:123-159`, BM25-from-table recovery above/below the 10 000-row cap, `close()` durability with a live LanceDB table, filter escaping with adversarial `doc_id` on `delete_document`.
+- What's not tested: `LocalEmbedding`-only chat branch, `retrieval_result=None` re-search (`local_llm.py:123-159`), BM25 recovery above/below 10k cap, `close()` durability with live table, adversarial-`doc_id` filter escaping on `delete_document`.
 - Files: `main.py` chat loop, `local_llm.py:123-159`, `hybrid_retriever.py:346-363,424-431`
-- Risk: the exact paths that execute when LanceDB is missing or sessions restart cold are the least asserted.
+- Risk: the exact cold-start/degraded paths are the least asserted.
 - Priority: High
 
 **Summarizer pipeline-version and singleton paths:**
-- What's not tested: cache behavior across `CONFIG_VERSION`/chunking changes (no test — no code either); cross-session `last_retrieval_result` contamination (documented, unasserted either way).
+- What's not tested: cache behaviour across `CONFIG_VERSION`/chunking changes; cross-session `last_retrieval_result` contamination.
 - Files: `doc_store.py:469-497`, `summarizer.py:328-332`, `local_llm.py:44,171,207`
-- Risk: the two Phase 05 residuals have no regression net if a future change widens them.
+- Risk: Phase 05 residuals have no regression net.
 - Priority: Medium
 
 **Error/edge paths:**
-- What's not tested: `GroqProvider.analyze_image` raising `NotImplementedError`; malformed SSE frames; `main.py` provider errors mid-stream.
+- What's not tested: `GroqProvider.analyze_image` `NotImplementedError`; malformed SSE frames; `main.py` provider errors mid-stream.
 - Files: `groq_provider.py:151-156`, `llama_cpp_provider.py:196-215`, `main.py` chat loop
 - Risk: silent or ugly failures.
 - Priority: Low–Medium
 
 **No coverage measurement:**
-- What's not tested: no `pytest-cov` in `requirements-test.txt` and no threshold config.
+- What's not tested: no `pytest-cov` in `requirements-test.txt`, no threshold config.
 - Files: `pyproject.toml`, `requirements-test.txt`
-- Risk: coverage can regress unnoticed.
+- Risk: coverage regresses unnoticed.
 - Priority: Low
 
 ---
