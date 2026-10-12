@@ -5,7 +5,7 @@
 ## Languages
 
 **Primary:**
-- Python 3.11+ — all application code (`main.py`, `local_llm.py`, `model_provider.py`, `groq_provider.py`, `llama_cpp_provider.py`, `prompt_budget.py`, `local_embedding.py`, `vector_index.py`, `hybrid_retriever.py`, `pdf_reader.py`, `docling_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`, `doc_store.py`, `models.py`, `upload_validation.py`, `summarizer.py`, `citation_validator.py`, `scripts/benchmark_baseline.py`, `tests/`)
+- Python 3.11+ — all application code (`main.py`, `local_llm.py`, `model_provider.py`, `groq_provider.py`, `llama_cpp_provider.py`, `prompt_budget.py`, `local_embedding.py`, `vector_index.py`, `hybrid_retriever.py`, `pdf_reader.py`, `docling_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`, `doc_store.py`, `models.py`, `upload_validation.py`, `summarizer.py`, `citation_validator.py`, `resource_telemetry.py`, `scripts/benchmark_baseline.py`, `scripts/profile_resources.py`, `tests/`)
 
 **Secondary:**
 - JSON — `.devcontainer/devcontainer.json`, disk cache payloads `.cache/<sha256>/<CONFIG_VERSION>/{pages,chunks,manifest}.json` written by `main.py:278-289`, LanceDB fallback payload `data/lancedb/fallback_store.json` written by `hybrid_retriever.py:162-187`, summary `page_references_json` serialised via `json.dumps` in `doc_store.py:435`
@@ -25,8 +25,8 @@
 
 **Package Manager:**
 - pip
-- Runtime deps: `requirements.txt` (15 entries, mix of `==` pins and `>=` floors — see table below; **verified 2026-10-12: Phase 5 added zero new pins**)
-- Test/benchmark deps: `requirements-test.txt` (4 entries: `pytest>=8.3.0`, `reportlab>=4.2.0`, `ruff>=0.9.0`, `psutil>=6.1.0`)
+- Runtime deps: `requirements.txt` (16 entries, mix of `==` pins and `>=` floors — see table below; **verified 2026-10-12: Phase 6 added `psutil>=6.1.0` as a runtime dep (`requirements.txt:16`)**)
+- Test/benchmark deps: `requirements-test.txt` (4 entries: `pytest>=8.3.0`, `reportlab>=4.2.0`, `ruff>=0.9.0`, `psutil>=6.1.0` — psutil now duplicated as runtime + test dep)
 - Lockfile: absent (no `requirements.lock`, `poetry.lock`, `Pipfile.lock`, `uv.lock`)
 - Virtual env convention: `.venv` (gitignored via `.gitignore:2`)
 
@@ -62,10 +62,15 @@
 - No FAISS / scikit-learn as pinned runtime deps — `vector_index.py:11-12` is pure stdlib (`math`, `typing`); `numpy>=1.26.0,<3.0.0` is a direct floor in `requirements.txt:7` used by tests/benchmark and `HybridRetriever` call sites (`tests/conftest.py:8`, `tests/test_hybrid_retriever.py:5`, `scripts/benchmark_baseline.py:100`, `main.py:212,277` for `embeddings.tolist()`); `torch`, `transformers`, `huggingface-hub`, `tokenizers` arrive transitively via sentence-transformers
 
 **Testing:**
-- pytest `>=8.3.0` — runner; config `[tool.pytest.ini_options]` in `pyproject.toml:13-19` (`testpaths=["tests"]`, `python_files=["test_*.py"]`); Phase-5 suites add `tests/test_summarizer.py` (342 lines: single-pass, map-reduce, caching lifecycle, model-version invalidation, empty-pages error) and `tests/test_citation_validator.py` (precision, hallucinated-rank, abstention, empty/ungrounded cases)
+- pytest `>=8.3.0` — runner; config `[tool.pytest.ini_options]` in `pyproject.toml:13-19` (`testpaths=["tests"]`, `python_files=["test_*.py"]`); Phase-5 suites add `tests/test_summarizer.py` (342 lines: single-pass, map-reduce, caching lifecycle, model-version invalidation, empty-pages error) and `tests/test_citation_validator.py` (precision, hallucinated-rank, abstention, empty/ungrounded cases); Phase 6 adds `tests/test_resource_telemetry.py` (165 lines: nvidia-smi parse/malformed/subprocess-failure, psutil live + fallback, `LatencyTracker` success/failure, `track_stage`, snapshot aggregation) plus `test_sidebar_telemetry_contracts` in `tests/test_cache_invalidation.py:208-218`
 - reportlab `>=4.2.0` — synthetic 6-PDF corpus generation (`tests/data/corpus/generate_corpus.py:6-18`: `clean_digital.pdf`, `dense_table.pdf`, `multi_column.pdf`, `chart_diagram.pdf`, `scanned_sample.pdf`, `corrupt_invalid.pdf`)
-- psutil `>=6.1.0` — RSS/CPU profiling in `scripts/benchmark_baseline.py:13,23-25`
+- psutil `>=6.1.0` — PROMOTED to runtime dep in Phase 6 (`requirements.txt:16`); still also in `requirements-test.txt:5`. Runtime use: `resource_telemetry.py:83-96` (`psutil.Process().memory_info()` → `rss_mb`/`vms_mb`, zero-fallback on `ImportError`/any error); legacy benchmark use: `scripts/benchmark_baseline.py:13,23-25`
 - numpy (runtime floor) — deterministic 384-dim mock embeddings `_make_unit_vector(seed)` in `tests/test_hybrid_retriever.py:12-19` and in `tests/conftest.py:59-74`, plus random-vector scan benchmark in `scripts/benchmark_baseline.py:100-114`
+
+**Observability / telemetry (Phase 6 — QUAL-01):**
+- `resource_telemetry.py` (211 lines, stdlib + optional `psutil`, NO new pip package beyond the `psutil` runtime promotion) — `get_gpu_memory_info()` queries `nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv,noheader,nounits` via `subprocess.run(timeout=2.0)` with first-line parse → `{total_mb, used_mb, free_mb, utilization_pct}` or `None` on `FileNotFoundError`/`SubprocessError`/`ValueError`/`IndexError` (`resource_telemetry.py:26-71`); `get_process_memory_info()` wraps `psutil.Process().memory_info()` → `{rss_mb, vms_mb}` with zero-fallback (`resource_telemetry.py:74-96`); `LatencyTracker(stage_name, record_history=True)` context manager measuring `time.perf_counter()` → `elapsed_ms` + `success`/`error`, recording into thread-safe `_LATENCY_HISTORY` (`threading.Lock`, `MAX_STAGE_HISTORY=200`, `resource_telemetry.py:20-23,99-152`); `track_stage()` generator shim (`resource_telemetry.py:155-160`); `record_stage_latency` / `get_latency_history` / `clear_latency_history` registry API (`resource_telemetry.py:163-181`); `get_system_telemetry_snapshot()` → `{timestamp, gpu, process, stages: {count, avg_ms, min_ms, max_ms}}` (`resource_telemetry.py:184-211`)
+- `nvidia-smi` (EXTERNAL binary, not pip) — invoked only via `resource_telemetry.get_gpu_memory_info`; 2 s timeout; `None` return drives CPU-only UI captions and the 487.0 MB DWM-baseline fallback in `scripts/profile_resources.py:268`
+- UI wiring: `main.py:33` imports `get_gpu_memory_info, get_process_memory_info`; sidebar expander `📊 System Telemetry & VRAM` renders `st.metric` + `st.progress` + 🟢/🟡/🔴 thresholds at 3500/3800 MB, `CPU-only Mode` caption when `None`, plus RSS + doc/summary counts (`main.py:357-384`)
 
 **Build/Dev:**
 - ruff `>=0.9.0` — linter + formatter; config in `pyproject.toml:1-10` (`line-length=120`, `target-version="py311"`, `select=["E","F","W"]`, `ignore=["E501","W291","W293"]`, `scripts/*` ignores `E402`)
@@ -73,7 +78,7 @@
 
 ## Key Dependencies
 
-**Critical (verified pin per line of `requirements.txt`, re-verified 2026-10-12 — 15 lines, unchanged by Phase 5):**
+**Critical (verified pin per line of `requirements.txt`, re-verified 2026-10-12 — 16 lines; Phase 6 adds `psutil`):**
 | Package | Pin | Where used | Why it matters |
 |---|---|---|---|
 | `streamlit` | `==1.42.0` (`requirements.txt:1`) | `main.py:23`, `groq_provider.py:40` | App runtime; UI does not run without it |
@@ -91,10 +96,12 @@
 | `pillow` | `>=10.2.0` (`requirements.txt:13`) | transitive image codec for the PNG paths above | Required for raster/crop/OCR image handling |
 | `lancedb` | `>=0.17.0` (`requirements.txt:14`) | `hybrid_retriever.py:20,115,196-200,311-334,380,493` | Persistent on-disk vector + FTS store; optional import with `VectorIndex` fallback |
 | `pyarrow` | `>=14.0.0` (`requirements.txt:15`) | `hybrid_retriever.py:21` (guarded `import pyarrow as pa`), transitive LanceDB columnar layer | Required by LanceDB; no direct app-code API use beyond the guarded import |
+| `psutil` | `>=6.1.0` (`requirements.txt:16`, Phase 6 promotion; also `requirements-test.txt:5`) | `resource_telemetry.py:83-96` (`psutil.Process().memory_info()` → `rss_mb`/`vms_mb`), `scripts/profile_resources.py:118,259` (baseline + final RSS), `scripts/benchmark_baseline.py:13,23-25` (legacy RSS/CPU) | Runtime process-memory telemetry with zero-fallback when missing; CI-safe (`None`/zeros, never raises) |
 
 **Infrastructure:**
 - `torch`, `transformers`, `huggingface-hub`, `tokenizers` — transitive via sentence-transformers (not pinned); model weights cached in `~/.cache/huggingface/`
 - stdlib `sqlite3` only for metadata persistence — no DB driver (`doc_store.py:12`); vector persistence is LanceDB embedded files under `data/lancedb/` (no server, no driver); no Redis
+- stdlib `subprocess` + `threading` + `time` + `datetime` for telemetry — `subprocess.run(["nvidia-smi", ...], timeout=2.0)` (`resource_telemetry.py:39-45`), `threading.Lock` guarding `_LATENCY_HISTORY` (`resource_telemetry.py:22`), `time.perf_counter()` for stage latency (`resource_telemetry.py:119,130`), `datetime.now(timezone.utc).isoformat()` for snapshot timestamps (`resource_telemetry.py:207`)
 - stdlib `hashlib`, `re`, `io`, `json`, `math`, `base64`, `logging`, `pathlib`, `uuid`, `datetime` across `upload_validation.py`, `prompt_budget.py`, `vector_index.py`, `hybrid_retriever.py`, `llama_cpp_provider.py`, `summarizer.py`, `citation_validator.py`, `main.py`
 
 ## Configuration
@@ -108,13 +115,14 @@
 - Locked deployment caps: `MAX_FILE_MB = 50`, `MAX_PAGES = 500` (`upload_validation.py:15-16`); OCR trigger `threshold = 50` chars (`ocr_fallback.py:29-43`); OCR render `dpi = 150` (`ocr_fallback.py:77-82`); visual crop `zoom = 2.0` (`visual_analyzer.py:138-144`)
 - Summarizer budgets (Phase 5): `FAST_PATH_TOKEN_LIMIT = 2500`, `MAX_BATCH_TOKENS = 2000` (`summarizer.py:27-28`); single-pass `max_tokens=1500`, map `max_tokens=800`, reduce `max_tokens=1500`, all `temperature=0.2` (`summarizer.py:225-298`); citation regex `re.compile(r"\[E(\d+)\]", re.IGNORECASE)` (`citation_validator.py:16`) and page-ref regex `r"\b(?:p\.|page)\s*(\d+)\b"` (`summarizer.py:147`); precision gate `>= 0.95` (`citation_validator.py:163`)
 - Summary profiles: `VALID_SUMMARY_PROFILES = ("overview", "detailed", "study_notes", "tables_figures", "findings")` (`models.py:209`); templates `PROFILE_SYSTEM_INSTRUCTIONS` / `MAP_PROMPT_TEMPLATE` / `REDUCE_PROMPT_TEMPLATE` (`summarizer.py:30-132`)
+- Telemetry / QUAL-01 budgets (Phase 6): VRAM health thresholds `vram_used < 3500 → 🟢 Healthy`, `<= 3800 → 🟡 Headroom Limited`, `> 3800 → 🔴 High` (`main.py:374-379`); profiling budget `vram_target_mb = 3800.0` vs 4096 ceiling, projected peak = DWM overhead + 1450 (Qwen3-VL 2B Q4_K_M) + 450 (mmproj-f16) + 510 (4K FP16 KV cache) + 350 (CUDA scratch) (`scripts/profile_resources.py:270-287`); DWM fallback `487.0 MB` in headless/CI where `nvidia-smi` is absent (`scripts/profile_resources.py:268`); SQLite cache SLA `warm < 50.0 ms` asserted (`scripts/profile_resources.py:247`); latency history cap `MAX_STAGE_HISTORY = 200` (`resource_telemetry.py:23`)
 - Chunking policy constant: `CONFIG_VERSION = "docling-1000-200-v1"` (`models.py:14`); cache path `cache_dir_for(base, sha256) → base/sha256/CONFIG_VERSION` with strict 64-hex validation (`models.py:17-30`)
 - Prompt budget defaults: `max_context_tokens=4096`, `max_output_tokens=1024`, heuristic `estimate_tokens = ceil(len/4)` (`prompt_budget.py:34-53`); system template `SYSTEM_GROUNDING_TEMPLATE` with `<document_context>` isolation (`prompt_budget.py:11-17`)
 
 **Build:**
 - No build step — interpreted Python. `pyproject.toml` holds only `[tool.ruff]` + `[tool.pytest.ini_options]` (`pyproject.toml:1-20`)
 - `.devcontainer/devcontainer.json:20` pip-installs `requirements.txt` + streamlit, then auto-launches Streamlit on port 8501
-- `.github/workflows/ci.yml:24-41` installs `requirements.txt` + `requirements-test.txt`, runs `ruff check .`, `ruff format --check .`, generates the corpus (`python tests/data/corpus/generate_corpus.py`), then `pytest tests/ -v`
+- `.github/workflows/ci.yml:24-41` installs `requirements.txt` (16 lines post-Phase-6) + `requirements-test.txt`, runs `ruff check .`, `ruff format --check .`, generates the corpus (`python tests/data/corpus/generate_corpus.py`), then `pytest tests/ -v`
 
 ## Platform Requirements
 
@@ -137,8 +145,9 @@
 | Streamlit app (sole entry point) | `streamlit run main.py` | `main.py:1-622` |
 | Devcontainer auto-start | `streamlit run main.py --server.enableCORS false --server.enableXsrfProtection false` | `.devcontainer/devcontainer.json:21-23` |
 | Benchmark | `python scripts/benchmark_baseline.py` (writes `.planning/research/BASELINE_BENCHMARK.json`; CPU-pinned `SentenceTransformer(..., device="cpu")` at line 70) | `scripts/benchmark_baseline.py:173-174` |
+| Resource profile (QUAL-01) | `python scripts/profile_resources.py` (writes `.planning/research/RESOURCE_PROFILE.json`; 6 stages: baseline → ingestion → CPU embeddings → LanceDB hybrid retrieval cold/warm → summarizer cold/warm cache SLA → InferenceGate check → VRAM headroom audit; `BenchmarkProvider` mock, `tempfile` DocStore/LanceDB, `shutil.rmtree` cleanup) | `scripts/profile_resources.py:94-342` |
 | Corpus generation | `python tests/data/corpus/generate_corpus.py` | `tests/data/corpus/generate_corpus.py` |
-| No CLI / module entry | No `if __name__ == "__main__"` in app modules (only `scripts/benchmark_baseline.py:173`) | Not applicable |
+| No CLI / module entry | No `if __name__ == "__main__"` in app modules (only `scripts/benchmark_baseline.py:173`, `scripts/profile_resources.py:341`) | Not applicable |
 
 - `main.py` — Streamlit front-end, session state (`hybrid_retriever` at `main.py:58,137-139,205-212,272-277,407`), upload → validate → dedup → Docling → OCR → visual → embed → `HybridRetriever.index_chunks` → hybrid chat (`tab_chat`) + summarizer tab (`tab_summary`, `main.py:360,538-622`) → stream orchestration
 - `local_llm.py` — `AiModel`: provider auto-detection + `ask_a_question_from_pdf_stream(pdf_path, prompt, local_embedding: LocalEmbedding | HybridRetriever | None, chat_history, retrieval_result)` with `HybridRetriever.search_hybrid(search_query, k=10)` dispatch (`local_llm.py:101-161`) and `assemble_grounded_messages` budgeting; plus `validate_response(response_text, retrieval_result)` → `validate_citations` (`local_llm.py:192-210`)
@@ -154,6 +163,7 @@
 - `doc_store.py` — `DocStore`: SQLite metadata + chunk + evidence + summary persistence with v1/v2/v3 migrations (v3 adds `document_summaries`, `doc_store.py:73-94`)
 - `models.py` — canonical Pydantic v2 schemas + `CONFIG_VERSION` + `cache_dir_for`; `EvidenceSnippet`/`RetrievalResult.formatted_evidence()`/`source_labels()` shared by generation prompts and UI citations; Phase 5 adds `SummaryProfile`/`VALID_SUMMARY_PROFILES`/`SummaryResult` (`models.py:208-235`)
 - `upload_validation.py` — `%PDF` magic-byte / size / page-count gate + `doc_<sha16>` identity
+- `resource_telemetry.py` — `get_gpu_memory_info` / `get_process_memory_info` / `LatencyTracker` / `track_stage` / `record_stage_latency` / `get_latency_history` / `clear_latency_history` / `get_system_telemetry_snapshot`; zero third-party surface beyond optional `psutil`; consumed by `main.py:33,357-384` (sidebar) and `scripts/profile_resources.py:28-32` (6-stage benchmark)
 
 ---
 

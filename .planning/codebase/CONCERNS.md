@@ -96,25 +96,61 @@ All 3 Criticals, 10 Warnings, 5 Info items from `.planning/phases/05-grounded-su
 - Impact: the next ingestion-wiring typo will again be green in CI and broken in the browser.
 - Fix approach: extract the per-file upload processing into a testable helper and add a smoke test for the provider/visual wiring.
 
-## Phase 06 Readiness — VRAM Ceiling & Performance Risks (next phase)
+## Review Fix Status — Phase 06 (Performance Optimization & Resource Profiling)
 
-**No runtime VRAM measurement exists (blocks Phase 6 goal directly):**
-- Issue: the 4 GB ceiling is a static estimate (`docs/LOCAL_INFERENCE.md` ≈ 3.26 GB for one Qwen3-VL 2B Q4_K_M + mmproj + 4K KV cache). Nothing in the codebase measures actual VRAM/RAM at runtime — no profiling harness, no `nvidia-smi` sampling, no KV-cache accounting, no startup budget check.
-- Files: `docs/LOCAL_INFERENCE.md`, `llama_cpp_provider.py` (no memory telemetry); `scripts/benchmark_baseline.py` measures scan latency only
-- Impact: Phase 6 ("benchmark VRAM/RAM on RTX 3050, tune context and KV-cache") starts with no instrumentation to benchmark with; tuning decisions would be guesswork.
-- Fix approach: add a lightweight profiling script (VRAM via `nvidia-smi`/pynvml, RSS via `psutil`) sampling across ingest → embed → VLM → query, before changing any tuning knob.
+All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-optimization-and-resource-profiling/06-REVIEW.md` are **FIXED** per `06-REVIEW-FIX.md` and verified against current source:
 
-**Unbounded caches with no eviction policy:**
-- Issue: three caches grow monotonically — SQLite summaries (`doc_store.py`, `UNIQUE(sha256,profile)` upsert, never pruned), LanceDB rows (`data/lancedb/`, append-mostly, no `compact_files`/`vacuum`), and `st.session_state` chat history + `summary_*` keys (per-session, unbounded list growth in `main.py`).
-- Files: `doc_store.py:438-460`, `hybrid_retriever.py:318-334`, `main.py` session-state init + chat append
-- Impact: disk and RAM footprint grow without bound across long sessions; Phase 6 "establish cache limits" has no hooks to attach limits to.
-- Fix approach: define per-cache caps (max summaries per doc, LanceDB compaction cadence, chat-history window already partially bounded by `prompt_budget.py` truncation) and expose counts in the sidebar.
+- **CR-01 `InferenceGate.release()` counter corruption — FIXED.** `local_llm.py:55-63` now calls `cls._lock.release()` BEFORE decrementing `_active_threads`, so an unowned release raises `RuntimeError` immediately without corrupting the counter; `is_locked()` (`local_llm.py:66-69`) can no longer report False while the owner holds the lock. Regression test: `tests/test_concurrency_lock.py::test_unauthorized_release_does_not_corrupt_active_counter`.
+- **WR-01 unlocked/unbounded `_LATENCY_HISTORY` — FIXED.** `resource_telemetry.py:22-23` adds `_LATENCY_LOCK = threading.Lock()` + `MAX_STAGE_HISTORY = 200`; all record/retrieve/clear/snapshot paths hold the lock (`resource_telemetry.py:139-143,165-169,174-180,193`). Covered by `tests/test_resource_telemetry.py` (10 tests).
+- **WR-02 orphan leading assistant turn — FIXED.** `prompt_budget.py:131-152` adds `bound_chat_history(history, max_turns)` pruning leading `"assistant"` turns after tail-slicing; `assemble_grounded_messages` prunes `retained_history` the same way (`prompt_budget.py:121-122`); `main.py:389-395` routes all appends through `append_chat_turn` → `bound_chat_history(..., max_turns=MAX_CHAT_TURNS)`.
+- **WR-03 bounding test fidelity — FIXED.** `tests/test_cache_invalidation.py:15-38` now imports and exercises production `bound_chat_history` directly (capacity bounding, assistant-pruning, empty-list contracts) instead of an inline slice.
+- **IN-01/IN-02 — FIXED/DOCUMENTED.** Negative unauthorized-release test added (`tests/test_concurrency_lock.py:88-110`); `scripts/profile_resources.py:268` documents the 487.0 MB headless DWM fallback as an empirical Windows 11 baseline.
 
-**Dual-index double-write per upload (carried from Phase 4, now the top perf debt):**
-- Problem: every fresh upload embeds chunk contents once for `LocalEmbedding.build_index` and passes precomputed embeddings to `HybridRetriever.index_chunks`, which additionally performs LanceDB `merge_insert`/delete-then-add plus fallback-store writes and (in non-LanceDB mode) a JSON persistence dump.
-- Files: `main.py:268-277`-area dual writes, `hybrid_retriever.py:226-340`, `local_embedding.py`
-- Cause: two stores updated synchronously inside the upload loop with no batching across files.
-- Improvement path: single-store writes (make `HybridRetriever` the read/write path, demote `LocalEmbedding` to embedding-function provider); short of that, batch multi-file chunks into one `index_chunks` call per upload session.
+## Phase 06 Residuals (partial fixes + new risks — ordered by severity)
+
+**Projected VRAM number is analytical, not measured (WR-era methodology gap, now the top release risk):**
+- Issue: `scripts/profile_resources.py:267-278` computes `projected_peak_vram_mb` (3,445 MB) as an arithmetic sum of one live term (`dwm_overhead_mb` from `nvidia-smi`) plus four constants (`model_weights_mb=1450.0`, `vision_proj_mb=450.0`, `kv_cache_4k_mb=510.0`, `cuda_scratch_mb=350.0`). On headless/CI even the DWM term falls back to the 487.0 constant, so the CI-reported number is fully analytical. No llama-server process RSS/VRAM is ever sampled — the model is not loaded during profiling.
+- Files: `scripts/profile_resources.py:258-296`, `.planning/research/RESOURCE_PROFILE.json:4-5`
+- Impact: QUAL-01 compliance (≤ 3,800 MB) is asserted, not demonstrated; a real RTX 3050 run with the model resident could exceed the estimate (allocator fragmentation, driver variance, concurrent OCR pixmaps).
+- Fix approach: before release, run `scripts/profile_resources.py` on the target RTX 3050 with llama-server resident and record live `nvidia-smi` used-MB at each stage into `RESOURCE_PROFILE.json`; treat 3,445 MB as a planning estimate until then.
+
+**Sidebar telemetry spawns `nvidia-smi` on every Streamlit rerun (new, Phase 6):**
+- Issue: `main.py:359` calls `get_gpu_memory_info()` (a `subprocess` `nvidia-smi` spawn with 2 s timeout, `resource_telemetry.py:26-71`) unconditionally on every full-script rerun with no `ttl`/`cache_resource` memoization. Every keystroke in chat input re-renders the sidebar and re-spawns the process.
+- Files: `main.py:359-381`, `resource_telemetry.py:26-71`
+- Impact: ~10–100 ms added to every rerun plus process-spawn churn; under a hung GPU driver the 2 s timeout blocks the whole UI thread (single-threaded Streamlit model).
+- Fix approach: memoize with `@st.cache_data(ttl=5)` or equivalent so the gauge refreshes at most every few seconds; keep the CPU-only `None` path as-is.
+
+**`InferenceGate` has no deadlock/timeout observability (residual):**
+- Issue: `acquire(timeout=60.0)` (`local_llm.py:39-52`) blocks the single Streamlit script thread up to 60 s with no UI feedback; `hold()` raises bare `TimeoutError` with no badge or retry hint. No logging on acquire/release/timeout paths.
+- Files: `local_llm.py:26-90`
+- Impact: a stuck inference call freezes the UI for a minute, then surfaces an unhandled exception page.
+- Fix approach: wrap the chat-loop gate hold in `st.status`/spinner with timeout → `st.error` + retry guidance; add debug logging on gate transitions.
+
+**`MAX_CHAT_TURNS=50` bounds count, not tokens (residual):**
+- Issue: `bound_chat_history` (`prompt_budget.py:131-152`) caps turn count, but 50 long turns can still exceed the 4 096-token input budget; the token-budget path (`prompt_budget.py:108-122`) then silently drops oldest turns mid-request without surfacing a "context truncated" indicator.
+- Files: `prompt_budget.py:105-152`, `main.py:38,389-395`
+- Impact: long sessions get silent context loss; no UI signal when truncation fires.
+- Fix approach: surface a truncation indicator when either bound fires; consider sizing `MAX_CHAT_TURNS` from the token budget rather than a fixed 50.
+
+## Phase 06 Readiness — VRAM Ceiling & Performance Risks (post-Phase 6 status)
+
+**Runtime VRAM measurement now exists (Phase 6 — RESOLVED with methodology caveat):**
+- Status: `resource_telemetry.py` (`get_gpu_memory_info` via `nvidia-smi` with 2 s timeout, `get_process_memory_info` via `psutil`, `LatencyTracker`, `get_system_telemetry_snapshot`) plus `scripts/profile_resources.py` (6-stage ingest → embed → hybrid-index → gate → footprint audit) and the sidebar `📊 System Telemetry & VRAM` widget (`main.py:359-384`, green < 3,500 / amber ≤ 3,800 / red > 3,800 MB) close the instrumentation gap.
+- Files: `resource_telemetry.py`, `scripts/profile_resources.py`, `main.py:359-384`, `.planning/research/RESOURCE_PROFILE.json`
+- Caveat: the headline 3,445 MB figure is analytical (see Phase 06 Residuals) — live per-rerun sampling exists, but release still needs a model-resident measurement on the RTX 3050.
+
+**Unbounded caches, partially bounded (Phase 6 — chat history FIXED, disk caches open):**
+- Status: session chat history is now bounded (`MAX_CHAT_TURNS=50` via `append_chat_turn`, `main.py:38,389-395`, tested in `tests/test_cache_invalidation.py:15-38`); summary cache has model-version invalidation (`doc_store.py:469-497`).
+- Issue: SQLite summaries (`UNIQUE(sha256,profile)` upsert, never pruned) and LanceDB rows (`data/lancedb/`, append-mostly, no `compact_files`/`vacuum`) still grow monotonically; per-doc/profile `summary_*` session keys accumulate within the session.
+- Files: `doc_store.py:438-460`, `hybrid_retriever.py:318-334`, `main.py:622-636`
+- Impact: disk footprint grows without bound across long use; release hardening (Phase 8) still needs per-cache caps/compaction cadence.
+- Fix approach: define per-cache caps (max summaries per doc, LanceDB compaction cadence); counts already exposed in the sidebar (`main.py:383-384`).
+
+**Dual-index double-write per upload (Phase 6 — RESOLVED in the main path):**
+- Status: per `06-02-SUMMARY.md`, redundant `LocalEmbedding.build_index(...)` calls were removed from the upload and dedup-restore paths — `main.py:218-224,285-288` now computes embeddings via `get_embeddings` and writes ONLY to `HybridRetriever.index_chunks(..., embeddings=...)`; `LocalEmbedding` is retained strictly as the CPU vectorizer (`embedding_fn=..._embed_one`). No `build_index` call remains in `main.py`.
+- Residual: `local_llm.py:211` (the `retrieval_result=None` fallback branch) still calls `build_index`, and the `LocalEmbedding.store: VectorIndex` object still exists per session — the classes are not removed, only unused on the hot path.
+- Files: `main.py:218-224,285-288`, `local_llm.py:211`, `local_embedding.py:59-76`
+- Fix approach: remove the `local_llm.py:211` fallback branch (see Dead fallback branch below) and the `VectorIndex` will be fully dead code on all app paths.
 
 **VLM + OCR resource pressure against the 4 GB ceiling (standing):**
 - Problem: visual analysis (`visual_analyzer.py` crop → `analyze_image` → llama-server VLM) and RapidOCR (ONNX on CPU) add per-document latency and memory that the Phase 2 budget did not account for. Large pages at high zoom/DPI inflate pixmap + OCR tensor memory; concurrent uploads serialize on the single model.
@@ -156,14 +192,14 @@ All 3 Criticals, 10 Warnings, 5 Info items from `.planning/phases/05-grounded-su
 
 ## Tech Debt (ordered by severity)
 
-**Dual-index write path (replaces "in-memory only" as top debt):**
-- Issue: every upload writes to BOTH `LocalEmbedding`/`VectorIndex` (in-memory) and `HybridRetriever` (LanceDB + fallback mirror), and the dedup-restore path rebuilds both. Two sources of truth must stay in sync on every ingest, dedup-hit, and Clear All.
-- Files: `main.py:199-213,268-277`-area, `local_embedding.py:41-58`, `hybrid_retriever.py:226-340`
-- Impact: double embedding/compute per upload; any future per-index delete/update that touches only one store silently diverges them; `VectorIndex` contents still vanish on restart while LanceDB survives, so post-restart sessions serve hybrid-only truth plus a partially rebuilt `LocalEmbedding`.
-- Fix approach: make `HybridRetriever` the single write/read path and demote `LocalEmbedding` to an embedding-function provider (or remove `VectorIndex` from the session entirely); until then, keep both writes adjacent in the same block as today.
+**Dual-index write path (Phase 6 — RESOLVED in the main path, classes retained):**
+- Status: `main.py` no longer calls `LocalEmbedding.build_index` on upload or dedup-restore (`main.py:218-224,285-288` write only to `HybridRetriever.index_chunks` with precomputed embeddings); `HybridRetriever` is the sole authoritative index and `LocalEmbedding` is the CPU vectorizer only. The double-embedding/compute cost and the two-sources-of-truth divergence risk are gone on the hot path.
+- Residual: `local_llm.py:211` still `build_index`es into an ephemeral `LocalEmbedding` on the `retrieval_result=None` fallback, and `LocalEmbedding.store: VectorIndex` still allocates per session — dead weight, not divergence.
+- Files: `main.py:218-224,285-288`, `local_llm.py:211`, `local_embedding.py:43,59-76`
+- Fix approach: delete the fallback branch (see Dead fallback branch) and remove `VectorIndex` from the session entirely.
 
-**Clear All resets session but not persistent stores:**
-- Issue: Clear All nulls `st.session_state.hybrid_retriever` (after `close()`) and clears `doc_ids`/`indexed_files`/`document_metadata` plus `summary_*` keys (`main.py:147`), but never calls `delete_document` per doc, never drops the LanceDB `chunks` table, never deletes `data/lancedb/`, and never removes `DocStore` rows (`data/documents.db`).
+**Clear All resets session but not persistent stores (still open after 06-02 hardening):**
+- Issue: Clear All nulls `st.session_state.hybrid_retriever` (after `close()`), resets `doc_ids`/`indexed_files`/`document_metadata`/`chat_history` and deletes every `summary_*` key (`main.py:142-156`; hardened in 06-02), but never calls `delete_document` per doc, never drops the LanceDB `chunks` table, never deletes `data/lancedb/`, and never removes `DocStore` rows (`data/documents.db`).
 - Files: `main.py:132-141`-area; persistent state lives in `data/lancedb/` and `DocStore(Path("data/documents.db"))`
 - Impact: after Clear All, re-uploading the same PDFs hits the `DocStore` dedup path and restores from SQLite rather than re-extracting — the button reads as "forget everything" but is actually "clear session view". Stale LanceDB rows for never-re-uploaded docs remain queryable in future sessions that re-create the retriever. Disk usage grows monotonically.
 - Fix approach: decide the intended semantic (session-clear vs full-purge) and implement accordingly — either delete per-`doc_id` from `HybridRetriever` + `DocStore` on Clear All, or rename the button to reflect session-only reset.
@@ -259,11 +295,8 @@ All 3 Criticals, 10 Warnings, 5 Info items from `.planning/phases/05-grounded-su
 
 ## Performance Bottlenecks
 
-**Dual-index double-write per upload:**
-- Problem: every fresh upload embeds chunk contents once for `LocalEmbedding.build_index` and passes precomputed embeddings to `HybridRetriever.index_chunks`, which additionally performs LanceDB `merge_insert`/delete-then-add plus fallback-store writes and (in non-LanceDB mode) a JSON persistence dump.
-- Files: `main.py` upload loop, `hybrid_retriever.py:226-340`, `local_embedding.py`
-- Cause: two stores updated synchronously inside the upload loop with no batching across files.
-- Improvement path: single-store writes (see Tech Debt); short of that, batch multi-file chunks into one `index_chunks` call per upload session.
+**Dual-index double-write per upload (Phase 6 — RESOLVED, see Tech Debt):**
+- Status: main-path `build_index` calls removed; upload embeds once via `get_embeddings` and writes once to `HybridRetriever.index_chunks` (`main.py:218-224,285-288`). Retained here only as a pointer — the remaining per-upload cost is one embedding pass plus LanceDB `merge_insert`/delete-then-add, which is the designed single-write path, not debt.
 
 **VLM + OCR resource pressure against the 4 GB VRAM ceiling (standing):**
 - Problem: visual analysis and RapidOCR add per-document latency and memory the Phase 2 budget (≈ 3.26 GB) did not account for. See Phase 06 Readiness above.
@@ -341,10 +374,10 @@ All 3 Criticals, 10 Warnings, 5 Info items from `.planning/phases/05-grounded-su
 
 ## Scaling Limits
 
-**VRAM ceiling (4 GB):**
-- Current capacity: one Qwen3-VL 2B Q4_K_M model + mmproj + 4096-token KV cache ≈ 3.26 GB, per `docs/LOCAL_INFERENCE.md`. Phase 3 adds CPU-side OCR pixmaps and per-element VLM calls but no second resident model — the ceiling holds only if exactly one model stays resident and embeddings/OCR stay on CPU. No runtime measurement confirms this today.
+**VRAM ceiling (4 GB) — analytical estimate, needs model-resident measurement before release:**
+- Current capacity: projected peak 3,445 MB vs 3,800 MB safety target (651 MB headroom), per `.planning/research/RESOURCE_PROFILE.json:4-5` — but the figure is an analytical sum (one live DWM term + four constants; fully constant on headless/CI). Phase 6 added live sampling (`resource_telemetry.py`, sidebar gauge `main.py:359-384`) and the `InferenceGate` single-resident-model invariant (`local_llm.py:26-90`), so the ceiling holds only if exactly one model stays resident and embeddings/OCR stay on CPU.
 - Limit: any second model, larger context, or GPU-offloaded OCR triggers shared-memory paging (throughput collapses).
-- Scaling path: keep exactly one model resident; offload embeddings + OCR to CPU (already done); reduce `-ngl`/`-c` if needed; cap crop/DPI budgets. Phase 6 must convert the static estimate into measured headroom numbers.
+- Scaling path: keep exactly one model resident; reduce `-ngl`/`-c` if needed; cap crop/DPI budgets. Release gate: re-run `scripts/profile_resources.py` on the RTX 3050 with llama-server resident and replace the analytical projection with live numbers.
 
 **BM25-from-table recovery capped at 10 000 rows:**
 - Current capacity: `_bm25_search_fallback` reads at most 10 000 LanceDB rows into memory (`hybrid_retriever.py:427`).
@@ -407,8 +440,9 @@ All 3 Criticals, 10 Warnings, 5 Info items from `.planning/phases/05-grounded-su
 
 ## Test Coverage Gaps
 
-**`main.py` UI orchestration:**
+**`main.py` UI orchestration (narrowed by Phase 6, still the top gap):**
 - What's not tested: upload flow, dedup handling, Docling/OCR/visual/LanceDB branches, hybrid restore-on-restart, Clear All semantics (purge logic covered, orchestration not), cache writes, chat streaming, error paths, tab/drawer/badge rendering.
+- New in Phase 6 (covered): chat-history bounding via production `bound_chat_history` (`tests/test_cache_invalidation.py:15-38`), `DocStore.count_documents/count_summaries` + sidebar telemetry contracts (`tests/test_cache_invalidation.py`), `InferenceGate` acquire/release/reentrancy/timeout/unauthorized-release (`tests/test_concurrency_lock.py`, 8 tests), telemetry parsing/fallbacks/snapshot (`tests/test_resource_telemetry.py`, 10 tests).
 - Files: `main.py`
 - Risk: regressions in orchestration are only caught manually (Phase 3 criticals, Phase 4 CR-01/CR-02, Phase 5 CR-01 all lived here).
 - Priority: High
