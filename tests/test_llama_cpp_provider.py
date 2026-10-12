@@ -278,7 +278,15 @@ def test_endpoint_loopback_validation_allowed_with_flag() -> None:
 
 def test_endpoint_loopback_accepted_addresses() -> None:
     """Test standard local loopback addresses are accepted by default."""
-    for url in ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"]:
+    accepted = [
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+        "http://[::1]:8080",
+        "http://127.0.1.1:8080",
+        "http://127.0.0.2:8080",
+        "127.0.0.1:8080",
+    ]
+    for url in accepted:
         provider = LlamaCppProvider(base_url=url)
-        assert provider.base_url == url
+        assert provider.base_url == url.rstrip("/")
         provider.close()

@@ -298,6 +298,22 @@ with st.sidebar:
             for k in list(st.session_state.keys()):
                 if k.startswith("summary_"):
                     del st.session_state[k]
+
+            # Reset cloud posture and cleanse session credentials (WR-02)
+            if st.session_state.get("active_cloud_provider"):
+                try:
+                    st.session_state.active_cloud_provider.close()
+                except Exception:
+                    pass
+            st.session_state.active_cloud_provider = None
+            st.session_state._cached_cloud_model = None
+            st.session_state._cached_cloud_key = None
+            st.session_state.cloud_mode = False
+            st.session_state.cloud_mode_toggle = False
+            st.session_state.user_consented = False
+            st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
+            if hasattr(st.session_state, "cloud_api_key"):
+                st.session_state.cloud_api_key = ""
             st.rerun()
 
     uploaded_files = st.file_uploader(

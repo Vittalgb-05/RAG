@@ -27,6 +27,7 @@ _GPU_CACHE_TTL_SECONDS: float = 5.0
 _LAST_GPU_INFO: dict[str, float] | None = None
 _LAST_GPU_SAMPLE_TIME: float = 0.0
 _GPU_CACHE_LOCK = threading.Lock()
+_SAMPLING_LOCK = threading.Lock()
 
 
 def get_gpu_memory_info(force_refresh: bool = False) -> dict[str, float] | None:
@@ -46,47 +47,54 @@ def get_gpu_memory_info(force_refresh: bool = False) -> dict[str, float] | None:
         if not force_refresh and (now - _LAST_GPU_SAMPLE_TIME < _GPU_CACHE_TTL_SECONDS):
             return _LAST_GPU_INFO.copy() if _LAST_GPU_INFO is not None else None
 
-    gpu_dict: dict[str, float] | None = None
-    try:
-        cmd = [
-            "nvidia-smi",
-            "--query-gpu=memory.total,memory.used,memory.free",
-            "--format=csv,noheader,nounits",
-        ]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=2.0,
-        )
-        stdout = result.stdout.strip()
-        if stdout:
-            primary_line = stdout.splitlines()[0]
-            parts = [x.strip() for x in primary_line.split(",")]
-            if len(parts) >= 3:
-                total_mb = float(parts[0])
-                used_mb = float(parts[1])
-                free_mb = float(parts[2])
-                utilization_pct = round((used_mb / total_mb) * 100.0, 1) if total_mb > 0 else 0.0
-                gpu_dict = {
-                    "total_mb": round(total_mb, 1),
-                    "used_mb": round(used_mb, 1),
-                    "free_mb": round(free_mb, 1),
-                    "utilization_pct": utilization_pct,
-                }
-    except (FileNotFoundError, subprocess.SubprocessError, ValueError, IndexError) as err:
-        logger.debug("GPU telemetry unavailable via nvidia-smi: %s", err)
-        gpu_dict = None
-    except Exception as err:
-        logger.debug("Unexpected error querying nvidia-smi: %s", err)
-        gpu_dict = None
+    with _SAMPLING_LOCK:
+        # Double-check inside sampling lock to avoid redundant subprocess spawns under concurrent calls
+        now = time.monotonic()
+        with _GPU_CACHE_LOCK:
+            if not force_refresh and (now - _LAST_GPU_SAMPLE_TIME < _GPU_CACHE_TTL_SECONDS):
+                return _LAST_GPU_INFO.copy() if _LAST_GPU_INFO is not None else None
 
-    with _GPU_CACHE_LOCK:
-        _LAST_GPU_SAMPLE_TIME = time.monotonic()
-        _LAST_GPU_INFO = gpu_dict
+        gpu_dict: dict[str, float] | None = None
+        try:
+            cmd = [
+                "nvidia-smi",
+                "--query-gpu=memory.total,memory.used,memory.free",
+                "--format=csv,noheader,nounits",
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2.0,
+            )
+            stdout = result.stdout.strip()
+            if stdout:
+                primary_line = stdout.splitlines()[0]
+                parts = [x.strip() for x in primary_line.split(",")]
+                if len(parts) >= 3:
+                    total_mb = float(parts[0])
+                    used_mb = float(parts[1])
+                    free_mb = float(parts[2])
+                    utilization_pct = round((used_mb / total_mb) * 100.0, 1) if total_mb > 0 else 0.0
+                    gpu_dict = {
+                        "total_mb": round(total_mb, 1),
+                        "used_mb": round(used_mb, 1),
+                        "free_mb": round(free_mb, 1),
+                        "utilization_pct": utilization_pct,
+                    }
+        except (FileNotFoundError, subprocess.SubprocessError, ValueError, IndexError) as err:
+            logger.debug("GPU telemetry unavailable via nvidia-smi: %s", err)
+            gpu_dict = None
+        except Exception as err:
+            logger.debug("Unexpected error querying nvidia-smi: %s", err)
+            gpu_dict = None
 
-    return gpu_dict.copy() if gpu_dict is not None else None
+        with _GPU_CACHE_LOCK:
+            _LAST_GPU_SAMPLE_TIME = time.monotonic()
+            _LAST_GPU_INFO = gpu_dict
+
+        return gpu_dict.copy() if gpu_dict is not None else None
 
 
 def get_process_memory_info() -> dict[str, float]:

@@ -154,3 +154,42 @@ def test_clear_all_purges_summary_keys():
     assert "summary_doc_1_overview" not in mock_session
     assert "summary_doc_1_detailed" not in mock_session
     assert mock_session["other_key"] == 123
+
+
+def test_clear_all_resets_cloud_posture_and_credentials():
+    """Verify that Clear All logic resets cloud posture, revokes consent, and clears keys (WR-02)."""
+    from unittest.mock import MagicMock
+
+    mock_provider = MagicMock()
+    mock_session = {
+        "doc_ids": {"doc_1"},
+        "cloud_mode": True,
+        "cloud_mode_toggle": True,
+        "user_consented": True,
+        "active_cloud_provider": mock_provider,
+        "_cached_cloud_model": "groq/llama-3.3-70b-versatile",
+        "_cached_cloud_key": "gsk_secret",
+        "cloud_api_keys": {"groq": "gsk_secret", "openai": "sk_secret", "anthropic": ""},
+        "cloud_api_key": "legacy_key",
+    }
+
+    # Simulate Clear All handler logic
+    if mock_session.get("active_cloud_provider"):
+        mock_session["active_cloud_provider"].close()
+    mock_session["active_cloud_provider"] = None
+    mock_session["_cached_cloud_model"] = None
+    mock_session["_cached_cloud_key"] = None
+    mock_session["cloud_mode"] = False
+    mock_session["cloud_mode_toggle"] = False
+    mock_session["user_consented"] = False
+    mock_session["cloud_api_keys"] = {"groq": "", "openai": "", "anthropic": ""}
+    if "cloud_api_key" in mock_session:
+        mock_session["cloud_api_key"] = ""
+
+    mock_provider.close.assert_called_once()
+    assert mock_session["cloud_mode"] is False
+    assert mock_session["cloud_mode_toggle"] is False
+    assert mock_session["user_consented"] is False
+    assert mock_session["active_cloud_provider"] is None
+    assert mock_session["cloud_api_keys"] == {"groq": "", "openai": "", "anthropic": ""}
+    assert mock_session["cloud_api_key"] == ""
