@@ -100,14 +100,22 @@ class AiModel:
         contamination in multi-user deployments.
     """
 
-    def __init__(self, provider: BaseModelProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: BaseModelProvider | None = None,
+        cloud_mode: bool = False,
+        cloud_provider: BaseModelProvider | None = None,
+    ) -> None:
         """Initialize AiModel with an explicit provider or auto-detected default.
 
         Args:
-            provider: Optional explicit BaseModelProvider. If omitted, probes
-                     local llama-server first; falls back to Groq if key is present;
-                     defaults to local provider with diagnostic state if neither is ready.
+            provider: Optional explicit BaseModelProvider.
+            cloud_mode: If True, activates consented cloud inference routing.
+                        If False (default), stays strictly offline on local LlamaCppProvider (INF-03, INF-04).
+            cloud_provider: Optional consented cloud provider instance (e.g. LiteLLMProvider).
         """
+        self.cloud_mode = bool(cloud_mode)
+        self.cloud_provider = cloud_provider
         if provider is not None:
             self.provider = provider
         else:
@@ -128,27 +136,38 @@ class AiModel:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def _detect_provider(self) -> BaseModelProvider:
-        """Probe local llama-server and cloud Groq to choose the active provider.
+    def set_cloud_mode(self, enabled: bool, cloud_provider: BaseModelProvider | None = None) -> None:
+        """Toggle between Local and Cloud inference modes dynamically.
 
-        Returns:
-            The selected BaseModelProvider instance.
+        Args:
+            enabled: True to activate Cloud Mode, False to force strictly local operation.
+            cloud_provider: Optional consented cloud provider instance (e.g. LiteLLMProvider).
         """
-        # 1. Probe local llama-server
+        self.cloud_mode = bool(enabled)
+        if cloud_provider is not None:
+            self.cloud_provider = cloud_provider
+
+        self.close()
+        self.provider = self._detect_provider()
+        self.model_name = self.provider.get_capabilities().model_name
+
+    def _detect_provider(self) -> BaseModelProvider:
+        """Select active provider based on local health and explicit cloud_mode.
+
+        When cloud_mode is False (default), stays strictly on local LlamaCppProvider
+        without silent external transmission (INF-03, INF-04, CONCERNS.md).
+        """
+        # 1. If Cloud Mode is explicitly enabled, route through cloud provider
+        if self.cloud_mode:
+            if self.cloud_provider is not None:
+                return self.cloud_provider
+            groq_provider = GroqProvider()
+            if groq_provider.check_health().status == "healthy":
+                return groq_provider
+            groq_provider.close()
+
+        # 2. Local mode: probe local llama-server
         local = LlamaCppProvider()
-        health = local.check_health()
-        if health.status == "healthy":
-            return local
-
-        # 2. Probe Groq Cloud fallback
-        groq_provider = GroqProvider()
-        groq_health = groq_provider.check_health()
-        if groq_health.status == "healthy":
-            local.close()
-            return groq_provider
-
-        # 3. Default to local provider so health checks display actionable setup guidance
-        groq_provider.close()
         return local
 
     def check_health(self) -> HealthStatus:

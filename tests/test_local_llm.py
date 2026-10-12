@@ -107,8 +107,8 @@ def test_ai_model_auto_detects_healthy_local_llama(monkeypatch) -> None:
     assert model.check_health().status == "healthy"
 
 
-def test_ai_model_falls_back_to_groq_when_local_offline(monkeypatch) -> None:
-    """Verify AiModel falls back to Groq Cloud when local llama-server is unreachable."""
+def test_ai_model_falls_back_to_groq_when_cloud_mode_enabled_and_local_offline(monkeypatch) -> None:
+    """Verify AiModel routes to Groq Cloud when cloud_mode=True and local llama-server is unreachable."""
     unreachable_status = HealthStatus(
         status="unreachable",
         message="Cannot connect to llama-server",
@@ -121,9 +121,31 @@ def test_ai_model_falls_back_to_groq_when_local_offline(monkeypatch) -> None:
     )
     monkeypatch.setattr(GroqProvider, "check_health", lambda self: groq_healthy_status)
 
-    model = AiModel()
+    model = AiModel(cloud_mode=True)
     assert model.provider.get_capabilities().is_local is False
     assert model.check_health().status == "healthy"
+    model.close()
+
+
+def test_ai_model_local_mode_does_not_silently_fallback_to_groq(monkeypatch) -> None:
+    """Verify AiModel stays strictly on LlamaCppProvider in local mode even when Groq is available (INF-03, INF-04)."""
+    unreachable_status = HealthStatus(
+        status="unreachable",
+        message="Cannot connect to llama-server",
+    )
+    monkeypatch.setattr(LlamaCppProvider, "check_health", lambda self: unreachable_status)
+
+    groq_healthy_status = HealthStatus(
+        status="healthy",
+        message="Groq Cloud ready.",
+    )
+    monkeypatch.setattr(GroqProvider, "check_health", lambda self: groq_healthy_status)
+
+    # cloud_mode is False by default
+    model = AiModel(cloud_mode=False)
+    assert model.provider.get_capabilities().is_local is True
+    assert model.check_health().status == "unreachable"
+    model.close()
 
 
 def test_groq_provider_capabilities_and_health_unconfigured(monkeypatch) -> None:
