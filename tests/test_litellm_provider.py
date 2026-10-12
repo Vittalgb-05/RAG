@@ -205,6 +205,17 @@ def test_analyze_image_vision_support_and_rejection(monkeypatch) -> None:
     assert content_list[0]["text"] == "Describe chart"
     assert "data:image/png;base64," in content_list[1]["image_url"]["url"]
 
+    # 4. MIME sniffing: JPEG and WebP bytes are recognized correctly (IN-01)
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF"
+    vision_prov.analyze_image(jpeg_bytes, "Describe photo")
+    jpeg_url = captured_kwargs["messages"][0]["content"][1]["image_url"]["url"]
+    assert "data:image/jpeg;base64," in jpeg_url
+
+    webp_bytes = b"RIFF\x20\x00\x00\x00WEBPVP8 "
+    vision_prov.analyze_image(webp_bytes, "Describe webp")
+    webp_url = captured_kwargs["messages"][0]["content"][1]["image_url"]["url"]
+    assert "data:image/webp;base64," in webp_url
+
 
 def test_exception_wrapping_into_runtime_error(monkeypatch) -> None:
     """Verify provider errors are wrapped cleanly into RuntimeError."""

@@ -143,7 +143,15 @@ class AiModel:
             enabled: True to activate Cloud Mode, False to force strictly local operation.
             cloud_provider: Optional consented cloud provider instance (e.g. LiteLLMProvider).
         """
-        self.cloud_mode = bool(enabled)
+        target_mode = bool(enabled)
+        # Avoid unnecessary reconnection / recreation if state has not changed (WR-02)
+        if self.cloud_mode == target_mode:
+            if not target_mode and self.provider is not None and self.provider.get_capabilities().is_local:
+                return
+            if target_mode and (cloud_provider is None or self.provider is cloud_provider):
+                return
+
+        self.cloud_mode = target_mode
         if cloud_provider is not None:
             self.cloud_provider = cloud_provider
 

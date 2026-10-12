@@ -65,10 +65,12 @@ for key, default in [
     ("hybrid_retriever", None),  # persistent LanceDB hybrid retriever
     ("chat_history", []),  # list of {"role": ..., "content": ..., "sources": ...} dicts
     ("cloud_mode", False),  # boolean toggle for optional cloud inference (INF-04, UI-04)
+    ("cloud_mode_toggle", False),  # widget key state for toggle synchronization (UI-04)
     ("user_consented", False),  # explicit user consent required for cloud transmission
     ("cloud_provider", "groq"),  # active cloud provider: "groq", "openai", "anthropic"
     ("cloud_model", "groq/llama-3.3-70b-versatile"),  # model identifier for LiteLLM
-    ("cloud_api_key", ""),  # session API key entered via UI (kept in memory only)
+    ("cloud_api_keys", {"groq": "", "openai": "", "anthropic": ""}),  # per-provider session API keys
+    ("cloud_api_key", ""),  # legacy fallback compatibility
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -123,11 +125,13 @@ with st.sidebar:
             if st.button("I Consent & Enable Cloud", type="primary", use_container_width=True, key="consent_yes_btn"):
                 st.session_state.user_consented = True
                 st.session_state.cloud_mode = True
+                st.session_state.cloud_mode_toggle = True
                 st.rerun()
         with col_no:
             if st.button("Cancel (Keep 100% Local)", use_container_width=True, key="consent_no_btn"):
                 st.session_state.user_consented = False
                 st.session_state.cloud_mode = False
+                st.session_state.cloud_mode_toggle = False
                 st.rerun()
 
     if hasattr(st, "dialog"):
@@ -143,6 +147,7 @@ with st.sidebar:
     cloud_toggle_val = st.toggle(
         "Enable Cloud Inference",
         value=st.session_state.cloud_mode,
+        key="cloud_mode_toggle",
         help="Route response generation through optional cloud LLM providers (Groq, OpenAI, Anthropic).",
     )
 
@@ -150,6 +155,7 @@ with st.sidebar:
         show_consent_dialog()
     elif not cloud_toggle_val and st.session_state.cloud_mode:
         st.session_state.cloud_mode = False
+        st.session_state.cloud_mode_toggle = False
         st.session_state.user_consented = False
         st.rerun()
 
@@ -182,19 +188,22 @@ with st.sidebar:
         env_has_key = bool(os.environ.get(env_var_name) or (hasattr(st, "secrets") and env_var_name in st.secrets))
         key_placeholder = f"Configured via {env_var_name}" if env_has_key else f"Enter {env_var_name}"
 
+        current_key = st.session_state.cloud_api_keys.get(selected_provider_key, "")
         entered_key = st.text_input(
             "Session API Key (Optional if set in env)",
-            value=st.session_state.cloud_api_key,
+            value=current_key,
             type="password",
             placeholder=key_placeholder,
             help=f"Session API key for {CLOUD_PROVIDER_OPTIONS[selected_provider_key][0]}. Kept in memory only.",
         )
-        if entered_key != st.session_state.cloud_api_key:
+        if entered_key != current_key:
+            st.session_state.cloud_api_keys[selected_provider_key] = entered_key
             st.session_state.cloud_api_key = entered_key
             st.rerun()
 
         if st.button("Revoke Consent (Switch to Local)", use_container_width=True):
             st.session_state.cloud_mode = False
+            st.session_state.cloud_mode_toggle = False
             st.session_state.user_consented = False
             st.rerun()
     else:
@@ -208,13 +217,31 @@ with st.sidebar:
     st.session_state.ai_model = ai_model
 
     if st.session_state.cloud_mode and st.session_state.user_consented:
-        cloud_prov = LiteLLMProvider(
-            model_name=st.session_state.cloud_model,
-            api_key=st.session_state.cloud_api_key or None,
-            user_consented=True,
-        )
-        ai_model.set_cloud_mode(True, cloud_provider=cloud_prov)
+        active_key = st.session_state.cloud_api_keys.get(st.session_state.cloud_provider, "")
+        cached_prov = getattr(st.session_state, "active_cloud_provider", None)
+        cached_model = getattr(st.session_state, "_cached_cloud_model", None)
+        cached_key = getattr(st.session_state, "_cached_cloud_key", None)
+
+        if cached_prov is None or cached_model != st.session_state.cloud_model or cached_key != active_key:
+            if cached_prov is not None and hasattr(cached_prov, "close"):
+                cached_prov.close()
+            cached_prov = LiteLLMProvider(
+                model_name=st.session_state.cloud_model,
+                api_key=active_key or None,
+                user_consented=True,
+            )
+            st.session_state.active_cloud_provider = cached_prov
+            st.session_state._cached_cloud_model = st.session_state.cloud_model
+            st.session_state._cached_cloud_key = active_key
+
+        ai_model.set_cloud_mode(True, cloud_provider=cached_prov)
     else:
+        if hasattr(st.session_state, "active_cloud_provider") and st.session_state.active_cloud_provider is not None:
+            if hasattr(st.session_state.active_cloud_provider, "close"):
+                st.session_state.active_cloud_provider.close()
+            st.session_state.active_cloud_provider = None
+            st.session_state._cached_cloud_model = None
+            st.session_state._cached_cloud_key = None
         ai_model.set_cloud_mode(False)
 
     health = ai_model.check_health()
@@ -376,10 +403,15 @@ with st.sidebar:
                     visual_analyzer = VisualAnalyzer()
                     current_model = getattr(st.session_state, "ai_model", None) or ai_model
                     active_provider = current_model.provider if current_model is not None else None
+                    local_vlm_provider = (
+                        active_provider
+                        if (active_provider is not None and active_provider.get_capabilities().is_local)
+                        else None
+                    )
                     evidence_elements = visual_analyzer.analyze_visual_elements(
                         pdf_bytes=raw_bytes,
                         doc_id=doc_id,
-                        provider=active_provider,
+                        provider=local_vlm_provider,
                     )
                     if evidence_elements:
                         doc_store.record_evidence_elements(evidence_elements)

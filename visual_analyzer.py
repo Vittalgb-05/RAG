@@ -212,8 +212,15 @@ class VisualAnalyzer:
         model_name = "unknown"
         if provider is not None:
             caps = provider.get_capabilities()
-            supports_vision = caps.supports_vision
             model_name = caps.model_name
+            if caps.is_local:
+                supports_vision = caps.supports_vision
+            else:
+                supports_vision = False
+                logger.warning(
+                    "Non-local provider (%s) rejected for visual element analysis to enforce local-only ingestion invariant (INF-03).",
+                    caps.model_name,
+                )
 
         elements: list[EvidenceElement] = []
         for idx, reg in enumerate(regions):

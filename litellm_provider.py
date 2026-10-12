@@ -53,8 +53,22 @@ def _resolve_api_key_for_model(model_name: str, explicit_key: str | None = None)
     try:
         import streamlit as st
 
-        if hasattr(st, "session_state") and "cloud_api_key" in st.session_state and st.session_state.cloud_api_key:
-            return str(st.session_state.cloud_api_key)
+        if hasattr(st, "session_state"):
+            session_state = st.session_state
+            keys_dict = getattr(session_state, "cloud_api_keys", None)
+            if keys_dict is None and hasattr(session_state, "get"):
+                keys_dict = session_state.get("cloud_api_keys")
+
+            if isinstance(keys_dict, dict):
+                val = keys_dict.get(provider_prefix)
+                if val:
+                    return str(val)
+
+            legacy_key = getattr(session_state, "cloud_api_key", None)
+            if legacy_key is None and hasattr(session_state, "get"):
+                legacy_key = session_state.get("cloud_api_key")
+            if legacy_key:
+                return str(legacy_key)
     except Exception:
         pass
 
@@ -69,6 +83,19 @@ def _resolve_api_key_for_model(model_name: str, explicit_key: str | None = None)
 
     # 3. Try os.environ
     return os.environ.get(target_var)
+
+
+def _detect_image_mime_type(image_bytes: bytes) -> str:
+    """Sniff image format magic bytes to determine MIME type."""
+    if image_bytes.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"GIF87a") or image_bytes.startswith(b"GIF89a"):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and len(image_bytes) >= 12 and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
 
 
 class LiteLLMProvider(BaseModelProvider):
@@ -284,13 +311,14 @@ class LiteLLMProvider(BaseModelProvider):
                 f"Vision analysis is not supported by {self.model_name}. Select a multimodal model (e.g. gpt-4o-mini)."
             )
 
+        mime_type = _detect_image_mime_type(image_bytes)
         base64_img = base64.b64encode(image_bytes).decode("utf-8")
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_img}"}},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_img}"}},
                 ],
             }
         ]
