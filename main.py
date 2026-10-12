@@ -15,6 +15,7 @@ PDF upload → validate_pdf_bytes → DocStore dedup check → PdfReader (text e
 import datetime
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -25,6 +26,7 @@ import streamlit as st
 from doc_store import DocStore
 from docling_reader import DoclingReader
 from hybrid_retriever import HybridRetriever
+from litellm_provider import LiteLLMProvider
 from local_embedding import LocalEmbedding
 from local_llm import AiModel
 from models import Chunk, Document, Page, cache_dir_for
@@ -62,6 +64,11 @@ for key, default in [
     ("local_embedding", None),  # unified index spanning all uploaded documents
     ("hybrid_retriever", None),  # persistent LanceDB hybrid retriever
     ("chat_history", []),  # list of {"role": ..., "content": ..., "sources": ...} dicts
+    ("cloud_mode", False),  # boolean toggle for optional cloud inference (INF-04, UI-04)
+    ("user_consented", False),  # explicit user consent required for cloud transmission
+    ("cloud_provider", "groq"),  # active cloud provider: "groq", "openai", "anthropic"
+    ("cloud_model", "groq/llama-3.3-70b-versatile"),  # model identifier for LiteLLM
+    ("cloud_api_key", ""),  # session API key entered via UI (kept in memory only)
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -96,15 +103,127 @@ with st.sidebar:
     st.markdown("Ask questions about any PDF with local indexing and intelligent deduplication.")
     st.divider()
 
+    # Privacy & Cloud Inference Controls (UI-04, INF-04)
+    st.markdown("#### Privacy & Provider Mode")
+
+    def _render_consent_dialog_content() -> None:
+        st.warning(
+            "⚠️ **External Cloud Transmission Notice**\n\n"
+            "By enabling Cloud Mode, your user query prompts and retrieved document excerpts "
+            "will be transmitted across the network to external model APIs for inference.\n\n"
+            "**What stays 100% on your device (zero network egress):**\n"
+            "- Original PDF document files\n"
+            "- Extracted text and image OCR\n"
+            "- Dense vector embeddings (all-MiniLM-L6-v2 on CPU)\n"
+            "- Persistent LanceDB vector database & SQLite store\n\n"
+            "Do you consent to transmitting document excerpts to external cloud APIs for this session?"
+        )
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("I Consent & Enable Cloud", type="primary", use_container_width=True, key="consent_yes_btn"):
+                st.session_state.user_consented = True
+                st.session_state.cloud_mode = True
+                st.rerun()
+        with col_no:
+            if st.button("Cancel (Keep 100% Local)", use_container_width=True, key="consent_no_btn"):
+                st.session_state.user_consented = False
+                st.session_state.cloud_mode = False
+                st.rerun()
+
+    if hasattr(st, "dialog"):
+
+        @st.dialog("Cloud Inference & Data Privacy Consent")
+        def show_consent_dialog() -> None:
+            _render_consent_dialog_content()
+    else:
+
+        def show_consent_dialog() -> None:
+            _render_consent_dialog_content()
+
+    cloud_toggle_val = st.toggle(
+        "Enable Cloud Inference",
+        value=st.session_state.cloud_mode,
+        help="Route response generation through optional cloud LLM providers (Groq, OpenAI, Anthropic).",
+    )
+
+    if cloud_toggle_val and not st.session_state.user_consented:
+        show_consent_dialog()
+    elif not cloud_toggle_val and st.session_state.cloud_mode:
+        st.session_state.cloud_mode = False
+        st.session_state.user_consented = False
+        st.rerun()
+
+    CLOUD_PROVIDER_OPTIONS = {
+        "groq": ("Groq (Llama 3.3 70B)", "groq/llama-3.3-70b-versatile", "GROQ_API_KEY"),
+        "openai": ("OpenAI (GPT-4o mini)", "openai/gpt-4o-mini", "OPENAI_API_KEY"),
+        "anthropic": ("Anthropic (Claude 3.5 Haiku)", "anthropic/claude-3-5-haiku-20241022", "ANTHROPIC_API_KEY"),
+    }
+
+    if st.session_state.cloud_mode and st.session_state.user_consented:
+        st.caption("☁️ **Cloud Mode Active** (Egress permitted with user consent)")
+        current_idx = (
+            list(CLOUD_PROVIDER_OPTIONS.keys()).index(st.session_state.cloud_provider)
+            if st.session_state.cloud_provider in CLOUD_PROVIDER_OPTIONS
+            else 0
+        )
+        selected_provider_key = st.selectbox(
+            "Cloud Provider",
+            options=list(CLOUD_PROVIDER_OPTIONS.keys()),
+            format_func=lambda k: CLOUD_PROVIDER_OPTIONS[k][0],
+            index=current_idx,
+        )
+        if selected_provider_key != st.session_state.cloud_provider:
+            st.session_state.cloud_provider = selected_provider_key
+            st.session_state.cloud_model = CLOUD_PROVIDER_OPTIONS[selected_provider_key][1]
+            st.rerun()
+
+        st.session_state.cloud_model = CLOUD_PROVIDER_OPTIONS[selected_provider_key][1]
+        env_var_name = CLOUD_PROVIDER_OPTIONS[selected_provider_key][2]
+        env_has_key = bool(os.environ.get(env_var_name) or (hasattr(st, "secrets") and env_var_name in st.secrets))
+        key_placeholder = f"Configured via {env_var_name}" if env_has_key else f"Enter {env_var_name}"
+
+        entered_key = st.text_input(
+            "Session API Key (Optional if set in env)",
+            value=st.session_state.cloud_api_key,
+            type="password",
+            placeholder=key_placeholder,
+            help=f"Session API key for {CLOUD_PROVIDER_OPTIONS[selected_provider_key][0]}. Kept in memory only.",
+        )
+        if entered_key != st.session_state.cloud_api_key:
+            st.session_state.cloud_api_key = entered_key
+            st.rerun()
+
+        if st.button("Revoke Consent (Switch to Local)", use_container_width=True):
+            st.session_state.cloud_mode = False
+            st.session_state.user_consented = False
+            st.rerun()
+    else:
+        st.caption("🔒 **Local Mode Active** (100% on-device, zero network egress)")
+
+    st.divider()
+
     # Model loading & health
-    st.markdown("#### Model")
-    with st.status("Initializing AI Assistant...", expanded=True) as model_status:
-        ai_model = load_ai_model()
-        st.session_state.ai_model = ai_model
-        health = ai_model.check_health()
-        caps = ai_model.get_capabilities()
+    st.markdown("#### Model Status")
+    ai_model = load_ai_model()
+    st.session_state.ai_model = ai_model
+
+    if st.session_state.cloud_mode and st.session_state.user_consented:
+        cloud_prov = LiteLLMProvider(
+            model_name=st.session_state.cloud_model,
+            api_key=st.session_state.cloud_api_key or None,
+            user_consented=True,
+        )
+        ai_model.set_cloud_mode(True, cloud_provider=cloud_prov)
+    else:
+        ai_model.set_cloud_mode(False)
+
+    health = ai_model.check_health()
+    caps = ai_model.get_capabilities()
+    is_healthy = bool(health.status == "healthy")
+
+    with st.status("Initializing AI Assistant...", expanded=False) as model_status:
         if model_status is not None:
-            if health.status == "healthy":
+            if is_healthy:
                 if caps.is_local:
                     model_status.update(
                         label=f"🟢 Inference: Local ({caps.model_name})",
@@ -113,7 +232,7 @@ with st.sidebar:
                     )
                 else:
                     model_status.update(
-                        label=f"🔵 Inference: Groq Cloud ({caps.model_name})",
+                        label=f"☁️ Inference: Cloud ({caps.model_name})",
                         state="complete",
                         expanded=False,
                     )
@@ -383,7 +502,10 @@ with st.sidebar:
         st.caption(f"**Process RAM (RSS):** {proc_info['rss_mb']:.1f} MB")
         st.caption(f"**Persistent Cache:** {total_docs} docs · {total_sums} summaries")
 
-    st.caption(f"Powered by **Groq ({ai_model.model_name})** + **MiniLM-L6-v2**")
+    if caps.is_local:
+        st.caption(f"🔒 **100% Offline Local Pipeline** · Qwen3-VL ({ai_model.model_name}) + MiniLM-L6-v2 + LanceDB")
+    else:
+        st.caption(f"☁️ **Cloud Inference** · {caps.model_name} (Embeddings & LanceDB 100% Local)")
 
 
 def append_chat_turn(turn: dict[str, Any]) -> None:
@@ -420,6 +542,13 @@ with tab_chat:
             st.markdown(message["content"])
 
             if message.get("role") == "assistant":
+                # Egress disclosure badge (UI-04)
+                if message.get("is_cloud"):
+                    cloud_m = message.get("model_name", "Cloud API")
+                    st.caption(f"☁️ *Generated via external cloud provider ({cloud_m}) with user consent.*")
+                elif message.get("is_cloud") is False:
+                    st.caption("🔒 *Generated locally on-device (zero network egress).*")
+
                 # Citation verification badge
                 v_data = message.get("verification")
                 if v_data:
@@ -522,14 +651,22 @@ with tab_chat:
                     )
                     full_response = st.write_stream(response_stream)
 
+                    # Egress disclosure badge (UI-04)
+                    if not caps.is_local:
+                        st.caption(f"☁️ *Generated via external cloud provider ({caps.model_name}) with user consent.*")
+                    else:
+                        st.caption("🔒 *Generated locally on-device (zero network egress).*")
+
                     # Validate citations and abstention (QA-03, QA-04)
                     verification = ai_model.validate_response(full_response, retrieval_res)
                     if verification.abstention_detected:
                         st.caption("ℹ️ *Explicit abstention — no document evidence found.*")
                     elif verification.is_valid:
-                        st.caption(f"✅ Verified Grounding ({verification.precision:.0%} citation precision)")
+                        precision = verification.precision
+                        st.caption(f"✅ Verified Grounding ({precision:.0%} citation precision)")
                     else:
-                        st.caption(f"⚠️ Unverified Citations ({verification.precision:.0%} citation precision)")
+                        precision = verification.precision
+                        st.caption(f"⚠️ Unverified Citations ({precision:.0%} citation precision)")
 
                     # Render live evidence drawer
                     if snippets_data:
@@ -561,6 +698,8 @@ with tab_chat:
                             "sources": list(sources),
                             "verification": verification.model_dump(),
                             "snippets": snippets_data,
+                            "is_cloud": not caps.is_local,
+                            "model_name": caps.model_name,
                         }
                     )
                 except Exception as err:
@@ -572,6 +711,8 @@ with tab_chat:
                             "sources": list(sources),
                             "verification": None,
                             "snippets": snippets_data,
+                            "is_cloud": not caps.is_local,
+                            "model_name": caps.model_name,
                         }
                     )
 
