@@ -132,6 +132,55 @@ All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-o
 - Impact: long sessions get silent context loss; no UI signal when truncation fires.
 - Fix approach: surface a truncation indicator when either bound fires; consider sizing `MAX_CHAT_TURNS` from the token budget rather than a fixed 50.
 
+## Review Fix Status — Phase 07 (Optional Cloud Provider & Privacy Controls)
+
+All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/07-optional-cloud-provider-and-privacy-controls/07-REVIEW.md` are **FIXED** per `07-REVIEW-FIX.md` and verified against current source (suite: 213/213 passed, `ruff check` + `ruff format --check` clean per `07-REVIEW-FIX.md`):
+
+- **CR-01 cloud vision egress during ingestion — FIXED (two layers).** `main.py:406-415` filters `active_provider` to `local_vlm_provider` (only passed when `get_capabilities().is_local`), and `visual_analyzer.py:211-223` adds defense-in-depth: a non-local provider is rejected with `supports_vision = False` + `logger.warning` enforcing the INF-03 local-only ingestion invariant. Regression test: `tests/test_cloud_privacy.py::test_ingestion_visual_analyzer_never_calls_cloud_vision_even_in_cloud_mode` (asserts filter yields `None` for cloud providers).
+- **WR-01 shared `cloud_api_key` cross-provider pollution — FIXED.** `main.py:72,191-202` stores `st.session_state.cloud_api_keys: dict[str, str]` keyed by provider (`groq`/`openai`/`anthropic`); `litellm_provider.py:56-65` resolves via `_resolve_api_key_for_model` from the per-provider dict. Test: `test_per_provider_api_key_lookup`. **Residual:** legacy `cloud_api_key` string fallback still read at `litellm_provider.py:67-71` and still written at `main.py:201` — see Phase 07 Residuals.
+- **WR-02 `set_cloud_mode` connection-pool churn — FIXED.** `local_llm.py:146-152` returns early as a no-op when mode/provider are unchanged; `main.py:219-237` caches `active_cloud_provider`/`_cached_cloud_model`/`_cached_cloud_key` and only constructs a new `LiteLLMProvider` on model/key change (closing the old one), and closes + nulls on switch back to local (`main.py:239-245`). Test: `test_ai_model_set_cloud_mode_idempotent_preserves_connections`.
+- **WR-03 consent-dialog toggle desync — FIXED.** `st.toggle` now carries `key="cloud_mode_toggle"` (`main.py:147-152`); cancel/off/revoke paths explicitly set `st.session_state.cloud_mode_toggle = False` (`main.py:131-134,156-160,204-208`). **Residual:** dialog-loop/dismiss edge cases remain UI-layer-only — see Phase 07 Residuals.
+- **IN-01 hardcoded `image/png` data URI — FIXED.** `litellm_provider.py:88-98` adds `_detect_image_mime_type` (JPEG/PNG/GIF/WebP magic-byte sniffing), used at `litellm_provider.py:314`. Covered in `tests/test_litellm_provider.py` (JPEG/WebP assertions).
+- **IN-02 missing ingestion-privacy test — FIXED.** Dedicated test added to `tests/test_cloud_privacy.py` (8 tests in file, all passing per `07-REVIEW-FIX.md`).
+
+## Phase 07 Residuals (partial fixes + UI-layer-only enforcement — ordered by severity)
+
+**Consent invariant holds but is UI-layer-only (no server-side enforcement or audit trail):**
+- Issue: the privacy guarantee rests on three UI/session-state mechanisms — `cloud_mode=False` default (`main.py:67`), the `@st.dialog` consent gate (`main.py:137-160`), and `LiteLLMProvider._assert_consent` (`litellm_provider.py:132-136`). There is no persistent record of consent (no timestamp/scope log), no per-request re-confirmation, and `main.py:231` constructs the provider with a literal `user_consented=True` rather than threading the session flag — correctness depends entirely on the outer `if cloud_mode and user_consented` gate (`main.py:219`). Any future call site constructing `LiteLLMProvider(..., user_consented=True)` directly bypasses the dialog.
+- Files: `main.py:67-72,137-160,219-237`, `litellm_provider.py:124-136`, `local_llm.py:162-180` (`_detect_provider`)
+- Impact: consent is revocable per-session only; no auditability for compliance claims; a single wiring mistake reintroduces silent egress.
+- Fix approach (Phase 8): require the session consent flag at `set_cloud_mode` time (raise unless `user_consented` is passed explicitly); log consent grant/revoke with timestamp to session + optionally `DocStore`; add a negative test constructing without consent and asserting `PermissionError` on `stream_text` (partially exists — extend to `AiModel.set_cloud_mode(True)` with an unconsented provider).
+
+**Consent dialog dismiss/loop edge cases (WR-03 remainder + dialog-loop risk):**
+- Issue: `show_consent_dialog()` fires on every rerun while `cloud_toggle_val and not user_consented` (`main.py:154-155`). Dismissal via dialog ✕/ESC/outside-click (not the Cancel button) runs no handler, so the toggle stays `True` in the widget tree and the dialog re-fires on the next rerun — a re-trigger loop with no explicit `on_dismiss` reset. The Cancel-button path is fixed; the framework-dismiss path is not.
+- Files: `main.py:137-160`
+- Impact: user confusion (modal keeps returning); no egress risk (unconsented state still blocks `_assert_consent`), but a UX-level hardening item before release.
+- Fix approach: add an `on_dismiss` callback (or post-dialog reconciliation) that resets `cloud_mode_toggle`/`cloud_mode` to `False` when the dialog closes without consent; add a widget-level test if Streamlit test harness allows, else a state-machine unit test.
+
+**Locally-derived artifacts still egress at query time (OCR-promise disclosure gap):**
+- Issue: the consent dialog promises "Extracted text and image OCR" stays on-device (`main.py:116-118`) — true at ingestion (CR-01 fixed, OCR is local ONNX, embeddings local CPU). But once Cloud Mode is consented, retrieved excerpts sent to the cloud *include* those same OCR texts and local VLM descriptions (they are chunks like any other). The dialog does disclose "retrieved document excerpts will be transmitted" (`main.py:113-115`), so the invariant technically holds, but a user reading only the "stays on your device" list may not realise OCR/VLM output re-enters the egress path at query time.
+- Files: `main.py:111-121`, `main.py:580,688` (cloud-generation captions)
+- Impact: informed-consent fidelity gap; low exploitability, medium trust impact.
+- Fix approach: amend the dialog's "what leaves" wording to name OCR text/VLM descriptions explicitly as included in transmitted excerpts; keep the per-answer `☁️ Generated via external cloud provider` captions (already present).
+
+**Legacy `cloud_api_key` fallback still live (WR-01 remainder):**
+- Issue: `litellm_provider.py:67-71` still honours the old shared `cloud_api_key` string when the per-provider dict misses, and `main.py:201` still writes it on every keystroke. A stale legacy value from an earlier session state shape could still supply a mismatched key.
+- Files: `litellm_provider.py:56-71`, `main.py:72-73,199-202`
+- Impact: low (dict hits first; legacy only fires when dict is empty), but the exact WR-01 failure mode survives on that path.
+- Fix approach: delete the legacy read/write (dict is initialised for all three providers at `main.py:72`); migrate once and drop `cloud_api_key` from session init.
+
+**Clear All does not reset cloud posture (new, Phase 7 × Clear All interaction):**
+- Issue: Clear All resets docs/index/chat/summaries (`main.py:288-300`) but leaves `cloud_mode`, `cloud_mode_toggle`, `user_consented`, `cloud_api_keys`, `active_cloud_provider`, and `_cached_cloud_*` untouched. After "forget everything," session API keys remain in memory and Cloud Mode stays active.
+- Files: `main.py:288-300`
+- Impact: keys persist longer than the user expects from a reset button; next upload in the same session is immediately cloud-eligible.
+- Fix approach: extend Clear All to revoke consent, close + null `active_cloud_provider`, and clear `cloud_api_keys` (or decide session-keys survive and document it).
+
+**`groq_provider.py` now redundant beside `litellm_provider.py` (new, dead-code risk):**
+- Issue: `GroqProvider` (`groq_provider.py`) remains wired as a fallback-adjacent provider while `LiteLLMProvider` covers `groq/llama-3.3-70b-versatile` via the same API. Two Groq paths = two consent/error-handling contracts to keep in sync (`_assert_consent` exists only on the LiteLLM path).
+- Files: `groq_provider.py`, `litellm_provider.py`, `local_llm.py:162-180`
+- Impact: future edits may fix one path and miss the other; consent coverage depends on which path `_detect_provider` takes.
+- Fix approach: route Groq exclusively through `LiteLLMProvider` and delete `groq_provider.py`, or document why both exist and assert consent on both.
+
 ## Phase 06 Readiness — VRAM Ceiling & Performance Risks (post-Phase 6 status)
 
 **Runtime VRAM measurement now exists (Phase 6 — RESOLVED with methodology caveat):**
@@ -170,25 +219,18 @@ All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-o
 - Cause: not cached with `@st.cache_resource` (deliberate, to keep the index per-session).
 - Improvement path: cache the model weights separately from the per-session index to share one weight set in RAM — directly reclaims RAM headroom for the VRAM-adjacent budget.
 
-## Phase 07 Readiness — Cloud Fallback & Privacy Risks (two phases out)
+## Phase 07 Readiness — Cloud Fallback & Privacy Risks (RESOLVED by Phase 7, residuals above)
 
-**Groq fallback exists with no opt-in, no egress signal (core Phase 7 gap):**
-- Issue: `groq_provider.py` + `local_llm.py:48-69` `_detect_provider` silently route generation (and therefore full document context) to Groq Cloud whenever the local server is unreachable. There is no explicit user opt-in, no per-request consent, no egress badge in the UI, and no setting to disable cloud. The local-first privacy guarantee ("zero external network egress during local operation") currently depends on the user noticing the provider badge.
-- Files: `groq_provider.py:36-50`, `local_llm.py:48-69`, `main.py` provider badge rendering
-- Impact: a user who believes they are fully local silently exfiltrates document text on llama-server outage; Phase 7 (LiteLLM adapter + explicit opt-in + privacy guardrails) must retrofit consent onto a default-on path.
-- Fix approach: add an explicit cloud-enabled toggle (default off or explicit first-run consent), gate `_detect_provider` on it, and render an unmissable egress indicator whenever the active provider is remote.
+**Silent Groq fallback with no opt-in (Phase 7 — RESOLVED):**
+- Status: `local_llm.py:162-180` `_detect_provider` stays strictly local when `cloud_mode` is `False` (default); cloud routing requires explicit `set_cloud_mode(True)` + a consented `LiteLLMProvider` (`_assert_consent`, `litellm_provider.py:132-136`); UI gates on `cloud_mode and user_consented` (`main.py:219`) with `🔒 Local Mode` / `☁️ Cloud Mode` captions (`main.py:169,210`) and per-answer cloud attribution (`main.py:580,688`).
+- Files: `local_llm.py:139-180`, `litellm_provider.py:102-136`, `main.py:108-245`
+- Residuals: UI-layer-only enforcement, dialog dismiss loop, legacy key fallback, Clear All posture — see Phase 07 Residuals. The provider-stickiness note under Fragile Areas is superseded for the cloud direction (explicit mode switch replaces health-based fallback); the local-switchback direction (cloud → local recovery) is now the manual Revoke button.
 
-**llama-server URL is injectable without validation (SSRF surface):**
+**llama-server URL is injectable without validation (SSRF surface — still open after Phase 7):**
 - Risk: `LlamaCppProvider(base_url=...)` accepts an arbitrary URL (`llama_cpp_provider.py:23-36`) and `check_health`/streaming issue HTTP requests to it. No scheme/host allowlist; a caller passing an attacker-controlled `base_url` turns the provider into an SSRF primitive against internal services.
-- Files: `llama_cpp_provider.py:23-45`, `local_llm.py:48-69` (only constructs the default loopback today)
+- Files: `llama_cpp_provider.py:23-45`, `local_llm.py` (only constructs the default loopback today)
 - Current mitigation: all production construction uses the default `http://127.0.0.1:8080`; no user input reaches `base_url`.
-- Recommendations: validate `base_url` (allow `http://127.0.0.1:*` / `http://localhost:*` only, or require explicit opt-in for remote hosts); add a test asserting non-loopback URLs are rejected unless explicitly permitted. Phase 7 must resolve this before any remote-server configuration UI ships.
-
-**No LiteLLM adapter / provider seam for Phase 7:**
-- Issue: `AiModel._detect_provider` constructs and probes concrete providers directly (`local_llm.py:48-69`) instead of consulting configuration/factory. Adding the planned LiteLLM adapter means editing the orchestrator again.
-- Files: `local_llm.py:48-69`
-- Impact: Phase 7 work starts with refactoring rather than extension.
-- Fix approach: introduce a provider factory/config selection before Phase 7.
+- Recommendations: validate `base_url` (allow `http://127.0.0.1:*` / `http://localhost:*` only, or require explicit opt-in for remote hosts); add a test asserting non-loopback URLs are rejected unless explicitly permitted. Phase 8 must resolve this before any remote-server configuration UI ships.
 
 ## Tech Debt (ordered by severity)
 
@@ -202,13 +244,13 @@ All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-o
 - Issue: Clear All nulls `st.session_state.hybrid_retriever` (after `close()`), resets `doc_ids`/`indexed_files`/`document_metadata`/`chat_history` and deletes every `summary_*` key (`main.py:142-156`; hardened in 06-02), but never calls `delete_document` per doc, never drops the LanceDB `chunks` table, never deletes `data/lancedb/`, and never removes `DocStore` rows (`data/documents.db`).
 - Files: `main.py:132-141`-area; persistent state lives in `data/lancedb/` and `DocStore(Path("data/documents.db"))`
 - Impact: after Clear All, re-uploading the same PDFs hits the `DocStore` dedup path and restores from SQLite rather than re-extracting — the button reads as "forget everything" but is actually "clear session view". Stale LanceDB rows for never-re-uploaded docs remain queryable in future sessions that re-create the retriever. Disk usage grows monotonically.
-- Fix approach: decide the intended semantic (session-clear vs full-purge) and implement accordingly — either delete per-`doc_id` from `HybridRetriever` + `DocStore` on Clear All, or rename the button to reflect session-only reset.
+- Fix approach: decide the intended semantic (session-clear vs full-purge) and implement accordingly — either delete per-`doc_id` from `HybridRetriever` + `DocStore` on Clear All, or rename the button to reflect session-only reset. Phase 8 must also decide whether Clear All revokes cloud consent and clears session API keys (`main.py:288-300` currently leaves `cloud_mode`/`user_consented`/`cloud_api_keys` intact — see Phase 07 Residuals).
 
-**Unpinned heavy + persistent dependencies (expanded in Phase 4):**
-- Issue: `numpy>=1.26.0,<3.0.0`, `httpx>=0.28.0`, `docling>=2.0.0`, `rapidocr-onnxruntime>=1.3.0`, `pymupdf>=1.24.0`, `pillow>=10.2.0` remain open ranges, and Phase 4 adds `lancedb>=0.17.0` + `pyarrow>=14.0.0` — also open floors, both native/binary wheels with platform-sensitive builds.
+**Unpinned heavy + persistent + cloud dependencies (expanded in Phases 4 and 7):**
+- Issue: `numpy>=1.26.0,<3.0.0`, `httpx>=0.28.0`, `docling>=2.0.0`, `rapidocr-onnxruntime>=1.3.0`, `pymupdf>=1.24.0`, `pillow>=10.2.0` remain open ranges, Phase 4 added `lancedb>=0.17.0` + `pyarrow>=14.0.0`, and Phase 7 adds `litellm>=1.50.0` — also an open floor on a fast-moving LLM-gateway package with a large transitive tree.
 - Files: `requirements.txt:7,9-15`
 - Impact: non-reproducible installs; `lancedb`/`pyarrow` minor bumps can change table schema handling, FTS availability, or Windows wheel compatibility, silently shifting retrieval behaviour. Highest blast radius after the dual-index debt. Phase 8 (release hardening) must pin these.
-- Fix approach: pin exact versions for `lancedb`, `pyarrow`, `docling`, `rapidocr-onnxruntime`, `pymupdf` (verify on Windows + CPU-only), or adopt a lockfile (none exists).
+- Fix approach: pin exact versions for `lancedb`, `pyarrow`, `docling`, `rapidocr-onnxruntime`, `pymupdf`, and `litellm` (verify on Windows + CPU-only), or adopt a lockfile (none exists).
 
 **Private `_embed_one` passed as the hybrid embedding function:**
 - Issue: `main.py` wires `HybridRetriever(embedding_fn=st.session_state.local_embedding._embed_one)` — a private method of another module's class is now load-bearing for all hybrid queries.
@@ -396,7 +438,7 @@ All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-o
 
 ## Dependencies at Risk
 
-**Unpinned multimodal + native + persistence stack (`docling`, `rapidocr-onnxruntime`, `pymupdf`, `pillow`, `lancedb`, `pyarrow`):**
+**Unpinned multimodal + native + persistence + cloud stack (`docling`, `rapidocr-onnxruntime`, `pymupdf`, `pillow`, `lancedb`, `pyarrow`, `litellm`):**
 - Risk: all declared as `>=` floors in `requirements.txt:7,9-15`; `docling` and `rapidocr-onnxruntime` drag in torch/onnxruntime/opencv transitives that are large, fast-moving, and platform-sensitive (Windows wheel availability, CUDA/CPU variants); `lancedb`/`pyarrow` add native query-engine + columnar-format coupling where a minor bump can change FTS availability or table-compat behaviour.
 - Impact: a transitive bump can break layout parsing, OCR decoding, vector search, FTS search, or model-download behavior; `pymupdf`/`pillow` are native parsers with CVE history.
 - Migration plan: pin exact working versions (verify on Windows + CPU-only), or add a lockfile; keep `pypdf==5.3.0` exact as-is. Owned by Phase 8 (release hardening).
@@ -413,10 +455,10 @@ All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-o
 
 ## Missing Critical Features
 
-**Cloud opt-in + egress guardrails (Phase 7 scope, gap is current):**
-- Problem: no consent toggle, no egress indicator beyond the provider badge, no per-request disclosure that context leaves the machine.
-- Blocks: the local-first privacy promise under fallback conditions.
-- Fix approach: Phase 7 LiteLLM adapter must ship with default-off/cloud-consent + visible remote-generation labeling.
+**Cloud opt-in + egress guardrails (Phase 7 — SHIPPED, hardening residuals open):**
+- Status: explicit `@st.dialog` consent gate (`main.py:137-160`), per-provider session keys (`main.py:72`), `LiteLLMProvider._assert_consent` (`litellm_provider.py:132-136`), local/cloud captions + per-answer cloud attribution (`main.py:169,210,580,688`), ingestion vision local-only filter + guard (`main.py:406-415`, `visual_analyzer.py:211-223`).
+- Remaining: UI-layer-only enforcement, dialog dismiss loop, OCR-artifact disclosure wording, legacy key fallback, Clear All cloud posture — see Phase 07 Residuals.
+- Blocks: release-grade consent auditability (Phase 8).
 
 **Output-side injection check:**
 - Problem: input isolation is fixed (CR-01/CR-02 + sanitize + WR-03/WR-09), but no output guard verifies answers don't echo injected directives from documents or VLM descriptions.
@@ -433,10 +475,10 @@ All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-o
 - Blocks: knowing whether hybrid actually beats dense-only, and tuning RRF weights / k per mode.
 - Fix approach: extend the corpus generator (`tests/data/corpus/generate_corpus.py`, run in CI per `04-REVIEW-FIX.md`) with relevance judgements and a recall@k check.
 
-**VRAM/RAM profiling harness (Phase 6 scope, gap is current):**
-- Problem: no script or module samples GPU memory, RSS, or KV-cache utilization across pipeline stages.
-- Blocks: every Phase 6 tuning decision.
-- Fix approach: add `scripts/profile_resources.py` (or equivalent) sampling `nvidia-smi`/pynvml + `psutil` across ingest → embed → VLM → query before tuning.
+**VRAM/RAM profiling harness (Phase 6 — SHIPPED with methodology caveat):**
+- Status: `resource_telemetry.py` + `scripts/profile_resources.py` + sidebar gauge (`main.py:359-384`) exist; headline 3,445 MB figure is analytical (constants + DWM term, no model-resident sampling).
+- Blocks: release sign-off on the 4 GB ceiling.
+- Fix approach: run `scripts/profile_resources.py` on the target RTX 3050 with llama-server resident and record live `nvidia-smi` numbers into `RESOURCE_PROFILE.json` before release.
 
 ## Test Coverage Gaps
 
@@ -447,16 +489,18 @@ All 1 Critical, 3 Warnings, 2 Info items from `.planning/phases/06-performance-o
 - Risk: regressions in orchestration are only caught manually (Phase 3 criticals, Phase 4 CR-01/CR-02, Phase 5 CR-01 all lived here).
 - Priority: High
 
-**Groq streaming success path:**
-- What's not tested: `GroqProvider.stream_text`/`generate_text` happy path (only the unconfigured health path is asserted).
+**Cloud streaming success path (LiteLLM — covered; legacy Groq path — still open):**
+- What's tested now: `LiteLLMProvider` consent gating, retries, timeouts, MIME sniffing (`tests/test_litellm_provider.py`, 11 tests); consent state transitions + ingestion visual isolation + idempotence (`tests/test_cloud_privacy.py`, 8 tests).
+- What's still not tested: `GroqProvider.stream_text`/`generate_text` happy path (only the unconfigured health path is asserted).
 - Files: `groq_provider.py:94-149`; tests cover only `check_health`/capabilities (`tests/test_local_llm.py`).
-- Risk: payload/stream parsing regressions in the fallback provider — the very path Phase 7 will build on.
-- Priority: Medium (rises to High when Phase 7 starts).
+- Risk: payload/stream parsing regressions in the legacy fallback provider — decide whether it survives Phase 8 (see `groq_provider.py` redundancy residual).
+- Priority: Medium (resolves itself if the legacy provider is deleted).
 
-**VLM/OCR integration paths:**
-- What's not tested: end-to-end upload → OCR → visual description → indexed evidence; vision-unavailable degradation is unit-tested (`tests/test_visual_analyzer.py`) but the `main.py` wiring (provider → `VisualAnalyzer`) has no test.
-- Files: `main.py` upload loop, `visual_analyzer.py:211-250`, `ocr_fallback.py:232-290`
-- Risk: CR-01-class wiring regressions (provider never passed, vision silently off).
+**VLM/OCR integration paths (narrowed by Phase 7, wiring still untested):**
+- What's tested now: vision-unavailable degradation (`tests/test_visual_analyzer.py`, 7 tests, passing per `07-REVIEW-FIX.md`); ingestion visual-isolation filter logic (`tests/test_cloud_privacy.py::test_ingestion_visual_analyzer_never_calls_cloud_vision_even_in_cloud_mode` — asserts the `local_vlm_provider` filter shape, not the live `main.py` upload loop).
+- What's still not tested: end-to-end upload → OCR → visual description → indexed evidence; the `main.py:402-417` wiring (provider → `VisualAnalyzer`) itself; consent-dialog state machine (toggle/dialog/revoke transitions through `main.py`).
+- Files: `main.py` upload loop (`main.py:402-417`), `main.py:108-245` (privacy controls), `visual_analyzer.py:211-250`, `ocr_fallback.py:232-290`
+- Risk: CR-01-class wiring regressions (provider never passed, vision silently off) and dialog-loop regressions are still green-in-CI/broken-in-browser.
 - Priority: High
 
 **Hybrid degraded-mode paths:**
