@@ -76,7 +76,10 @@
 
 ## Verification & Test Results
 
-- Complete automated test suite: **226 passed** in 28.3s (`pytest tests/ -q`).
+- Complete automated test suite: **226 passed** in 47.0s (`pytest tests/ -q`).
 - Linter & format checks: Clean (`ruff check .` and `ruff format .`).
-- CI Pipeline Fix: Added `extend-exclude = [".planning", ".cache", "data", "docs", "*.md"]` to `pyproject.toml` so `ruff format --check .` in CI does not attempt to format design notes and markdown files under `.planning/`.
+- CI Pipeline Fix 1: Added `extend-exclude = [".planning", ".cache", "data", "docs", "*.md"]` to `pyproject.toml` so `ruff format --check .` in CI does not attempt to format design notes and markdown files under `.planning/`.
+- CI Pipeline Fix 2: Recompiled `requirements-lock.txt` using `uv pip compile --universal --python-version 3.11` to pin `networkx==3.6.1` and emit platform markers for `win32` vs `linux`.
+- CI Test Fix 3: Wrapped `fitz.open(...)` stream opening in `ocr_fallback.py` in `try...except` so corrupt or non-PDF streams gracefully return `None` rather than raising uncaught `fitz.FileDataError`, resolving `test_graceful_handling_when_no_ocr_available`.
+- Packaging & Launcher: Created `start.py` (pre-flight checks, directory verification, `llama-server` probe, and Streamlit launch) and `setup.py` (packaging & entrypoint definitions). Updated `README.md` and `docs/RUNBOOK.md`.
 - Memory & Hardware profile: Verified on RTX 3050 (3,450 MB projected peak, 646 MB headroom).
