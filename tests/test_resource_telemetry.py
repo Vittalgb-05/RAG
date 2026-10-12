@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from resource_telemetry import (
+    clear_gpu_cache,
     clear_latency_history,
     get_gpu_memory_info,
     get_latency_history,
@@ -21,10 +22,12 @@ from resource_telemetry import (
 
 @pytest.fixture(autouse=True)
 def reset_latencies() -> Generator[None, None, None]:
-    """Ensure clean latency history state before and after each test."""
+    """Ensure clean latency history and GPU cache state before and after each test."""
     clear_latency_history()
+    clear_gpu_cache()
     yield
     clear_latency_history()
+    clear_gpu_cache()
 
 
 def test_get_gpu_memory_info_success() -> None:
@@ -40,6 +43,28 @@ def test_get_gpu_memory_info_success() -> None:
     assert info["used_mb"] == 1024.0
     assert info["free_mb"] == 3072.0
     assert info["utilization_pct"] == 25.0
+
+
+def test_get_gpu_memory_info_ttl_caching() -> None:
+    """Test get_gpu_memory_info throttles subprocess calls within 5.0s TTL (TEL-01)."""
+    mock_res = MagicMock()
+    mock_res.stdout = "4096, 1024, 3072\n"
+
+    with patch("subprocess.run", return_value=mock_res) as mock_run:
+        # First call queries nvidia-smi
+        info1 = get_gpu_memory_info()
+        assert info1 is not None
+        assert mock_run.call_count == 1
+
+        # Second call within TTL should return cached copy without querying subprocess
+        info2 = get_gpu_memory_info()
+        assert info2 == info1
+        assert mock_run.call_count == 1
+
+        # Calling with force_refresh=True should bypass cache and invoke subprocess
+        info3 = get_gpu_memory_info(force_refresh=True)
+        assert info3 == info1
+        assert mock_run.call_count == 2
 
 
 def test_get_gpu_memory_info_empty_or_malformed() -> None:

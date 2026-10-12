@@ -9,6 +9,7 @@ import base64
 from collections.abc import Generator
 import json
 import time
+from urllib.parse import urlparse
 
 import httpx
 
@@ -24,6 +25,7 @@ class LlamaCppProvider(BaseModelProvider):
         model_name: str = "qwen3-vl-2b",
         context_window: int = 4096,
         transport: httpx.BaseTransport | None = None,
+        allow_remote: bool = False,
     ) -> None:
         """Initialize the local llama.cpp provider.
 
@@ -32,10 +34,21 @@ class LlamaCppProvider(BaseModelProvider):
             model_name: Identifier for the model.
             context_window: Bounded context token capacity (default 4096).
             transport: Optional custom HTTP transport (e.g. httpx.MockTransport for tests).
+            allow_remote: Whether to allow non-loopback endpoints (default False).
         """
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or "").lower()
+        loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+        if not allow_remote and host not in loopback_hosts:
+            raise ValueError(
+                f"Restricted endpoint: '{base_url}' (host '{host}') is not a local loopback address. "
+                "Specify a loopback URL or pass allow_remote=True."
+            )
+
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
         self.context_window = context_window
+        self.allow_remote = allow_remote
         self._client = httpx.Client(
             base_url=self.base_url,
             transport=transport,

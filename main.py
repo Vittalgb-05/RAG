@@ -113,12 +113,14 @@ with st.sidebar:
             "⚠️ **External Cloud Transmission Notice**\n\n"
             "By enabling Cloud Mode, your user query prompts and retrieved document excerpts "
             "will be transmitted across the network to external model APIs for inference.\n\n"
+            "**Transmitted Excerpts Include:**\n"
+            "- Extracted document text, tables, and OCR-processed text\n"
+            "- Visual figure descriptions and image analysis summaries\n\n"
             "**What stays 100% on your device (zero network egress):**\n"
-            "- Original PDF document files\n"
-            "- Extracted text and image OCR\n"
+            "- Original PDF document files and raw image bitmaps\n"
             "- Dense vector embeddings (all-MiniLM-L6-v2 on CPU)\n"
             "- Persistent LanceDB vector database & SQLite store\n\n"
-            "Do you consent to transmitting document excerpts to external cloud APIs for this session?"
+            "Do you consent to transmitting document excerpts and OCR/visual summaries to external cloud APIs for this session?"
         )
         col_yes, col_no = st.columns(2)
         with col_yes:
@@ -198,7 +200,6 @@ with st.sidebar:
         )
         if entered_key != current_key:
             st.session_state.cloud_api_keys[selected_provider_key] = entered_key
-            st.session_state.cloud_api_key = entered_key
             st.rerun()
 
         if st.button("Revoke Consent (Switch to Local)", use_container_width=True):

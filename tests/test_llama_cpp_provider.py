@@ -257,3 +257,28 @@ def test_temperature_clamping() -> None:
 
         provider.generate_text("test", temperature=-1.0)
         assert captured_payload["temperature"] == 0.0
+
+
+def test_endpoint_loopback_validation_rejected() -> None:
+    """Test non-loopback endpoints are rejected to prevent SSRF (SEC-01)."""
+    with pytest.raises(ValueError, match="Restricted endpoint"):
+        LlamaCppProvider(base_url="http://192.168.1.100:8080")
+
+    with pytest.raises(ValueError, match="Restricted endpoint"):
+        LlamaCppProvider(base_url="http://internal.corp.network:8080")
+
+
+def test_endpoint_loopback_validation_allowed_with_flag() -> None:
+    """Test non-loopback endpoints are allowed when allow_remote=True."""
+    provider = LlamaCppProvider(base_url="http://192.168.1.100:8080", allow_remote=True)
+    assert provider.base_url == "http://192.168.1.100:8080"
+    assert provider.allow_remote is True
+    provider.close()
+
+
+def test_endpoint_loopback_accepted_addresses() -> None:
+    """Test standard local loopback addresses are accepted by default."""
+    for url in ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"]:
+        provider = LlamaCppProvider(base_url=url)
+        assert provider.base_url == url
+        provider.close()

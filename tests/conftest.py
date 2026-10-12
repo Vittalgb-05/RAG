@@ -17,8 +17,8 @@ def fake_env_groq_key(monkeypatch):
 
 @pytest.fixture
 def mock_groq_client(monkeypatch):
-    """
-    Mocks the groq.Groq client and chat.completions.create streaming response.
+    """Mocks the groq.Groq client and chat.completions.create streaming response.
+
     Yields canned delta.content chunks.
     """
     mock_client = MagicMock()
@@ -42,9 +42,13 @@ def mock_groq_client(monkeypatch):
 
     mock_client.chat.completions.create.side_effect = mock_create
 
-    import local_llm
+    try:
+        import groq_provider
 
-    monkeypatch.setattr(local_llm, "Groq", lambda api_key=None: mock_client)
+        monkeypatch.setattr(groq_provider, "Groq", lambda api_key=None: mock_client)
+    except (ImportError, AttributeError):
+        pass
+
     return mock_client
 
 
