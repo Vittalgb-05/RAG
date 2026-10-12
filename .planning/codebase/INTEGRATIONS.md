@@ -1,119 +1,107 @@
 # External Integrations
 
-**Analysis Date:** 2026-10-12
+**Analysis Date:** 2026-10-13
 
 ## APIs & External Services
 
-**Cloud LLM (direct):**
-- Groq Cloud — optional cloud inference fallback
-  - SDK/Client: `groq==0.15.0` via `groq.Groq` (`groq_provider.py:13,52`)
-  - Auth: `GROQ_API_KEY`
-  - Default model: `openai/gpt-oss-20b` (`groq_provider.py:24`); UI preset `groq/llama-3.3-70b-versatile` (`main.py:165`)
-  - Endpoints used: `chat.completions.create` sync (`groq_provider.py:117-124`) + streaming (`groq_provider.py:149-159`)
-  - Vision: NOT supported — `analyze_image` raises `NotImplementedError` (`groq_provider.py:163-170`)
+**Local inference (default, zero egress):**
+- llama.cpp `llama-server` over loopback HTTP — text generation, SSE token streaming, `analyze_image` VLM calls
+  - Client: `LlamaCppProvider` (`llama_cpp_provider.py:27+`), transport `httpx` (injectable `httpx.MockTransport` for tests)
+  - Endpoint: `base_url="http://127.0.0.1:8080"` (`llama_cpp_provider.py:30`); non-loopback hosts rejected unless `allow_remote=True` (SSRF guard via `ipaddress` + `urlparse`, `llama_cpp_provider.py:40-60`)
+  - Model: `qwen3-vl-2b` / `qwen3-vl-2b-instruct-q4_k_m.gguf` + `mmproj-f16` (~2.4 GB VRAM vs 4 GB ceiling); context 4096; setup in `docs/LOCAL_INFERENCE.md`
+  - Image path: base64-encoded PNG crops from `VisualAnalyzer.crop_visual_element` → `analyze_image(image_bytes, prompt)` (`visual_analyzer.py:138-186`, `llama_cpp_provider.py`)
+  - Auth: none (local socket); health via `check_health()` → `HealthStatus(status="healthy"|"unreachable", ...)` with `llama-server -m models/...` remediation text (`tests/conftest.py:110-117`)
 
-**Cloud LLM (routed):**
-- LiteLLM router → Groq / OpenAI / Anthropic — unified cloud adapter with explicit consent gate
-  - SDK/Client: `litellm>=1.50.0` via `litellm.completion` (`litellm_provider.py:223,275,337`)
-  - Auth: `GROQ_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` (prefix-mapped in `litellm_provider.py:44-50`)
-  - Default model: `groq/llama-3.3-70b-versatile` (`litellm_provider.py:23`); UI presets in `main.py:165-167`
-  - Behaviour: bounded `timeout=30.0s`, `num_retries=2` (`litellm_provider.py:104-111`); consent enforced by `_assert_consent()` raising `PermissionError` without opt-in (`litellm_provider.py:132-138`); vision gated by `VISION_SUPPORTED_PREFIXES` (`litellm_provider.py:31-36`)
-  - Known context windows: groq 131072 / openai 128000 / anthropic 200000 (`litellm_provider.py:25-29`)
+**Cloud inference (explicit opt-in only, consent-gated):**
+- Groq API (direct path)
+  - SDK/Client: `groq==0.15.0`, `groq.Groq` wrapped by `GroqProvider` (`groq_provider.py:12`)
+  - Default model: `openai/gpt-oss-20b`, context 8192 (`groq_provider.py:22`)
+  - Auth: `GROQ_API_KEY` — precedence explicit arg → Streamlit session state (isolated per-session post-audit, P1-3) → `st.secrets["GROQ_API_KEY"]` → `os.environ`; missing key raises `ValueError` naming both locations
+- LiteLLM multi-cloud router (`litellm_provider.py`)
+  - SDK/Client: `litellm>=1.50.0` (locked `1.105.0`), guarded `try/except ImportError → litellm = None` (`litellm_provider.py:22-25`)
+  - Routes: `groq/llama-3.3-70b-versatile` (DEFAULT_CLOUD_MODEL), `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku` and prefix-matched siblings; `KNOWN_CONTEXT_WINDOWS` groq 131072 / openai 128000 / anthropic 200000; vision enabled only for `openai/gpt-4o*`, `anthropic/claude-3*` (`VISION_SUPPORTED_PREFIXES`)
+  - Auth: per-prefix env map `groq→GROQ_API_KEY`, `openai→OPENAI_API_KEY`, `anthropic→ANTHROPIC_API_KEY` (`_resolve_api_key_for_model`, `litellm_provider.py:42+`); bounded timeouts/retries; strict programmatic privacy gate — cloud call blocked without recorded user consent (INF-04/UI-04, `tests/test_cloud_privacy.py` 251 lines)
+  - Contract: implements `BaseModelProvider` (`model_provider.py:10+`) — `generate_text` / `stream_text` (generator of `str`) / `analyze_image` / `check_health` / `get_capabilities`
 
-**Local inference server (no egress):**
-- llama-server (llama.cpp) hosting Qwen3-VL 2B GGUF — primary local backend
-  - SDK/Client: `httpx==0.28.1` `httpx.Client` with `Timeout(connect=2.0, read=60.0, write=10.0, pool=5.0)` (`llama_cpp_provider.py:63-67`)
-  - Auth: none (loopback only)
-  - Default endpoint: `http://127.0.0.1:8080` (`llama_cpp_provider.py:25`); model `qwen3-vl-2b`, context 4096 (`llama_cpp_provider.py:26-27`)
-  - Endpoints used: `GET /health` (200 healthy / 503 loading — `llama_cpp_provider.py:81-100`), `POST /v1/chat/completions` sync + SSE stream (`llama_cpp_provider.py:170-171,219-236`), multimodal `analyze_image` via base64 `image_url` payload (`llama_cpp_provider.py:263-285`)
-  - Safety: non-loopback hosts rejected unless `allow_remote=True` (`llama_cpp_provider.py:40-57`); test seam via `httpx.MockTransport` (`llama_cpp_provider.py:28,37`)
-  - Setup hint emitted on `ConnectError`: `llama-server -m models/<name>-instruct-q4_k_m.gguf --mmproj models/mmproj-f16.gguf -c <ctx> -ngl 28 --port 8080` (`llama_cpp_provider.py:103-110`)
-  - Docs: `docs/LOCAL_INFERENCE.md`, `docs/RUNBOOK.md`
+**Embeddings (local, no network at query time after first download):**
+- HuggingFace `sentence-transformers` `all-MiniLM-L6-v2`, 384-dim, CPU device (`local_embedding.py:11`); weights from HF Hub → `~/.cache/huggingface/`; shared-across-sessions in-RAM singleton post-audit (P1-2); deterministic `MagicMock` seam in `tests/conftest.py:55-85` keeps suite 100% offline
 
-**Embeddings (local, no egress):**
-- sentence-transformers `all-MiniLM-L6-v2` on CPU (`local_embedding.py:22,40`) — 384-dim L2-normalised vectors; weights cached in `~/.cache/huggingface/`
-
-**Document intelligence (local, no egress):**
-- Docling `>=2.0.0` — CPU-only pipeline (`do_ocr=False`, `do_table_structure=True`) for reading order/headings/markdown tables (`docling_reader.py:1-7,23-25`)
-- RapidOCR (`rapidocr-onnxruntime>=1.3.0`) + PyMuPDF raster (`pymupdf>=1.24.0`, `pillow>=10.2.0`) — conditional page-level OCR when extracted text < 50 chars or status empty/failed (`ocr_fallback.py:29-43`)
+**Document parsing (local libraries, no SaaS):**
+- Docling (`docling>=2.0.0`, locked `2.138.0`): `DocumentConverter` + `PdfPipelineOptions` + `DocumentStream/InputFormat` (`docling_reader.py:23-25`); tables via `doc.iterate_items()` / `doc.tables` / `export_to_markdown()` fallbacks (`docling_reader.py:122-167`); missing/failed → `PdfReader` (pypdf) fallback
+- RapidOCR (`rapidocr-onnxruntime>=1.3.0`, locked `1.4.4` + `onnxruntime==1.31.0` + `opencv-python==5.0.0.93`): `RapidOCR()` CPU `CPUExecutionProvider` (`ocr_fallback.py:63-68`); selectively run per page via `apply_conditional_ocr` (`main.py` import); zoom/DPI budgets clamped post-audit (P1-2)
+- PyMuPDF (`pymupdf>=1.24.0`, locked `1.28.2`, `import fitz`): raster render `fitz.open(stream=...)` + `fitz.Matrix(zoom, zoom)` (`ocr_fallback.py:96-104`); drawing-inspection detection + `fitz.Rect` union + 2x PNG crops capped at 2048² px with truncation warnings (`visual_analyzer.py:65-186`, P1-2)
 
 ## Data Storage
 
 **Databases:**
-- SQLite (stdlib `sqlite3`, WAL mode, schema versioning) — document/page/chunk/evidence/summary persistence
-  - Connection: per-operation connect/close lifecycle (Windows-lock + Streamlit-loop safe); default file under gitignored `data/` (live local file: `data/documents.db`)
-  - Client: `DocStore` in `doc_store.py:1-610` (tables `documents`, `pages`, `chunks`, `evidence_elements` + V2 DDL)
-  - Used by: `main.py:20,26` (dedup + persistence across restarts)
-- LanceDB (serverless on-disk vector store) — persistent hybrid retrieval
-  - Connection: `lancedb.connect(str(db_uri))`, default `<repo_root>/data/lancedb` (`hybrid_retriever.py:27,92-115`); live local dir `data/lancedb/` present
-  - Client: `lancedb` + `pyarrow` (`hybrid_retriever.py:20-21`), guarded import with pure in-memory fallback (`hybrid_retriever.py:19-24,100-120,151`)
-  - Fusion: dense + BM25-style FTS with Reciprocal Rank Fusion `k_rrf=60` (`hybrid_retriever.py:28,31-50`)
-- In-memory only: `VectorIndex` (stdlib `math`, no driver) — per-session k-NN inside `LocalEmbedding.store` (`local_embedding.py:43`, `vector_index.py:1-228`); lost on restart
-- Disk cache: content-addressed `.cache/<sha256>/<CONFIG_VERSION>/` via `cache_dir_for` (`models.py:17-30`, `CONFIG_VERSION = "docling-1000-200-v1"`); `.cache/` gitignored (`.gitignore:17`)
+- SQLite via stdlib `sqlite3` — `DocStore` ACID document/metadata store (`doc_store.py:13,105-141`): `sqlite3.connect(db_path, timeout=5.0)`, `row_factory = sqlite3.Row`, `_apply_migrations`; dedup by SHA-256 (`sha256_bytes`, `doc_id_for` in `upload_validation.py`); persistent `delete` + `purge_all` added in `619814a` (P1-1, `doc_store.py`, `tests/test_doc_store.py` +79 lines); `HybridRetriever.purge` mirrors it (`hybrid_retriever.py`, `tests/test_hybrid_retriever.py` +22)
+  - Connection: local file under `data/` (gitignored); anchored paths post-audit (P1-1)
+  - Client: no ORM — raw `sqlite3` + contextmanager `_connect` generator
+- LanceDB (`lancedb>=0.17.0`, locked `0.40.0` + `pyarrow>=14`, locked `23.0.1`) — persistent on-disk vector + BM25/FTS5 hybrid table `chunks` with RRF fusion (`hybrid_retriever.py:1-4,80-120`): `lancedb.connect(str(db_uri))` at `data/lancedb` (`DEFAULT_DB_URI`, `hybrid_retriever.py:27`); optional import (`lancedb = None` fallback, `hybrid_retriever.py:18-23`) → disk-backed in-memory mode; existing-table reopen path (`hybrid_retriever.py:194-200`)
+- In-memory `VectorIndex` (`vector_index.py`, 228 lines, stdlib-only) — legacy/embedded linear-scan cosine k-NN; no disk I/O
 
 **File Storage:**
-- Local filesystem only — uploads validated then persisted via `DocStore`; no S3/GCS/Azure integration
-- Upload validation: `validate_pdf_bytes` + `MAX_FILE_MB` (`upload_validation.py`, wired in `main.py:37`)
+- Local filesystem only: uploads via `st.file_uploader` → `validate_pdf_bytes` (size/pages/MIME/magic-byte checks, `MAX_FILE_MB`, `MAX_PAGES` in `upload_validation.py:113`) → `DocStore` persistence; visual crops transient `bytes` (PNG); `data/` excluded from git (`.gitignore`)
+- Cache: content-hash-keyed summary cache (`Summarizer`, `models.SummaryResult`) with cache-version field post-audit (P1-1, `tests/test_cache_invalidation.py` 218 lines); embedding-index cache versioning (`local_embedding.py`, `tests/test_local_embedding.py` +15)
 
 **Caching:**
-- GPU telemetry 5s TTL cache to avoid `nvidia-smi` spawn storms (`resource_telemetry.py:25-30,33-97`)
-- Latency history ring buffer `MAX_STAGE_HISTORY = 200` (`resource_telemetry.py:23`)
-- Summary results cached in SQLite `DocStore` (`summarizer.py`, `models.SummaryResult`)
-- No Redis/Memcached
+- No Redis/Memcached. App-level: `@st.cache_resource` singletons (model/provider), `st.session_state` per-browser-session index, summary content-hash cache, GPU telemetry 5.0 s TTL (`_GPU_CACHE_TTL_SECONDS`, `resource_telemetry.py`)
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- Custom (API-key passthrough, no OAuth/SSO)
-  - Implementation: key resolution order explicit-arg → `st.session_state.cloud_api_keys` → `st.secrets` → `os.environ` (`litellm_provider.py:39-85`); Groq-direct variant `st.secrets` → `os.environ` (`groq_provider.py:37-47`)
-  - Privacy gate: `LiteLLMProvider(user_consented=False)` by default; `set_consent()` flips (`litellm_provider.py:128-138`); every network call asserts consent first (`litellm_provider.py:201,250,302`)
-  - Tests use mock key `test-key-not-a-secret-mock-value` via `fake_env_groq_key` (`tests/conftest.py:14-15`); never a real credential
+- None for the app itself — single-user local workstation design (documented post-audit, P1-3). No login, no user store
+  - Implementation: Streamlit session-state isolation — `AiModel` instance and cloud-consent flag scoped to `st.session_state`, not globals (`local_llm.py`, `main.py`, `tests/test_main_ui.py` +69 in `619814a`)
+- Upstream credentials (all user-supplied, never committed):
+  - `GROQ_API_KEY` → Groq direct + `groq/*` via LiteLLM
+  - `OPENAI_API_KEY` → `openai/*` via LiteLLM
+  - `ANTHROPIC_API_KEY` → `anthropic/*` via LiteLLM
+  - `HF_TOKEN` mentioned only in a comment, never read in code
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- None (no Sentry/Datadog/OTel integration)
+- None (no Sentry/DataDog). Per-file upload `try/except → st.error(...) → continue` isolation (`main.py`); constructor validation raises (`ValueError`/`TypeError` in `vector_index.py`, `upload_validation.py`, `LlamaCppProvider` loopback guard); no retry/timeout wrapper on the Groq stream (surfaces as Streamlit exception page — see `CONCERNS.md`)
 
 **Logs:**
-- Stdlib `logging` per module (`logger = logging.getLogger(__name__)`) — e.g. `local_embedding.py:16`, `litellm_provider.py:16`, `docling_reader.py:20`, `resource_telemetry.py:18`
-- Telemetry module (`resource_telemetry.py:1-245`): `get_gpu_memory_info()` (nvidia-smi CSV parse, `None` on headless/CI), `get_process_memory_info()` (psutil RSS/VMS, zeros when psutil absent), `LatencyTracker` / `track_stage` context managers, `get_system_telemetry_snapshot()` (timestamp + gpu + process + stage summaries)
-- Benchmarks: `scripts/benchmark_baseline.py` (extraction/chunk/CPU-embed/search/memory → `.planning/research/BASELINE_BENCHMARK.json`), `scripts/profile_resources.py` (cold-vs-warm/LanceDB/summarizer/VRAM headroom → `.planning/research/RESOURCE_PROFILE.json`)
-- Docs: `docs/EVALUATION.md` (quality gates), `docs/RUNBOOK.md` (ops)
+- stdlib `logging` per module (`logger = logging.getLogger(__name__)`) + developer `print("[LocalEmbedding] ...")` lifecycle lines; user-facing feedback exclusively via `st.*` (`st.error/info/success/status/write`)
+- Latency instrumentation: `LatencyTracker` contextmanager + `_LATENCY_HISTORY` registry (cap 200/stage, thread-locked) in `resource_telemetry.py:22-33`
+- Benchmark artifacts: `scripts/profile_resources.py` (342 lines, QUAL-01) → `.planning/research/RESOURCE_PROFILE.json` (live RTX 3050: 4096 MB total, 690 MB used, projected peak 3450 MB, 646 MB headroom); `scripts/benchmark_baseline.py` (174 lines); `scripts/benchmark_multimodal.py` (292 lines, NEW in `619814a`, QUAL-02/P0-3) → `.planning/research/MULTIMODAL_BENCHMARK.json` (factual/visual/abstention/citation 100%, avg latency 0.087 s, deterministic offline provider)
+- Docs: `docs/EVALUATION.md`, `docs/RUNBOOK.md` (purge/ops updated in `619814a`), `docs/LOCAL_INFERENCE.md`
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Streamlit Community Cloud (or any `streamlit run main.py` host); devcontainer auto-launch on port 8501 (`.devcontainer/devcontainer.json:21-32`)
+- Streamlit Community Cloud (live app) + local `streamlit run main.py` + devcontainer port 8501. No containers/Dockerfile in repo
 
 **CI Pipeline:**
-- GitHub Actions (`.github/workflows/ci.yml`, 41 lines): push/PR to `main` → `ubuntu-latest` + Python 3.11 + pip cache → `pip install -r requirements.txt` + `pip install -r requirements-test.txt` → `ruff check .` + `ruff format --check .` → `python tests/data/corpus/generate_corpus.py` → `pytest tests/ -v`
-- NOTE: CI does NOT install or verify `requirements-lock.txt` — lockfile is currently unenforced (see STACK.md pin-consistency audit)
+- GitHub Actions `.github/workflows/ci.yml` (44 lines), trigger `push`/`pull_request` on `main`, single job `Lint & Test Suite (Python 3.11)` on `ubuntu-latest`:
+  1. `actions/checkout@v4` → 2. `actions/setup-python@v5` (3.11) → 3. `astral-sh/setup-uv@v5` (cache on) → 4. `uv pip install --system -r requirements-lock.txt` + `-r requirements-test.txt` (P0-1 fix — installs FROM the lockfile, `ci.yml:28-31`) → 5. `ruff check .` + `ruff format --check .` → 6. `python tests/data/corpus/generate_corpus.py` (synthetic fixtures incl. `clean_digital.pdf` 20 pp, `dense_table.pdf`, `multi_column.pdf`) → 7. `pytest tests/ -v` (24 modules, 217 passing per README badge; offline via `tests/conftest.py` mocks — mock Groq streaming deltas, mock 384-dim ST vectors, mock LlamaCpp provider)
 
 ## Environment Configuration
 
 **Required env vars:**
-- `GROQ_API_KEY` — Groq-direct + LiteLLM-groq paths (only key strictly required for cloud fallback)
-- `OPENAI_API_KEY` — only when LiteLLM model prefix is `openai/`
-- `ANTHROPIC_API_KEY` — only when LiteLLM model prefix is `anthropic/`
-- No `HF_TOKEN` read in code (public embedding model needs none); no other service keys
+- `GROQ_API_KEY` — required ONLY for cloud-fallback paths (direct Groq + `groq/*` LiteLLM routes); local-only operation needs none
+- `OPENAI_API_KEY` — required only for `openai/*` LiteLLM routes
+- `ANTHROPIC_API_KEY` — required only for `anthropic/*` LiteLLM routes
+- `LLAMA_SERVER_URL` (optional, defaults `http://127.0.0.1:8080`) — local llama-server endpoint; must be loopback unless explicitly overridden
 
 **Secrets location:**
-- Local: `.env` in project root (gitignored, loaded by `load_dotenv()` at `main.py:91`)
-- Cloud: Streamlit secrets panel (`st.secrets["GROQ_API_KEY"]` etc.)
-- Session-scoped: `st.session_state.cloud_api_keys` / `cloud_api_key` (per-user keys entered in UI, `main.py:190`, `litellm_provider.py:56-71`)
-- Forbidden: never commit `.env`, `.streamlit/secrets.toml`, or any key material; test fixtures use mock values only
+- Local: `.env` file in repo root (gitignored, absent from tree — existence only, never read); loaded via `load_dotenv()`
+- Cloud: Streamlit secrets panel (`st.secrets`); no `.streamlit/secrets.toml` committed
+- Tests: fake key `test-key-not-a-secret-mock-value` via `fake_env_groq_key` fixture (`tests/conftest.py:12-15`); `httpx.MockTransport`-based provider doubles — no real credentials anywhere in repo
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- None (no webhook receivers, no API routes — Streamlit UI only)
+- None — no webhook receivers, no API routes; only Streamlit UI interactions and loopback llama-server client calls
 
 **Outgoing:**
-- `POST {llama-server}/v1/chat/completions` (local loopback, OpenAI-compatible + SSE) — `llama_cpp_provider.py:170,219,285`
-- `GET {llama-server}/health` (local loopback health probe) — `llama_cpp_provider.py:81`
-- Groq `chat.completions.create` (sync + stream) via `groq` SDK — `groq_provider.py:117,149`
-- `litellm.completion` (sync + stream + vision) to Groq/OpenAI/Anthropic endpoints — `litellm_provider.py:223,275,337`
+- Cloud LLM completions (consent-gated): `groq.chat.completions.create` (streaming deltas, `groq_provider.py`), `litellm.completion` fan-out to Groq/OpenAI/Anthropic (`litellm_provider.py`)
+- Local LLM/VLM (loopback): `POST {base_url}/completion` + SSE stream + `/v1/chat`-style image endpoint via `httpx` (`llama_cpp_provider.py`)
+- One-time model fetch: HuggingFace Hub download of `all-MiniLM-L6-v2` on first embedding run (cached thereafter)
+- Zero egress by default: local-only mode makes no outbound calls; `tests/test_cloud_privacy.py` asserts no document text/embeddings/queries leave the machine without consent
 
 ---
 
-*Integration audit: 2026-10-12*
+*Integration audit: 2026-10-13*

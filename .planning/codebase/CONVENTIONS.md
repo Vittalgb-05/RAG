@@ -1,164 +1,124 @@
 # Coding Conventions
 
-**Analysis Date:** 2026-10-12
+**Analysis Date:** 2026-10-13
 
 ## Naming Patterns
 
 **Files:**
-- Flat `snake_case.py` modules at repo root, one class/concern per file: `main.py`, `local_llm.py`, `local_embedding.py`, `vector_index.py`, `pdf_reader.py`, `model_provider.py`, `llama_cpp_provider.py`, `groq_provider.py`, `litellm_provider.py`, `prompt_budget.py`, `docling_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`, `doc_store.py`, `models.py`, `upload_validation.py`, `hybrid_retriever.py`, `summarizer.py`, `citation_validator.py`, `resource_telemetry.py`.
-- Test files mirror module names: `tests/test_<module>.py` (e.g. `tests/test_llama_cpp_provider.py` mirrors `llama_cpp_provider.py`, `tests/test_cloud_privacy.py` covers the Phase-7 privacy layer across `local_llm.py` + `litellm_provider.py` + `main.py` + `visual_analyzer.py`). Shared fixtures live in `tests/conftest.py`. Synthetic corpus generator lives at `tests/data/corpus/generate_corpus.py`. Benchmark/profiling harnesses live in `scripts/`: `scripts/benchmark_baseline.py`, `scripts/profile_resources.py`. UI-contract tests live in `tests/test_main_ui.py` (no `main_ui.py` source module — it tests helpers/contracts consumed by `main.py`).
-- Profiling/benchmark scripts prepend repo root to `sys.path` instead of using relative imports (`scripts/benchmark_baseline.py`, `scripts/profile_resources.py`).
+- Flat `snake_case.py` modules at repo root, one primary class per file: `main.py`, `local_llm.py`, `local_embedding.py`, `vector_index.py`, `pdf_reader.py`, `models.py`, `model_provider.py`, `doc_store.py`, `hybrid_retriever.py`, `docling_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`, `summarizer.py`, `citation_validator.py`, `prompt_budget.py`, `resource_telemetry.py`, `upload_validation.py`, `groq_provider.py`, `litellm_provider.py`, `llama_cpp_provider.py`.
+- No packages, no `__init__.py` in root, no barrel files. `tests/__init__.py` exists (1 line, empty marker) only so pytest treats `tests/` as a package.
+- Test files mirror source one-to-one: `tests/test_<module>.py` (e.g. `tests/test_doc_store.py` → `doc_store.py`). Cross-cutting suites use feature names: `tests/test_cloud_privacy.py`, `tests/test_cache_invalidation.py`, `tests/test_concurrency_lock.py`, `tests/test_main_ui.py`.
+- Benchmark/profiling scripts live in `scripts/`: `scripts/benchmark_baseline.py`, `scripts/benchmark_multimodal.py`, `scripts/profile_resources.py`. Corpus generator lives with its data: `tests/data/corpus/generate_corpus.py`.
+
+**Classes:**
+- `PascalCase`, one public class per module: `AiModel` (`local_llm.py`), `LocalEmbedding` (`local_embedding.py`), `VectorIndex` (`vector_index.py`), `PdfReader` (`pdf_reader.py`), `DocStore` (`doc_store.py`), `HybridRetriever` (`hybrid_retriever.py`), `Summarizer` (`summarizer.py`), `InferenceGate` (`local_llm.py`), `BaseModelProvider` (`model_provider.py`), `LlamaCppProvider` (`llama_cpp_provider.py`), `GroqProvider` (`groq_provider.py`), `LiteLLMProvider` (`litellm_provider.py`).
+- Pydantic v2 schemas in `models.py` are `PascalCase` immutable value objects: `BBox`, `Chunk`, `Document`, `Page`, `EvidenceElement`, `EvidenceSnippet`, `RetrievalResult`, `SummaryResult`. Health/capability schemas in `model_provider.py`: `HealthStatus`, `ProviderCapabilities`.
+- Test doubles follow `Mock*` / `Dummy*` / `Deterministic*` prefixes: `MockLlamaCppProvider` (`tests/conftest.py`), `DummyProvider` (`tests/test_concurrency_lock.py`), `DeterministicBenchmarkProvider` (`scripts/benchmark_multimodal.py`), `BenchmarkProvider` (`scripts/profile_resources.py`).
 
 **Functions:**
-- `snake_case` throughout. Examples: `ask_a_question_from_pdf_stream` (`local_llm.py`), `build_index` / `get_embeddings` / `get_context` (`local_embedding.py`), `add_document` / `add_vector` / `search` (`vector_index.py`), `extract_text` / `get_paragraphs` (`pdf_reader.py`), `load_ai_model` (`main.py`), `generate_text` / `stream_text` / `analyze_image` / `check_health` / `get_capabilities` (all `BaseModelProvider` implementations: `model_provider.py`, `llama_cpp_provider.py`, `groq_provider.py`, `litellm_provider.py`), `set_consent` / `set_cloud_mode` (`litellm_provider.py`, `local_llm.py`), `_resolve_api_key_for_model` / `_detect_image_mime_type` (`litellm_provider.py`).
-- Phase-8 additions: `get_gpu_memory_info(force_refresh=False)` / `clear_gpu_cache()` (`resource_telemetry.py:33,210`), `LlamaCppProvider.__init__(..., allow_remote=False)` (`llama_cpp_provider.py:29`), `_render_consent_dialog_content` / `show_consent_dialog` (`main.py:111-147`).
-- Private helpers use a single leading underscore: `_embed_one` (`local_embedding.py`), `_cosine_distance` / `_euclidean_distance` / `_dot_product` / `_magnitude` (`vector_index.py`), `_detect_provider` (`local_llm.py`), `_resolve_api_key_for_model` / `_detect_image_mime_type` / `_require_consent` (`litellm_provider.py`).
+- `snake_case` throughout. Examples: `ask_a_question_from_pdf_stream` (`local_llm.py`), `build_index` / `get_embeddings` / `get_context` (`local_embedding.py`), `add_document` / `add_vector` / `search` (`vector_index.py`), `extract_text` / `get_paragraphs` (`pdf_reader.py`), `load_ai_model` / `save_uploaded_pdf` (`main.py`), `validate_citations` (`citation_validator.py`), `compute_rrf` (`hybrid_retriever.py`), `bound_chat_history` (`prompt_budget.py`), `estimate_tokens` / `sanitize_xml_boundary` (`prompt_budget.py`), `cache_dir_for` (`models.py`).
+- Test functions are `test_<unit>_<behaviour>`: `test_cosine_distance_math`, `test_add_vector_guards` (`tests/test_vector_index.py`), `test_pdf_reader_chunking_overlap` (`tests/test_pdf_reader.py`), `test_chat_history_bounding_drops_oldest_turns` (`tests/test_cache_invalidation.py`), `test_default_session_privacy_state_is_local_only` (`tests/test_cloud_privacy.py`).
 
 **Variables:**
-- `snake_case` locals and attributes: `indexed_files`, `document_metadata`, `local_embedding`, `chat_history` (`main.py`), `page_chunks`, `pages_text`, `filename` (`pdf_reader.py`), `cloud_mode`, `user_consented`, `cloud_provider`, `active_cloud_provider`, `local_vlm_provider` (`main.py`, `local_llm.py`, `litellm_provider.py`), `stream_calls` (mock providers in `tests/conftest.py`).
-- Private state uses a single leading underscore: `_vector_dim`, `_distance_metric`, `_embedding_fn` (`vector_index.py`), `_healthy`, `_tokens` (mocks in `tests/conftest.py`).
-- Telemetry cache state is module-level underscore-prefixed: `_GPU_CACHE_TTL_SECONDS`, `_GPU_CACHE_LOCK`, `_SAMPLING_LOCK`, `_LAST_GPU_SAMPLE_TIME`, `_LAST_GPU_SAMPLE` (`resource_telemetry.py:26-31`). Tests reset it via `clear_gpu_cache()` — never by touching the globals directly (`tests/test_resource_telemetry.py:27,30`).
-- Pydantic model fields are `snake_case` with explicit `Field(...)` metadata: `chunk_id`, `doc_id`, `page`, `supports_vision`, `is_local`, `context_window` (`models.py`, `model_provider.py`).
+- `snake_case` locals and attributes: `indexed_files`, `document_metadata`, `local_embedding`, `chat_history` (`main.py`), `page_chunks`, `pages_text`, `filename` (`pdf_reader.py`), `groq_client`, `model_name` (`local_llm.py`).
+- Private helpers use a single leading underscore: `_embed_one` (`local_embedding.py`), `_cosine_distance` / `_euclidean_distance` / `_dot_product` / `_magnitude` (`vector_index.py`).
+- Private state uses a single leading underscore: `_vector_dim`, `_distance_metric`, `_embedding_fn` (`vector_index.py`).
+- Constants are `UPPER_CASE` at module scope in new code: `CONFIG_VERSION = "docling-1000-200-v1"` (`models.py`), `DEFAULT_DB_URI`, `MAX_CHAT_TURNS = 50` (`tests/test_cache_invalidation.py`). Legacy tunables remain inline literals: `chunk_size=1000, chunk_overlap=200` (`pdf_reader.py`), `k=10` call sites, `max_tokens=1024` (`local_llm.py`). When adding code, prefer a named `UPPER_CASE` constant (new-code pattern) over inline literals.
 
 **Types:**
-- `PascalCase`, one public class per module: `AiModel` (`local_llm.py`), `LocalEmbedding` (`local_embedding.py`), `VectorIndex` (`vector_index.py`), `PdfReader` (`pdf_reader.py`), `LiteLLMProvider` (`litellm_provider.py`), `LlamaCppProvider` (`llama_cpp_provider.py`), `GroqProvider` (`groq_provider.py`), `VisualAnalyzer` (`visual_analyzer.py`), `HybridRetriever` (`hybrid_retriever.py`), `DocStore` (`doc_store.py`), `InferenceGate` (`local_llm.py`).
-- Pydantic v2 schemas in `models.py` (`Document`, `Page`, `Chunk`, `BBox`, `EvidenceElement`, `EvidenceSnippet`, `SummaryResult`, `RetrievalResult`) and `model_provider.py` (`BaseModelProvider`, `HealthStatus`, `ProviderCapabilities`): all use `ConfigDict(frozen=True, extra="forbid")` unless mutation is required. New schemas must follow this frozen/forbid default.
-- Module-level `UPPER_CASE` constants for policy tables and defaults: `DEFAULT_CLOUD_MODEL`, `KNOWN_CONTEXT_WINDOWS`, `VISION_SUPPORTED_PREFIXES` (`litellm_provider.py`), `CONFIG_VERSION` (`models.py`), `_GPU_CACHE_TTL_SECONDS = 5.0` (`resource_telemetry.py:26`). Retrieval/UI tunables that are call-site literals (not policy) stay inline: `chunk_size=1000, chunk_overlap=200` (`pdf_reader.py`), `k=10` call sites (`main.py`), `max_tokens=1024` (`local_llm.py`, provider `generate_text` signatures).
-- Modern `X | None` union syntax (target `py311` per `pyproject.toml:3`), builtin generics (`list[dict]`, `dict[str, str]`, `list[tuple[dict, float]]`). `typing` imports (`List`, `Dict`, `Optional`) survive only in legacy `vector_index.py`; new code must use builtin generics.
+- `typing` + `collections.abc` generics on all new modules: `list[float]`, `list[str]`, `list[tuple[dict, float]]`, `Generator`, `Callable`, `Literal` status fields (`model_provider.py`, `models.py`, `hybrid_retriever.py`). Pydantic `Field(..., min_length=1, gt=0, description=...)` for every schema field (`models.py`, `model_provider.py`).
+- Legacy modules (`main.py`, `local_llm.py`, `pdf_reader.py`) are mostly untyped except isolated hints (`-> str`, `-> AiModel`, `pdf_path: str, prompt: str`). New code must be fully annotated; do not copy the legacy untyped style.
 
 ## Code Style
 
 **Formatting:**
-- Ruff formatter is canonical. Config in `pyproject.toml:1-10`: `line-length = 120`, `target-version = "py311"`.
-- Verify with `ruff format --check .` (46 files, clean per `08-REVIEW-FIX.md`). CI enforces it (`.github/workflows/ci.yml:30-33`).
-- 4-space indentation. Double quotes for code strings; `"""..."""` docstrings everywhere (see Docstrings below).
+- Ruff formatter is canonical, enforced in CI via `ruff format --check .` (`.github/workflows/ci.yml`). Target Python 3.11, `line-length = 120` (`pyproject.toml:1-3`).
+- 4-space indentation. Match the surrounding file; never run a repo-wide reformat to fix one file.
 
 **Linting:**
-- Ruff linter. Config in `pyproject.toml:5-10`: `select = ["E", "F", "W"]`, `ignore = ["E501", "W291", "W293"]` (line length enforced by formatter, not `E501`).
-- Per-file ignores: `"scripts/*" = ["E402"]` (`pyproject.toml:9-10`) — `scripts/` intentionally imports after `sys.path` manipulation.
-- Verify with `ruff check .` (0 errors). CI runs `ruff check .` before tests (`.github/workflows/ci.yml:30-33`).
+- Ruff lint, enforced in CI via `ruff check .` (`.github/workflows/ci.yml`). Config in `pyproject.toml:5-10`: `select = ["E", "F", "W"]`, `ignore = ["E501", "W291", "W293"]` — long lines and trailing whitespace are lint-ignored (formatter still normalises whitespace).
+- Per-file ignore: `"scripts/*" = ["E402"]` (`pyproject.toml:9-10`) because benchmark scripts do `sys.path.insert(0, str(REPO_ROOT))` before project imports (`scripts/benchmark_baseline.py`, `scripts/benchmark_multimodal.py`, `scripts/profile_resources.py`). Do not add new E402 violations outside `scripts/`.
+- No mypy/pyright config; type safety comes from Pydantic runtime validation (`extra="forbid"`, `frozen=True` on schemas) plus constructor guards.
 
 ## Import Organization
 
 **Order:**
-1. Stdlib block (`os`, `re`, `base64`, `logging`, `sqlite3`, `pathlib`, `datetime`, `collections.abc`, `ipaddress`, `threading`, `subprocess`, `urllib.parse`)
-2. Third-party block (`streamlit`, `pydantic`, `litellm`, `sentence_transformers`, `pypdf`, `langchain_text_splitters`)
-3. Local block (`from model_provider import ...`, `from litellm_provider import ...`)
+1. Stdlib block (`pathlib`, `re`, `json`, `sqlite3`, `uuid`, `datetime`, `threading`, `abc`, `contextlib`, `collections.abc`)
+2. Third-party block (`pydantic`, `numpy`, `streamlit`, `pypdf`, `sentence_transformers`, `psutil`, `reportlab` in tests)
+3. Local block (`from models import ...`, `from vector_index import VectorIndex`, `from model_provider import BaseModelProvider`)
+4. One blank line between groups. Exemplars: `models.py`, `doc_store.py`, `hybrid_retriever.py`.
 
-- Exemplars: `main.py:14-35` (stdlib, blank line, third-party, blank line, local), `litellm_provider.py:1-20` (`base64`, `collections.abc`, `logging`, `os`, `typing`, then `model_provider`), `models.py:1-15`, `vector_index.py:11-12` (stdlib-only: `math`, `typing`), `llama_cpp_provider.py` (stdlib `ipaddress` + `urllib.parse` for loopback validation), `resource_telemetry.py` (stdlib `threading` + `subprocess` for TTL cache).
-- No path aliases. All imports are top-level absolute (`from vector_index import VectorIndex` in `local_embedding.py:8`).
+**Path Aliases:**
+- None. All imports are top-level absolute (`from vector_index import VectorIndex` in `local_embedding.py`). No `src/` layout, no aliases.
 
-**Optional-dependency pattern (must-follow):**
-- Guarded top-level import → `None` sentinel → explicit error at use site. Copy this shape for any new optional third-party import:
-  ```python
-  try:
-      import litellm
-  except ImportError:
-      litellm = None  # type: ignore[assignment]
-  ```
-  (`litellm_provider.py`, same shape as the `groq` guard in `local_llm.py`/`groq_provider.py`). Use-site checks raise `RuntimeError("LiteLLM is not installed.")` (`litellm_provider.py:203,252,306`) or `ImportError` with install hint.
-- `check_health()` must handle the `None` library gracefully and report `unreachable`, never raise (`litellm_provider.py`, covered by `test_check_health_when_litellm_missing` in `tests/test_litellm_provider.py:80-89`).
+**Repo-root bootstrap (scripts + tests only):**
+- `scripts/*.py` and the corpus generator prepend the repo root: `REPO_ROOT = Path(__file__).resolve().parent.parent; sys.path.insert(0, str(REPO_ROOT))`. This is the sanctioned pattern for out-of-tree entry points only — never add `sys.path` hacks to root-level application modules.
+- One legacy function-level import remains: `import io` inside the upload loop (`main.py`). Do not copy this — hoist new imports to the top-level block.
 
 ## Error Handling
 
-**Fail-fast validation (must-follow):**
-- `TypeError` for wrong types, `ValueError` for bad values, before mutating state. Guard inventory to mirror: metric whitelist and dimension lock-in (`vector_index.py`), non-dict document / missing `content` key (`vector_index.py`), `sha256` hex-digest validation (`models.py:cache_dir_for`), empty `image_bytes` → `ValueError("image_bytes cannot be empty.")` (`litellm_provider.py:304`), non-string vectors and `k <= 0` (`vector_index.py`).
-- Empty-store behaviour: `search()` returns `[]` instead of raising when nothing is indexed (`vector_index.py`).
-
-**Loopback endpoint validation (Phase-8 SEC-01, must-follow):**
-- `LlamaCppProvider.__init__` normalises scheme before parsing (`base_url if "://" in base_url else f"http://{base_url}"`), then accepts `host == "localhost"` or `ipaddress.ip_address(host).is_loopback` (`llama_cpp_provider.py:39-56`, per `08-REVIEW-FIX.md` WR-01). Non-loopback raises `ValueError("Restricted endpoint ... Specify a loopback URL or pass allow_remote=True.")` unless `allow_remote=True` is explicitly passed.
-- New network-endpoint constructors must follow this shape: scheme normalisation + `ipaddress.is_loopback` + explicit opt-out flag. Never hardcode a literal host set. Covered by `test_endpoint_loopback_validation_rejected`, `test_endpoint_loopback_validation_allowed_with_flag`, `test_endpoint_loopback_accepted_addresses` (`tests/test_llama_cpp_provider.py:262-295`), including `127.0.1.1`/`127.0.0.2`/scheme-less cases.
-
-**Consent gate (Phase-7, must-follow):**
-- Cloud transmission without explicit user consent raises `PermissionError("Cloud transmission blocked ...")` before any network call. Enforcement point is `_require_consent()` inside `LiteLLMProvider.generate_text` / `stream_text` / `analyze_image` (`litellm_provider.py:135`), with `set_consent(bool)` as the only grant/revoke path. Covered by `test_consent_gate_blocks_generation_by_default` (`tests/test_litellm_provider.py:26-37`) and `test_consent_state_transition_workflow` (`tests/test_cloud_privacy.py:22-52`). New cloud-touching entry points must call `_require_consent()` first.
-
-**Exception wrapping (must-follow):**
-- Provider SDK errors are wrapped in `RuntimeError` naming the provider and model, chained with `from err`: `"Cloud provider generation error ({model})"` / `"Cloud provider streaming error ({model})"` / `"Cloud provider vision error ({model})"` (`litellm_provider.py:228,284,342`), `"Groq API error: ..."` (`groq_provider.py:126,161`), `"llama-server generation failed: ..."` (`llama_cpp_provider.py:151`). Never let raw SDK exceptions reach `main.py`. Covered by `test_exception_wrapping_into_runtime_error` (`tests/test_litellm_provider.py:220-235`).
-
-**Capability rejection:**
-- `NotImplementedError` when a provider structurally cannot serve a request: non-vision cloud model receiving `analyze_image` (`litellm_provider.py:310`, `groq_provider.py:170`), including the `VisualAnalyzer` defense-in-depth guard that forces `supports_vision = False` for non-local providers (`visual_analyzer.py`, per `07-REVIEW-FIX.md` CR-01).
-
-**UI-level isolation:**
+**Patterns:**
+- Fail fast with `TypeError` for wrong types and `ValueError` for bad values, before mutating state. `VectorIndex` guard inventory to mirror: metric whitelist, missing embedding fn, non-dict document / missing `content` key / non-string content, dimension lock-in and mismatch, bad query type, vector-length checks in every distance helper (`vector_index.py`).
+- Pydantic schemas reject unknown fields and bad values at construction: `model_config = ConfigDict(frozen=True, extra="forbid")` on `BBox`, `ProviderCapabilities`, `HealthStatus` (`models.py`, `model_provider.py`); `cache_dir_for` validates the sha256 hex shape and raises `ValueError` (`models.py`). New schemas must set `frozen=True, extra="forbid"`.
+- Missing `GROQ_API_KEY` raises `ValueError` with remediation text naming both secret locations (`local_llm.py`). New required-config checks must raise with the same "what + where to set it" message shape.
 - Per-file `try/except Exception as e` around `PdfReader` + `get_paragraphs()`, reporting via `st.error(f"... (Error: {e})")` then `continue` so one bad PDF never aborts the batch (`main.py`). New per-document processing must use this isolate-and-continue shape, never a bare `except:`.
-- `paragraphs[-1]["page"] if paragraphs else 0` guards empty PDFs; `if chat_history:` / `if last_user_msgs:` guards history contextualisation; zero-magnitude vectors return `0.0`/`1.0` instead of dividing by zero. Preserve these guards when touching the same code.
-- Missing API key in `check_health()` returns `HealthStatus(status="unreachable", message="Missing API key ...")` — never raises, never touches network (`litellm_provider.py`, covered by `tests/test_litellm_provider.py:58-77`).
+- Empty-store behaviour: `search()` returns `[]` instead of raising when nothing is indexed (`vector_index.py`); zero-magnitude vectors return `0.0`/`1.0` instead of dividing by zero. Preserve these guards.
+- Optional third-party imports use `try/except ImportError → None` at top with an explicit `ImportError` + install hint at the use site (pattern in `local_llm.py` for `groq`). New optional deps (OCR, docling, vision) must follow this shape.
+- `InferenceGate` serialises local inference to one active model at a time (4 GB VRAM ceiling); tests use `DummyProvider` + threads to assert mutual exclusion (`tests/test_concurrency_lock.py`, `local_llm.py`). New local-model call paths must go through the gate, never call the provider directly in parallel.
 
 ## Logging
 
-**Framework:** `logging` with module-level `logger = logging.getLogger(__name__)` in all service modules (`litellm_provider.py:14`, `citation_validator.py:14`, `docling_reader.py:20`, `hybrid_retriever.py:16`). Lazy `%s` argument style, never f-strings: `logger.info("LanceDB persistent retriever connected at %s", self.db_uri)` (`hybrid_retriever.py:117`), `logger.warning("Failed to initialize LanceDB at %s: %s. ...", ...)` (`hybrid_retriever.py:119`).
+**Framework:** `logging` in new/service code; legacy `print()` in embedding/reader paths; `st.*` for user-facing feedback.
 
-**Rules:**
-- `logger.info` for lifecycle (model ready, index built, fallback engaged), `logger.warning` for degraded-but-continuing paths (fallback stores, skipped providers), `logger.error` for persistence failures, `logger.debug` for vendor-SDK notices (`hybrid_retriever.py:415,432,507`).
-- Residual `print()` calls survive only in `doc_store.py:154` (migration notice) and `pdf_reader.py:113` (extraction summary); `scripts/` may print freely (CLI harnesses). Do not add new `print()` to service modules — use `logger`.
-- User-facing feedback goes through Streamlit, never `print`/`logger`: `st.error` / `st.warning` / `st.info` / `st.success` / `st.status` / `st.toast` (`main.py:112,251-279,312-504,618-738`). Rule: `logger` for developer diagnostics, `st.*` for anything the user should see.
+**Patterns:**
+- New modules and all `scripts/*` use `logging.getLogger(__name__)` / named loggers: `logger = logging.getLogger("benchmark_multimodal")` (`scripts/benchmark_multimodal.py`), `logger = logging.getLogger("resource_profiler")` (`scripts/profile_resources.py`), `logging` imports in `citation_validator.py`, `summarizer.py`, `hybrid_retriever.py`. New code must use `logging`, not `print`.
+- Legacy lifecycle prints retained (do not propagate): `print(f"[LocalEmbedding] Loading {self.model_name}...")` (`local_embedding.py`), `print(f"Successfully extracted text from ...")` (`pdf_reader.py`).
+- User-facing feedback goes through Streamlit, never `print`/`logging`: `st.error` / `st.info` / `st.success` / `st.status` / `st.write` (`main.py`). Rule: `logging`/`print` for developer diagnostics, `st.*` for anything the user should see.
 
 ## Comments
 
 **When to Comment:**
-- Explain *why Streamlit behaves unusually*, not what the code does. Exemplar: why the whole script reruns and why session state is the only persistence (`main.py`), why `set_cloud_mode` needs an idempotence guard to avoid connection-pool churn on every rerun (`local_llm.py:140-155`, `main.py:210-240`, per `07-REVIEW.md` WR-02).
-- Privacy-invariant comments at every egress boundary: what stays on-device vs what is transmitted upon consent (`main.py` privacy dialog, `litellm_provider.py` consent gate, `visual_analyzer.py` local-only guard per `07-REVIEW-FIX.md` CR-01). Phase-8 consent copy must name OCR text and visual summaries explicitly (`main.py:111-123`, per `08-01-SUMMARY.md` PRIV-01).
-- Algorithm notes where the math is non-obvious: L2-normalisation rationale (`local_embedding.py`), zero-vector guard (`vector_index.py`), float-drift clamp (`vector_index.py`), image magic-byte sniffing (`litellm_provider.py:_detect_image_mime_type`), TTL + double-checked sampling rationale (`resource_telemetry.py:26-60`, per `08-REVIEW-FIX.md` IN-01).
-- Security rationale at SSRF boundaries: why loopback-only is the default and what `allow_remote=True` opts into (`llama_cpp_provider.py:38-56`, per `08-REVIEW.md` WR-01).
+- Every module opens with a `# ---...` banner block stating purpose and offline/test stance (e.g. `tests/conftest.py:1-4`, `scripts/benchmark_baseline.py:1-6`, `tests/test_vector_index.py:1-4`). New modules and test files must include one.
+- Explain *why Streamlit behaves unusually*, not what the code does (exemplar `main.py` rationale comments on full-script reruns and session-state persistence). Algorithm notes where math is non-obvious: L2-normalisation rationale (`local_embedding.py`), zero-vector guard and float-drift clamp (`vector_index.py`).
+- Keep the commented-out runnable examples at the bottom of pure-logic modules (`vector_index.py`, `pdf_reader.py`) and update them if the API changes.
 
 **Docstrings:**
-- Every module has a top-of-file `"""..."""` summary stating inputs/outputs and requirement tags where applicable (e.g. `litellm_provider.py:1-7` cites `INF-04, UI-04`; `tests/test_cloud_privacy.py:1` cites `UI-04, INF-03, INF-04`). New modules must include one.
-- Public methods carry Google-style `Args:`/`Returns:` docstrings (`models.py:cache_dir_for`, `vector_index.py`, `local_embedding.py`). Provider interface methods document consent, bounds, and error contracts (`model_provider.py`, `litellm_provider.py`). Phase-8 security/telemetry methods document `allow_remote`, `force_refresh`, and TTL semantics (`llama_cpp_provider.py:29-38`, `resource_telemetry.py:33-44`).
-
-**JSDoc/TSDoc:**
-- Not applicable (Python codebase).
+- Public methods carry docstrings. New Pydantic/provider code uses full sentences with `Args:`/`Returns:` Google-style blocks (`models.py:cache_dir_for`, `vector_index.py:search`, `local_embedding.py`). Legacy helpers use terse `'''...'''` one-to-three-liners (`local_llm.py`, `pdf_reader.py`, `main.py` helpers). Match the host file's flavour when editing.
+- Not applicable (Python codebase; no JSDoc convention).
 
 ## Function Design
 
-**Size:** Small single-purpose methods (5–25 lines). Largest functions are UI layout blocks in `main.py` (sidebar, chat handler) — these are sequential Streamlit layouts, not logic to extract, unless adding genuinely new UI sections.
+**Size:** Small single-purpose methods (5–25 lines). Largest functions are UI layout blocks in `main.py` (sidebar ~90 lines, chat handler ~40 lines) — sequential Streamlit layouts, not logic to extract, unless adding genuinely new UI sections.
 
-**Parameters:** Keyword-friendly with sane defaults: `prompt: str = "tell me what is this pdf about", local_embedding=None, chat_history=None` (`local_llm.py`); `k: int = 3` (retrieval methods); `model_name: str = "groq/llama-3.3-70b-versatile"` / `timeout=25.0` / `num_retries=3` / `temperature: float = 0.2` (`litellm_provider.py`); `max_tokens: int = 1024`. Cloud calls must be bounded: new generation paths must accept and forward `timeout`/`num_retries` and clamp `temperature` to `2.0` (covered by `test_generate_text_clamps_temperature_and_passes_bounded_params` in `tests/test_litellm_provider.py:112-145`).
-- Telemetry sampling uses `force_refresh: bool = False` to bypass the 5.0s TTL cache for diagnostic paths (`resource_telemetry.py:33`); benchmarks pass `force_refresh=True` while Streamlit reruns rely on the cached default. New telemetry readers must accept and honour `force_refresh`.
-- Network constructors use explicit opt-out flags defaulting to the safe posture: `allow_remote: bool = False` (`llama_cpp_provider.py:29`). New endpoint-accepting constructors must default to loopback-only the same way.
+**Parameters:** Keyword-friendly with sane defaults: `prompt: str = "tell me what is this pdf about", local_embedding=None, chat_history=None` (`local_llm.py`); `k: int = 3` (`local_embedding.py`, `vector_index.py`); `model_name: str = "all-MiniLM-L6-v2", distance_metric: str = "cosine"` (`local_embedding.py`). New retrieval parameters must default so existing call sites keep working. Provider methods use the canonical signature `(prompt, system_prompt=None, history=None, max_tokens=1024, temperature=0.2)` (`model_provider.py`, `llama_cpp_provider.py`, conftest mock).
 
-**Return Values:** Data methods return plain containers or Pydantic models: `list[dict]` chunks with `content`/`filename`/`page`/`chunk_id` keys (`pdf_reader.py`), `list[tuple[dict, float]]` of `(document, distance)` sorted ascending (`vector_index.py`), `HealthStatus` / `ProviderCapabilities` from `check_health()` / `get_capabilities()` (all providers).
+**Return Values:** Data methods return plain containers or Pydantic dumps: `list[dict]` chunks with `content`/`filename`/`page`/`chunk_id` keys (`pdf_reader.py`), `list[tuple[dict, float]]` of `(document, distance)` sorted ascending (`vector_index.py`), `model_dump()` dicts for chat-turn `verification`/`snippets` payloads (`tests/test_main_ui.py`). Generation is a token generator (`yield chunk.choices[0].delta.content` in `local_llm.py`) consumed by `st.write_stream`. New LLM entry points must yield strings, not return a completed string, to preserve streaming.
 
-**Streaming:** Generation is a token generator (`yield` fragments in `LiteLLMProvider.stream_text`, `LlamaCppProvider.stream_text`, `AiModel.ask_a_question_from_pdf_stream`) consumed by `st.write_stream`, which returns the full string (`main.py`). New LLM entry points must yield strings (not return a completed string) to preserve streaming. `None`-content deltas must be skipped, not yielded (covered by `test_stream_text_yields_deltas` in `tests/test_litellm_provider.py:148-168`).
-
-**TTL caching with double-checked locking (Phase-8 TEL-01, must-follow):**
-- `get_gpu_memory_info` checks the TTL under `_GPU_CACHE_LOCK`, samples `nvidia-smi` only inside `_SAMPLING_LOCK`, then re-checks the timestamp under `_GPU_CACHE_LOCK` before spawning (`resource_telemetry.py:46-60`, per `08-REVIEW-FIX.md` IN-01). Tests reset state via `clear_gpu_cache()` at test start (`tests/test_resource_telemetry.py:27,30`), never by mutating module globals. New subprocess-backed telemetry readers must copy this two-lock shape, not a single-lock check-then-sample.
-
-**Idempotence on rerun paths:** `AiModel.set_cloud_mode` returns early as a no-op when mode and provider instance are unchanged (`local_llm.py:140-155`, per `07-REVIEW.md` WR-02); `main.py` caches `active_cloud_provider` / `_cached_cloud_model` / `_cached_cloud_key` and only constructs a new provider when model or key changes. Covered by `test_ai_model_set_cloud_mode_idempotent_preserves_connections` (`tests/test_cloud_privacy.py:206-221`). Any new per-rerun mutator must be idempotent the same way.
-
-**Dual-type flexibility:** Where the codebase already does it — `PdfReader.__init__(self, file_or_path, filename=None)` accepts path/bytes/file-object (`pdf_reader.py`); `VectorIndex.search(query: Any, ...)` accepts string or precomputed vector (`vector_index.py`); `LocalEmbedding.build_index(chunks: list)` accepts `list[str]` or `list[dict]` (`local_embedding.py`). Extend with the same accept-both-types + normalise-early shape.
+**Dual-type flexibility:** Where the codebase already does it, extend with the same accept-both-types + normalise-early shape: `PdfReader.__init__(self, file_or_path, filename=None)` accepts path/bytes/file-object (`pdf_reader.py`); `VectorIndex.search(query: Any, ...)` accepts string or precomputed vector (`vector_index.py`); `LocalEmbedding.build_index(chunks: list)` accepts `list[str]` or `list[dict]` (`local_embedding.py`). No `None`-on-error: failures raise, empty results return `[]`/`""`-adjacent empties.
 
 ## Module Design
 
-**Exports:** Single public class per module, imported by name — no `__all__`, no factories, no re-exports. Wire new cross-module dependencies the same way (`from x import Y` at top level). All providers implement `BaseModelProvider` (`model_provider.py`) and are interchangeable via `AiModel(provider=...)` / `AiModel.set_cloud_mode(...)` injection.
+**Exports:** Single public class per module, imported by name — no `__all__`, no factories, no re-exports. Wire new cross-module dependencies the same way (`from x import Y` at top level). The flat layout means a new module is just a new root-level file plus an import where used.
 
-**Pydantic schemas:** New data crossing module boundaries must be a Pydantic v2 model in `models.py` (frozen/forbid default), with `model_dump()` at the persistence/serialization boundary and `Chunk(...)`/`Document(...)` constructors accepting legacy dicts for backward compatibility (covered by `tests/test_models.py`, 20 tests).
+**Provider seam (must-follow):** All inference goes through the `BaseModelProvider` ABC (`model_provider.py`: `check_health`, `get_capabilities`, `generate_text`, `stream_text`, `analyze_image`). Backends (`LlamaCppProvider`, `GroqProvider`, `LiteLLMProvider`) implement it; `AiModel` selects local-first with explicit cloud fallback (`local_llm.py`); tests inject `MockLlamaCppProvider` / `DummyProvider` / `DeterministicBenchmarkProvider` instead of real servers. Never import an SDK client directly in UI or retrieval code — add a provider subclass.
 
-**Barrel Files:** None and not wanted: the flat layout means a new module is just a new root-level file plus an import where used.
+**Schema seam (must-follow):** Cross-module data uses `models.py` Pydantic schemas (`Document`, `Chunk`, `Page`, `EvidenceSnippet`, `RetrievalResult`, `SummaryResult`, `BBox`) with `model_dump()` at UI/serialisation boundaries. New persisted or rendered fields go on the schema first, with a migration test in `tests/test_models.py`.
+
+**Barrel Files:** None and not wanted.
 
 ## Streamlit Idioms (must-follow)
 
 - `st.set_page_config(...)` is the very first Streamlit call (`main.py`) — never insert a Streamlit call above it.
-- Initialise all `st.session_state` keys via the key/default loop (`main.py:60-80`); add new keys there, never lazily mid-layout. Phase-7 keys: `cloud_mode: bool = False`, `user_consented: bool = False`, `cloud_provider`, `cloud_model`, `cloud_api_keys: dict[str, str]` (per-provider, keyed `groq`/`openai`/`anthropic`), `cloud_mode_toggle`, `active_cloud_provider`. Legacy `cloud_api_key: str = ""` survives only as a cleared fallback (`main.py:73,315-316`, per `08-01-SUMMARY.md` PRIV-02 — new code must read `cloud_api_keys`, never the legacy key).
-- Heavy singletons go behind `@st.cache_resource` (`main.py:load_ai_model`); per-`load_dotenv()`-before-read ordering inside the cached function matters because provider constructors read env/secrets.
-- Every `st.toggle` must carry an explicit `key=` (e.g. `key="cloud_mode_toggle"`) and consent-cancel paths must explicitly reset `st.session_state.cloud_mode_toggle = False` (`main.py:120-155,195-200`, per `07-REVIEW.md` WR-03).
-- Consent dialog uses `@st.dialog("Cloud Inference & Data Privacy Consent")` (`main.py:141-147`); disclosure copy must enumerate transmitted classes — query prompts, retrieved excerpts, extracted text/tables, OCR-processed text, visual figure descriptions and image summaries (`main.py:111-123`, per `08-01-SUMMARY.md` PRIV-01). Dismissal/cancel must leave the app in local mode with the toggle synced OFF.
-- Egress transparency: sidebar status badge (`🟢 Inference: Local` vs `☁️ Inference: Cloud`), pipeline locality footer, and per-chat-turn disclosure chips (`☁️ Generated via external cloud provider ... with user consent` vs `🔒 Generated locally on-device`) driven by `is_cloud` + `model_name` turn metadata (`main.py:618,724`, `tests/test_cloud_privacy.py:105-129`).
+- Initialise all `st.session_state` keys via the key/default loop (`main.py`); add new keys there, never lazily mid-layout.
+- Heavy singletons go behind `@st.cache_resource` (`main.py:load_ai_model`); per-`load_dotenv()`-before-read ordering inside the cached function matters because `AiModel.__init__` reads the env.
 - Render pattern: `with st.sidebar:` layout, `st.status` for staged work with `.update(label=..., state="complete", expanded=False)` on completion, `st.chat_message` + `st.markdown` for history replay, `st.chat_input(..., disabled=(...))` for gated input, `response_stream → st.write_stream(response_stream) → append to history`.
-- State mutation ends with `st.rerun()` after batch updates (`main.py`).
-- Ingestion visual analysis must only ever receive a local provider: filter `active_provider` to `local_vlm_provider = prov if (prov and prov.get_capabilities().is_local) else None` before calling `VisualAnalyzer.analyze_visual_elements` (`main.py:410-420`, per `07-REVIEW-FIX.md` CR-01). Never pass the raw active provider at ingestion time.
-- "Clear All" must reset cloud posture as well as documents: close `active_cloud_provider`, null `_cached_cloud_model`/`_cached_cloud_key`, set `cloud_mode = False`, `cloud_mode_toggle = False`, `user_consented = False`, cleanse `cloud_api_keys` to empty strings (and legacy `cloud_api_key`), then `st.rerun()` (`main.py:288-320`, per `08-REVIEW-FIX.md` WR-02). Covered by `test_clear_all_resets_cloud_posture_and_credentials` (`tests/test_main_ui.py:159-185`).
+- State mutation ends with `st.rerun()` after batch updates. Chat-turn dicts carry the `verification` + `snippets` contract asserted in `tests/test_main_ui.py` — keep those keys stable.
 
 ## Config Patterns (must-follow)
 
-- Precedence for secrets: explicit arg → `st.session_state.cloud_api_keys[provider]` → legacy `st.session_state.cloud_api_key` → `st.secrets[VAR]` → `os.environ[VAR]` (`litellm_provider.py:_resolve_api_key_for_model`, `local_llm.py`). Per-provider env map: `groq → GROQ_API_KEY`, `openai → OPENAI_API_KEY`, `anthropic → ANTHROPIC_API_KEY`. Covered by `test_per_provider_api_key_lookup` (`tests/test_cloud_privacy.py:224-251`). Never introduce a new shared single-string key — always extend the `cloud_api_keys` dict. `main.py` no longer writes the legacy key on entry (PRIV-02); it only clears it in "Clear All".
-- Never commit secrets: `.env` is gitignored; existence only is noted, contents are never read or quoted. Tests use `"mock-key"` / `"test-key"` / `"sk-test"` literals, never real credentials.
-- New required-config checks must raise with "what + where to set it" message shape (naming both `st.secrets` and env locations).
-
-## Dependency Patterns (must-follow)
-
-- Dev/CI float file: `requirements.txt` (17 lines; `httpx==0.28.1` and `psutil==6.1.1` pinned per `08-01-SUMMARY.md` QUAL-02; unpinned ranges survive for `docling`, `rapidocr-onnxruntime`, `pymupdf`, `pillow`, `lancedb`, `pyarrow`, `litellm`, `numpy`). CI installs `requirements.txt` + `requirements-test.txt` (`pytest>=8.3.0`, `reportlab>=4.2.0`, `ruff>=0.9.0`, `psutil>=6.1.0`).
-- Deterministic deploy lockfile: `requirements-lock.txt` (27 pinned `==` entries with header comment; generated per `08-01-SUMMARY.md` QUAL-02). Production/runbook installs use the lockfile (`README.md:131`, `docs/RUNBOOK.md:48`); CI still installs the float files and is verified in sync with the lockfile strategy (per `08-01-SUMMARY.md` §5 and `08-REVIEW-FIX.md` §2). When adding a runtime dependency, pin it in `requirements.txt` and regenerate the lockfile — never hand-edit lockfile versions.
-- `LICENSE` (MIT) exists at repo root; `README.md` badges/links reference it (per `08-REVIEW-FIX.md` WR-03). Do not remove it.
+- `load_dotenv()` is called inside the cached loader (`main.py`), and `AiModel` reads `st.secrets["GROQ_API_KEY"]` first with `except (KeyError, FileNotFoundError)` fallback to `os.environ.get("GROQ_API_KEY")` (`local_llm.py`). New secrets must follow this exact precedence: `st.secrets` → `.env`/`environ` → raise `ValueError` naming both locations.
+- Never commit secrets: `.env` is gitignored; existence only is noted, contents are never read or quoted. Test API keys use the `fake_env_groq_key` fixture value `test-key-not-a-secret-mock-value` (`tests/conftest.py`), never a real credential.
 
 ---
 
-*Convention analysis: 2026-10-12*
+*Convention analysis: 2026-10-13*
