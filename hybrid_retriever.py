@@ -440,7 +440,9 @@ class HybridRetriever:
         doc_lens = []
 
         for d in docs:
-            toks = [w.lower() for w in re.findall(r"\w+", d.get("content", ""))]
+            raw_content = d.get("content", "")
+            content_str = raw_content if isinstance(raw_content, str) else str(raw_content or "")
+            toks = [w.lower() for w in re.findall(r"\w+", content_str)]
             doc_tokens.append(toks)
             doc_lens.append(len(toks))
 

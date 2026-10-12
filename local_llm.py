@@ -6,6 +6,10 @@ local llama-server (Qwen3-VL 2B GGUF) and cloud Groq inference.
 """
 
 from collections.abc import Generator
+from contextlib import contextmanager
+import logging
+import threading
+
 from citation_validator import CitationVerificationResult, validate_citations
 from groq_provider import GroqProvider
 from hybrid_retriever import HybridRetriever
@@ -15,6 +19,75 @@ from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 from models import RetrievalResult
 from pdf_reader import PdfReader
 from prompt_budget import assemble_grounded_messages
+
+logger = logging.getLogger(__name__)
+
+
+class InferenceGate:
+    """Process-level reentrant lock guaranteeing max one active GPU inference operation.
+
+    Enforces memory safety within the 4 GB VRAM envelope on RTX 3050 Laptop GPU (QUAL-01).
+    Prevents concurrent token generation or summarization calls from colliding and causing
+    out-of-memory crashes.
+    """
+
+    _lock = threading.RLock()
+    _active_threads: int = 0
+    _state_lock = threading.Lock()
+
+    @classmethod
+    def acquire(cls, timeout: float = 60.0) -> bool:
+        """Acquire exclusive inference access with a timeout.
+
+        Args:
+            timeout: Maximum seconds to wait for lock acquisition.
+
+        Returns:
+            True if acquired, False on timeout.
+        """
+        acquired = cls._lock.acquire(timeout=timeout)
+        if acquired:
+            with cls._state_lock:
+                cls._active_threads += 1
+        return acquired
+
+    @classmethod
+    def release(cls) -> None:
+        """Release previously acquired inference access."""
+        try:
+            with cls._state_lock:
+                if cls._active_threads > 0:
+                    cls._active_threads -= 1
+            cls._lock.release()
+        except RuntimeError:
+            pass
+
+    @classmethod
+    def is_locked(cls) -> bool:
+        """Check if the inference gate is currently held by any thread."""
+        with cls._state_lock:
+            return cls._active_threads > 0
+
+    @classmethod
+    @contextmanager
+    def hold(cls, timeout: float = 60.0) -> Generator[None, None, None]:
+        """Context manager to safely acquire and release the inference gate.
+
+        Args:
+            timeout: Maximum seconds to wait for gate acquisition.
+
+        Raises:
+            TimeoutError: If inference lock cannot be acquired within timeout.
+        """
+        acquired = cls.acquire(timeout=timeout)
+        if not acquired:
+            raise TimeoutError(
+                f"InferenceGate acquisition timed out after {timeout}s: another inference request is currently active."
+            )
+        try:
+            yield
+        finally:
+            cls.release()
 
 
 class AiModel:
@@ -182,12 +255,48 @@ class AiModel:
         history_turns = messages[1:-1]
         bounded_prompt = messages[-1]["content"]
 
-        yield from self.provider.stream_text(
-            prompt=bounded_prompt,
-            system_prompt=system_prompt,
-            history=history_turns,
-            max_tokens=1024,
-        )
+        acquired = InferenceGate.acquire(timeout=60.0)
+        if not acquired:
+            yield "⚠️ System is busy processing another inference request. Please retry in a moment."
+            return
+
+        try:
+            yield from self.provider.stream_text(
+                prompt=bounded_prompt,
+                system_prompt=system_prompt,
+                history=history_turns,
+                max_tokens=1024,
+            )
+        finally:
+            InferenceGate.release()
+
+    def generate_text(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+        timeout: float = 60.0,
+    ) -> str:
+        """Execute non-streaming text generation guarded by InferenceGate.
+
+        Args:
+            prompt: User prompt.
+            system_prompt: Optional system instruction.
+            max_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature.
+            timeout: Timeout in seconds for acquiring InferenceGate.
+
+        Returns:
+            Generated text string.
+        """
+        with InferenceGate.hold(timeout=timeout):
+            return self.provider.generate_text(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
 
     def validate_response(
         self,
