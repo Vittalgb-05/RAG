@@ -1,250 +1,213 @@
-# RAG AI System — Ask Your Documents, Privately
+# 📄 Local-First Multimodal PDF Intelligence System
 
-> A Retrieval-Augmented Generation (RAG) pipeline with a Streamlit chat UI — upload any PDF, ask questions in plain English, and get grounded, streamed answers. 
->
-> **Deployment**: Uses Groq API for lightning fast Llama 3 generation, built perfectly for Streamlit Community Cloud.
-
-🚀 **Live Demo:** [rag1818.streamlit.app](https://rag1818.streamlit.app/)
+> A production-grade, local-first Retrieval-Augmented Generation (RAG) assistant with visual document intelligence, hybrid dense-lexical search, grounded multi-page citations, and optional privacy-preserving cloud inference.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
-[![Groq](https://img.shields.io/badge/Groq-Cloud_Inference-f97316)](https://groq.com/)
-[![HuggingFace](https://img.shields.io/badge/HuggingFace-Sentence_Transformers-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/)
+[![Llama.cpp](https://img.shields.io/badge/llama.cpp-Local_Inference-000000?logo=cplusplus)](https://github.com/ggerganov/llama.cpp)
+[![LanceDB](https://img.shields.io/badge/LanceDB-Hybrid_Vector_DB-black)](https://lancedb.com/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-217%20Passed-success)](tests/)
 
 ---
 
-## What Is This?
+## 🌟 Highlights & Key Capabilities
 
-RAG AI System is a Retrieval-Augmented Generation pipeline that lets you upload a PDF and ask natural-language questions against it — with the answer streamed token-by-token directly to your browser.
-
-This project runs a MiniLM embedding model to convert your document into semantic vectors and retrieves the most relevant paragraphs using a pure-Python cosine-search index. The answers are then generated using Groq's lightning-fast Llama 3 API.
-
-| File | Responsibility |
-|---|---|
-| `main.py` | Streamlit UI — chat interface, file upload, streaming output |
-| `local_llm.py` | `AiModel` — connects to Groq API, orchestrates chat context |
-| `local_embedding.py` | `LocalEmbedding` — sentence-transformers wrapper and vector index interface |
-| `vector_index.py` | `VectorIndex` — pure-stdlib in-memory cosine/Euclidean vector store |
-| `pdf_reader.py` | `PdfReader` — PDF text extraction and Langchain paragraph splitting |
+- 🔒 **100% Local-First Privacy (Zero Data Egress)**: Runs entirely on your hardware with local models. No document text, embeddings, or queries ever leave your machine by default.
+- 👁️ **Multimodal Document Intelligence**: Ingests digital text, parses complex tables, conditionally triggers **RapidOCR** on scanned pages, crops visual figures/charts, and describes them via **Qwen3-VL 2B** Vision-Language Model.
+- ⚡ **Tuned for 4 GB VRAM (RTX 3050)**: Optimized memory footprint running quantized `qwen3-vl-2b-instruct-q4_k_m.gguf` with `mmproj-f16` in ~2.4 GB VRAM, safely below the 4 GB ceiling.
+- 🔍 **Hybrid Dense + Lexical Retrieval**: Combines semantic embeddings (`all-MiniLM-L6-v2`, 384-dim) with full-text keyword search (BM25 / SQLite FTS5) using **Reciprocal Rank Fusion (RRF)**.
+- 🎯 **Verifiable Page Citations**: Anti-hallucination XML prompt framing with automatic citation verification. Interactive citation badges show source snippets and page tags.
+- 📑 **Multi-Profile Map-Reduce Summarization**: Five distinct summarization profiles (*Executive*, *Technical*, *Action Items*, *ELI5*, *TL;DR*) with content-hash caching.
+- 📊 **Real-Time Resource Telemetry**: Live sidebar monitoring of GPU VRAM, process RAM (RSS/VMS), and stage-by-stage latency with 5.0-second TTL caching.
+- ☁️ **Informed Cloud Inference Fallback**: Optional user-consented cloud routing (Groq Llama 3.3 70B, OpenAI GPT-4o mini, Anthropic Claude 3.5 Haiku) with strict consent gating and isolated session keys.
 
 ---
 
-## Screenshots
+## 🏗️ System Architecture
 
-### Upload screen — ready state
+```mermaid
+flowchart TD
+    subgraph UI ["Streamlit User Interface (main.py)"]
+        Chat["💬 Grounded Chat & Citations"]
+        Summary["📑 Multi-Profile Summarizer"]
+        Telemetry["📊 Live Resource Telemetry"]
+        CloudToggle["☁️ Optional Cloud Mode Gating"]
+    end
 
-![Upload screen](application_screenshots/image_2.png)
+    subgraph Ingestion ["Multimodal Ingestion Pipeline"]
+        PDF["📄 Uploaded PDF (<= 50MB, <= 500p)"] --> Hash["SHA-256 Deduplication (DocStore)"]
+        Hash --> Docling["Docling Layout & Table Parsing"]
+        Docling -->|Image/Scanned Pages| OCR["RapidOCR Conditional Fallback"]
+        Docling -->|Visual Figures & Charts| Crop["Visual Element Cropper"]
+        Crop --> VLM["Qwen3-VL 2B Image Analysis"]
+        Docling & OCR & VLM --> Chunks["Structured Chunks & Bounding Boxes"]
+    end
 
-The sidebar shows **LLM ready** once initialized. The PDF uploader accepts drag-and-drop or file browser. The chat area waits for a document before accepting questions.
+    subgraph Storage ["Persistent Storage & Indexing"]
+        Chunks --> SQLite["SQLite (DocStore & FTS5 BM25)"]
+        Chunks --> Embed["Sentence-Transformers (CPU MiniLM)"]
+        Embed --> Lance["LanceDB Hybrid Vector Index"]
+    end
 
----
+    subgraph Retrieval ["Hybrid Retrieval Engine"]
+        UserQ["User Query"] --> VectorSearch["LanceDB Dense Search"]
+        UserQ --> LexicalSearch["SQLite FTS5 BM25 Search"]
+        VectorSearch & LexicalSearch --> RRF["Reciprocal Rank Fusion (RRF)"]
+        RRF --> Context["Re-ranked Top-k Context"]
+    end
 
-### Active conversation
-
-![Chat screen](application_screenshots/image.png)
-
-After indexing, answers stream token-by-token into the chat via Groq API. The sidebar displays the paragraph count for the indexed document. Follow-up questions reuse the cached index without re-embedding.
-
----
-
-## Feature List
-
-### Retrieval-Augmented Generation
-- PDF ingestion directly from memory (no disk IO) using `pypdf`
-- Advanced text chunking using Langchain's `RecursiveCharacterTextSplitter`
-- Batch embedding of all chunks in a single pass using `sentence-transformers`
-- Cosine similarity search over 384-dimensional MiniLM vectors
-- Dynamic search query contextualization using recent chat history
-- Strict grounding prompt — the model is instructed to answer only from the provided document text
-
-### Streaming Output
-- Answers stream via Groq's native client
-- Tokens are yielded through the streamer without blocking the Streamlit main thread
-- `st.write_stream()` renders tokens progressively as they arrive in the browser
-
-### Caching and Session Management
-- `@st.cache_resource` loads the LLM setup once per server process
-- `st.session_state` persists the embedding index across follow-up questions
-- **Conversational Memory**: Remembers your last 5 questions for fluid follow-ups
-- Uploading a new PDF automatically resets the conversation and builds a fresh index
-
-### Pure-Python Vector Store
-- `VectorIndex` uses no NumPy, FAISS, or external vector database
-- Vectors are L2-normalised at index time; similarity search reduces to a dot-product scan over stored vectors
-- Both Euclidean and cosine metrics are available in the same class
-
----
-
-## How It Works
-
-1. **PDF → Chunks** — `PdfReader` reads directly from a memory stream and uses Langchain's `RecursiveCharacterTextSplitter` to generate clean, overlapping chunks of text.
-
-2. **Chunks → Vectors** — `LocalEmbedding.build_index()` batch-embeds all chunks using `sentence-transformers` (all-MiniLM-L6-v2) and stores the 384-dimensional vectors in `VectorIndex`.
-
-3. **Question → Context** — At query time, your latest question is dynamically appended to your previous question to maintain context. It is embedded and compared against every stored vector by cosine distance to fetch the top-k chunks.
-
-4. **Context + History → Answer** — `AiModel` wraps the retrieved context, your chat history, and your question into a structured Chat ML array. It sends this to Groq and yields tokens into `st.write_stream()` for a live UI.
-
----
-
-## Architecture
-
-The retrieval pipeline is fully local, while LLM generation is handled by Groq for maximum speed.
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                    Streamlit UI (main.py)                 │
-│                                                           │
-│  Sidebar: [Load Model]  [Upload PDF]  [Status]           │
-│  Main:    [Chat input]  →  [Streamed answer]             │
-└─────────────────────────┬────────────────────────────────┘
-                          │
-            ┌─────────────▼──────────────┐
-            │        PDF Ingestion        │
-            │  PdfReader: page text →     │
-            │  Langchain chunks           │
-            └─────────────┬──────────────┘
-                          │
-            ┌─────────────▼──────────────┐
-            │       LocalEmbedding        │
-            │  sentence-transformers     │
-            │  batch embed → 384-dim     │
-            │  L2-normalised vectors      │
-            └─────────────┬──────────────┘
-                          │
-            ┌─────────────▼──────────────┐
-            │        VectorIndex          │
-            │  in-memory cosine store     │
-            │  (pure Python stdlib)       │
-            └─────────────┬──────────────┘
-                          │ top-k chunks
-            ┌─────────────▼──────────────┐
-            │          AiModel            │
-            │  Groq Llama 3               │
-            │  RAG prompt assembly        │
-            │  Streaming API response     │
-            └─────────────┬──────────────┘
-                          │ token stream
-            ┌─────────────▼──────────────┐
-            │  st.write_stream()          │
-            │  → live tokens in browser   │
-            └─────────────────────────────┘
+    subgraph Generation ["Local & Cloud Inference Engine"]
+        Context --> Prompt["XML Prompt Assembly & Budgeting"]
+        Prompt -->|Default: 100% Local| LlamaServer["llama-server (Qwen3-VL 2B GGUF)"]
+        Prompt -->|User-Consented Cloud| LiteLLM["LiteLLM (Groq / OpenAI / Anthropic)"]
+        LlamaServer & LiteLLM --> Stream["Streaming SSE Response"]
+        Stream --> Verify["Citation Verifier & Page Tagging"]
+        Verify --> Chat
+    end
 ```
 
 ---
 
-## Project Structure
+## 📁 Repository Structure
 
 ```
 RAG/
-├── main.py                  # Streamlit UI — entry point
-├── local_llm.py             # AiModel: connects to Groq API
-├── local_embedding.py       # LocalEmbedding: Sentence-Transformers wrapper + index interface
-├── vector_index.py          # VectorIndex: pure-stdlib cosine/Euclidean vector store
-├── pdf_reader.py            # PdfReader: PDF → clean chunk list
-├── application_screenshots/ # UI screenshots used in this README
-└── requirements.txt         # Minimal dependency list
+├── main.py                     # Streamlit frontend & application lifecycle
+├── local_llm.py                # Unified AiModel interface & provider orchestration
+├── model_provider.py           # BaseModelProvider interface & data contracts
+├── llama_cpp_provider.py       # Local llama-server client with loopback SSRF guards
+├── litellm_provider.py         # LiteLLM cloud provider adapter with consent gating
+├── groq_provider.py            # Dedicated Groq cloud adapter
+├── doc_store.py                # SQLite document metadata & chunk storage
+├── docling_parser.py           # Docling structured layout & table extraction
+├── visual_analyzer.py          # Visual element detection, cropping, and VLM analysis
+├── ocr_fallback.py             # RapidOCR conditional optical character recognition
+├── lancedb_index.py            # Persistent LanceDB hybrid vector database
+├── hybrid_retriever.py         # Reciprocal Rank Fusion (RRF) retrieval engine
+├── summarizer.py               # Single-pass and map-reduce multi-profile summarizer
+├── citation_verifier.py        # Strict citation validation & verification
+├── prompt_budget.py            # Context window allocation & XML boundary security
+├── resource_telemetry.py       # GPU VRAM, process RAM, and latency profiling
+├── local_embedding.py          # Sentence-transformers embedding wrapper
+├── vector_index.py             # In-memory cosine fallback vector index
+├── pdf_reader.py               # Memory-safe PDF reader with pypdf fallback
+├── docs/
+│   ├── RUNBOOK.md              # Installation, model acquisition, and operation guide
+│   └── EVALUATION.md           # Benchmark evaluation, VRAM profile, and test metrics
+├── tests/                      # Automated Pytest suite (217 tests, 100% passing)
+├── requirements.txt            # Production dependencies
+└── requirements-lock.txt       # Deterministic deployment lockfile
 ```
 
 ---
 
-## Installation & Deployment
+## 🚀 Quickstart Guide
 
-### Prerequisites
+### 1. Prerequisites
 
-| Requirement | Notes |
-|---|---|
-| Python 3.11+ | Compatible with Streamlit Cloud runtime |
-| Groq API Key | Free — Get it at [console.groq.com](https://console.groq.com/) |
+- **Python**: 3.11 or higher
+- **NVIDIA GPU**: GeForce RTX 3050 (4 GB VRAM) or higher recommended (CUDA 12.x / 11.8)
+- **RAM**: 16 GB system memory
+- **llama.cpp**: Pre-built `llama-server` binary on PATH or in project root
 
-### Local Development Setup
+### 2. Environment Setup
 
 ```bash
-# Clone the repository
+# Clone repository
 git clone https://github.com/Vittalgb-05/RAG.git
 cd RAG
 
-# Create and activate a virtual environment
+# Create virtual environment
 python -m venv .venv
-source .venv/Scripts/activate   # Windows (Git Bash)
-# source .venv/bin/activate     # macOS / Linux
 
-# Install dependencies
-pip install -r requirements.txt
+# Activate virtual environment
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# Linux / macOS:
+source .venv/bin/activate
+
+# Install dependencies from lockfile
+pip install -r requirements-lock.txt
 ```
 
-> **Windows Users**: The Hugging Face Hub (used by `sentence-transformers`) downloads model weights using symlinks. You may need to enable **Developer Mode** in your Windows Settings (Settings > Update & Security > For developers > Developer Mode) or run your terminal as an Administrator to prevent symlink warnings.
+### 3. Acquire Local Models
 
-Create a `.env` file in the project root and add your key:
+Download the GGUF model and multimodal projector into a `models/` directory:
 
+```bash
+mkdir models
+
+# Download Qwen3-VL 2B Instruct GGUF (~1.4 GB)
+curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/qwen2-vl-2b-instruct-q4_k_m.gguf
+
+# Download Multimodal Projector mmproj-f16 (~600 MB)
+curl -L -o models/mmproj-f16.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-qwen2-vl-2b-instruct-f16.gguf
 ```
-GROQ_API_KEY=gsk_your_groq_key_here
+
+### 4. Start Local `llama-server`
+
+Run `llama-server` with parameters tuned for 4 GB VRAM:
+
+```bash
+llama-server \
+  -m models/qwen3-vl-2b-instruct-q4_k_m.gguf \
+  --mmproj models/mmproj-f16.gguf \
+  -c 4096 \
+  -ngl 28 \
+  --host 127.0.0.1 \
+  --port 8080
 ```
 
-Run the application locally:
+### 5. Launch RAG Assistant
+
+In a separate terminal:
+
 ```bash
 streamlit run main.py
 ```
 
-
-
-## Usage
-
-```bash
-streamlit run main.py
-```
-
-Streamlit will print a local URL (default `http://localhost:8501`). Open it in your browser.
-
-> **First run:** The `all-MiniLM-L6-v2` embedding model is downloaded from HuggingFace Hub and cached in `~/.cache/huggingface/`. This takes just a few seconds. Subsequent runs start instantly.
-
-### Basic workflow
-
-1. Wait for **"LLM ready — Groq Cloud"** in the sidebar.
-2. Drag and drop one or more PDFs onto the uploader, or click **Browse**.
-3. Wait for the success message showing how many paragraphs were indexed.
-4. Type your question in the chat input at the bottom and press Enter.
-5. The answer streams token-by-token directly from Groq. Ask follow-up questions freely — the index is cached.
-6. Upload additional PDFs to add them to the index, or click **Clear All** to start a fresh conversation.
+Open your browser to `http://localhost:8501`.
 
 ---
 
-## Tech Stack
+## 🔒 Privacy & Security Model
 
-| Layer | Technology | Role |
+| Security Dimension | Local Mode (Default) | Cloud Mode (Optional) |
 |---|---|---|
-| **UI** | Streamlit | Chat interface, file upload, live streaming |
-| **LLM Inference** | Groq Llama 3 API | Answer generation via cloud API |
-| **Embeddings** | sentence-transformers | 384-dim semantic search vectors (`all-MiniLM-L6-v2`) |
-| **PDF parsing** | pypdf | Text extraction from memory buffer |
-| **Chunking** | Langchain | `RecursiveCharacterTextSplitter` |
-| **Vector store** | Custom `VectorIndex` | Pure-Python in-memory cosine search — no external DB |
-| **Config** | python-dotenv & `st.secrets` | API key loading for local and cloud deployment |
+| **Document Storage** | 100% on-device (SQLite + LanceDB) | 100% on-device (zero egress) |
+| **Embeddings** | 100% on-device (CPU MiniLM) | 100% on-device (CPU MiniLM) |
+| **Inference Transport** | Local loopback (`127.0.0.1:8080`) | Encrypted TLS to external API |
+| **SSRF Mitigation** | Restricts provider host to loopback | Explicit API base endpoints |
+| **User Consent** | Not required (stays local) | Mandatory modal confirmation required |
+| **API Key Storage** | N/A | Session memory only; never written to disk |
 
 ---
 
-## Limitations
+## 🧪 Running Tests & Quality Gates
 
-- **In-memory index only** — `VectorIndex` is not persisted to disk; re-uploading the same PDF re-embeds it from scratch on every run.
-- **Linear scan** — similarity search scans every stored vector; performance degrades on very large documents with thousands of paragraphs.
-- **Context window cap** — the top-k chunks must fit within the LLM's context window; very long documents or a high `k` value can exceed it.
+The test suite executes 100% offline without requiring active GPUs or network connections:
+
+```bash
+# Run complete test suite (217 tests)
+pytest tests/ -v
+
+# Run linter checks
+ruff check .
+
+# Check code formatting
+ruff format --check .
+```
 
 ---
 
-## Future Improvements
+## 📖 Documentation & Runbooks
 
-- **Persistent index** — serialize `VectorIndex.vectors` and `.documents` to disk so documents do not need to be re-embedded on every startup.
-- **ANN indexing** — replace linear scan with an approximate nearest-neighbour structure (e.g. HNSW) for sub-linear search at scale.
-- **Embedding progress bar** — show per-paragraph indexing progress during PDF ingestion rather than a single blocking wait.
+- **[Operational Runbook (`docs/RUNBOOK.md`)](docs/RUNBOOK.md)**: Detailed step-by-step installation, hardware tuning, startup flags, and troubleshooting procedures.
+- **[Evaluation Report (`docs/EVALUATION.md`)](docs/EVALUATION.md)**: Test metrics, VRAM consumption profiling, retrieval latency benchmarks, and citation precision audits.
 
-### Document Identity & State Migration
-- **Hash-based Identity:** Documents are identified by content SHA-256 (`doc_<sha16>`) instead of volatile filenames.
-- **Session State Note:** The legacy filename-keyed `indexed_files` set is replaced by content-hash tracking in SQLite (`DocStore`). On first launch after upgrade, prior in-memory session sets are cleared and documents re-indexed cleanly under canonical hash IDs.
+---
 
-### Ingestion & Validation Guarantees
-- **Upload Caps:** Server-side limits of **50 MB** maximum file size and **500 pages** per PDF, with `%PDF` header magic-byte verification.
-- **Deduplication:** Automatic streaming SHA-256 hashing prevents duplicate ingestion; renamed copies of existing documents are detected via `DocStore` and skipped without re-embedding.
-- **Page Fault Isolation:** Single-page extraction errors are recorded and skipped with user warnings without aborting the remaining pages.
-- **Cache Layout:** Structured extraction artifacts are preserved under `.cache/<sha256>/<config_version>/` (`pages.json`, `chunks.json`, `manifest.json`).
+## 📄 License
 
-
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

@@ -18,7 +18,7 @@ This roadmap transforms an existing in-memory Streamlit RAG prototype into a loc
 - [x] **Phase 5: Grounded Summarization & Question Answering** - Build hierarchical summary profiles, evidence-grounded streaming QA, and citation verification
 - [x] **Phase 6: Performance Optimization & Resource Profiling** - Benchmark VRAM/RAM on RTX 3050, tune context and KV-cache, and establish cache limits
 - [x] **Phase 7: Optional Cloud Provider & Privacy Controls** - Implement LiteLLM adapter with explicit user opt-in and privacy guardrails
-- [ ] **Phase 8: Release Hardening & Evaluation** - Pin dependencies, execute full regression suite, synchronize CI/CD, and document runbooks
+- [x] **Phase 8: Release Hardening & Evaluation** - Pin dependencies, execute full regression suite, synchronize CI/CD, and document runbooks
 
 
 ## Phase Details
@@ -151,8 +151,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 08-01: Complete end-to-end regression evaluation on test corpus and verify CI/CD workflow synchronization
-- [ ] 08-02: Audit CONCERNS.md resolution, finalize requirements lockfile, and write architecture/setup runbooks
+- [x] 08-01: Complete end-to-end regression evaluation on test corpus and verify CI/CD workflow synchronization
+- [x] 08-02: Audit CONCERNS.md resolution, finalize requirements lockfile, and write architecture/setup runbooks
 
 ## Progress
 
@@ -169,5 +169,6 @@ Phases execute in numeric order: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 →
 | 5. Grounded Summarization & Question Answering | 3/3 | Complete | 2026-10-11 |
 | 6. Performance Optimization & Resource Profiling | 2/2 | Complete | 2026-10-12 |
 | 7. Optional Cloud Provider & Privacy Controls | 2/2 | Complete | 2026-10-12 |
-| 8. Release Hardening & Evaluation | 0/2 | Not started | - |
+| 8. Release Hardening & Evaluation | 2/2 | Complete | 2026-10-12 |
+
 

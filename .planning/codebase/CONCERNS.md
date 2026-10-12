@@ -2,7 +2,21 @@
 
 **Analysis Date:** 2026-10-12
 
+## Review Fix Status — Phase 08 (Release Hardening & Evaluation)
+
+All release hardening items from Phase 8 are **FIXED** and verified against current source (test suite: 217/217 passed, `ruff check` + `ruff format --check` clean):
+
+- **TEL-01 Telemetry rerun overhead — FIXED.** `resource_telemetry.py` implements thread-safe `_GPU_CACHE_TTL_SECONDS = 5.0` caching with `_GPU_CACHE_LOCK` in `get_gpu_memory_info(force_refresh: bool = False)`. Eliminates 10-100ms `nvidia-smi` process-spawn overhead during frequent Streamlit reruns. Tested in `tests/test_resource_telemetry.py::test_get_gpu_memory_info_ttl_caching`.
+- **SEC-01 SSRF loopback endpoint protection — FIXED.** `llama_cpp_provider.py` validates `base_url` host against local loopback addresses (`{"127.0.0.1", "localhost", "::1"}`). Non-loopback endpoints raise `ValueError("Restricted endpoint...")` unless `allow_remote=True` is explicitly passed. Tested in `tests/test_llama_cpp_provider.py` (3 dedicated tests).
+- **PRIV-01 OCR/visual disclosure in consent dialog — FIXED.** `main.py:111-125` (`_render_consent_dialog_content`) explicitly discloses that transmitted document excerpts include extracted OCR text and visual figure descriptions.
+- **PRIV-02 Legacy `cloud_api_key` string write removed — FIXED.** `main.py:200-205` eliminates legacy `st.session_state.cloud_api_key = entered_key` assignment, relying strictly on `cloud_api_keys: dict[str, str]` and preventing cross-provider contamination.
+- **TEST-01 Stale `mock_groq_client` fixture — FIXED.** `tests/conftest.py:19-50` safely targets `groq_provider.Groq` within a guarded try/except block instead of the non-existent `local_llm.Groq`.
+- **DOC-01 README modernization — FIXED.** `README.md` completely overhauled to document the production local-first multimodal architecture (Docling, RapidOCR, Qwen3-VL 2B, LanceDB hybrid search, 4 GB VRAM budget, and LiteLLM privacy controls).
+- **DOC-02 Operational runbooks & evaluation reports — FIXED.** Authored comprehensive `docs/RUNBOOK.md` (Windows 11 + Linux deployment, model acquisition, flags, troubleshooting) and `docs/EVALUATION.md` (217 test metrics, benchmarks, citation precision, VRAM budget audit).
+- **QUAL-02 Dependency pinning & deterministic lockfile — FIXED.** Pinned `httpx==0.28.1` and `psutil==6.1.1` in `requirements.txt`, created `requirements-lock.txt` capturing exact environment versions, and validated CI pipeline synchronization.
+
 ## Review Fix Status — Phase 02 (Local Inference Pipeline)
+
 
 All 3 Criticals, 6 Warnings, 3 Info items from `.planning/phases/02-local-inference-pipeline/02-REVIEW.md` are **FIXED** per `02-REVIEW-FIX.md` and verified against current source:
 
