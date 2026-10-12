@@ -7,6 +7,7 @@ truncating conversation history oldest-first when budget is exceeded.
 """
 
 import math
+import re
 
 SYSTEM_GROUNDING_TEMPLATE = """You are a helpful, precise AI assistant. Answer the user's question based strictly on the provided Document Context and conversation history.
 CRITICAL GROUNDING & CITATION RULES:
@@ -30,8 +31,11 @@ def sanitize_xml_boundary(text: str) -> str:
     Returns:
         String with <document_context> and </document_context> tags escaped.
     """
-    return text.replace("</document_context>", "&lt;/document_context&gt;").replace(
-        "<document_context>", "&lt;document_context&gt;"
+    return re.sub(
+        r"</?\s*document_context\s*>",
+        lambda m: m.group(0).replace("<", "&lt;").replace(">", "&gt;"),
+        text,
+        flags=re.IGNORECASE,
     )
 
 

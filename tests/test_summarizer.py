@@ -1,6 +1,7 @@
 """Unit tests for hierarchical multi-profile document summarizer service."""
 
 from collections.abc import Generator
+import re
 import pytest
 from doc_store import DocStore
 from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
@@ -49,13 +50,25 @@ class MockSummarizerProvider(BaseModelProvider):
 
         # Map response pattern
         if "intermediate analytical summary" in prompt:
+            pages_found = re.findall(r"--- Page (\d+) ---", prompt)
+            if pages_found:
+                citations = ", ".join(f"(p. {p})" for p in pages_found)
+                return f"- Key analytical insight from pages {citations}."
             return "- Key insight from these pages (p. 1) and (p. 2)."
 
         # Reduce response pattern
         if "synthesizing multiple intermediate" in prompt:
+            all_pages = sorted({int(m) for m in re.findall(r"\(p\.\s*(\d+)\)", prompt)})
+            if all_pages:
+                citations = ", ".join(f"(p. {p})" for p in all_pages)
+                return f"# Comprehensive Synthesis\n\nExecutive findings across {citations}."
             return "# Comprehensive Synthesis\n\nExecutive findings (p. 1), (p. 2), and (p. 3)."
 
         # Single pass default
+        pages_found = re.findall(r"--- Page (\d+) ---", prompt)
+        if pages_found:
+            citations = ", ".join(f"(p. {p})" for p in pages_found)
+            return f"## Executive Overview\n\nCore thesis and findings {citations}."
         return "## Executive Overview\n\nCore thesis and findings (p. 1) and (p. 2)."
 
     def stream_text(
@@ -179,8 +192,7 @@ def test_summarize_document_map_reduce():
     # Must have called map stage for batches + reduce stage (at least 2 calls)
     assert len(provider.generate_calls) >= 2
     assert res.cached is False
-    assert 1 in res.page_references
-    assert 2 in res.page_references
+    assert res.page_references == [1, 2, 3, 4, 5]
 
 
 def test_summarize_document_caching_lifecycle(tmp_path):
@@ -242,3 +254,89 @@ def test_summarize_document_caching_lifecycle(tmp_path):
     )
     assert refreshed_res.cached is False
     assert len(provider.generate_calls) == 2  # Incremented to 2!
+
+
+def test_summarize_empty_pages_raises_value_error():
+    """Verify that empty or None page text raises ValueError rather than caching vacuous summaries (CR-02, WR-08)."""
+    provider = MockSummarizerProvider()
+    summarizer = Summarizer(provider=provider)
+
+    pages = [
+        Page(doc_id="doc_empty", page_num=1, status="ok", char_count=0, page_text=None),
+        Page(doc_id="doc_empty", page_num=2, status="failed", char_count=0, page_text="   "),
+    ]
+
+    with pytest.raises(ValueError, match="No extractable text found"):
+        summarizer.summarize_document(
+            doc_id="doc_empty",
+            sha256="0" * 64,
+            pages=pages,
+            profile="overview",
+        )
+
+
+def test_extract_page_references_clamped():
+    """Verify that extract_page_references clamps references to max_page (WR-06)."""
+    text = "Core findings on (p. 2), (Page 3), and false reference (p. 9999)."
+    refs = extract_page_references(text, max_page=5)
+    assert refs == [2, 3]
+
+
+def test_no_page_citations_yields_empty_list_without_fabrication():
+    """Verify that if the model emits no page citations, page_references remains empty (WR-01)."""
+
+    class CitationFreeProvider(MockSummarizerProvider):
+        def generate_text(self, prompt: str, **kwargs) -> str:
+            return "## General Summary\n\nNo explicit page numbers are cited in this response."
+
+    summarizer = Summarizer(provider=CitationFreeProvider())
+    pages = [
+        Page(doc_id="doc_uncited", page_num=1, status="ok", char_count=200, page_text="Page 1 text."),
+        Page(doc_id="doc_uncited", page_num=2, status="ok", char_count=200, page_text="Page 2 text."),
+    ]
+    res = summarizer.summarize_document(
+        doc_id="doc_uncited",
+        sha256="9" * 64,
+        pages=pages,
+        profile="overview",
+    )
+    assert res.page_references == []
+
+
+def test_summarizer_cache_invalidates_on_model_version_change(tmp_path):
+    """Verify that changing model version invalidates stale cached summaries (WR-02)."""
+    db_file = tmp_path / "model_inval_cache.db"
+    store = DocStore(db_file)
+
+    doc_id = "doc_inval_1"
+    sha = "8" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="inval.pdf",
+            sha256=sha,
+            size_bytes=1024,
+            num_pages=1,
+            status="indexed",
+            upload_time="2026-10-11T12:00:00Z",
+        )
+    )
+
+    pages = [Page(doc_id=doc_id, page_num=1, status="ok", char_count=100, page_text="Content (p. 1).")]
+
+    p1 = MockSummarizerProvider(model_name="model_v1")
+    s1 = Summarizer(provider=p1, doc_store=store)
+    res1 = s1.summarize_document(doc_id=doc_id, sha256=sha, pages=pages, profile="overview")
+    assert res1.model_version == "model_v1"
+    assert res1.cached is False
+
+    # Second call with same model: hit
+    res_hit = s1.summarize_document(doc_id=doc_id, sha256=sha, pages=pages, profile="overview")
+    assert res_hit.cached is True
+
+    # Call with upgraded model: miss & regenerate
+    p2 = MockSummarizerProvider(model_name="model_v2")
+    s2 = Summarizer(provider=p2, doc_store=store)
+    res2 = s2.summarize_document(doc_id=doc_id, sha256=sha, pages=pages, profile="overview")
+    assert res2.cached is False
+    assert res2.model_version == "model_v2"

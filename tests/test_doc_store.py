@@ -541,3 +541,42 @@ def test_summary_upsert_on_same_profile(tmp_path):
     deleted_count = store.delete_summaries_for_doc(doc_id)
     assert deleted_count == 1
     assert store.get_summary(sha, "findings") is None
+
+
+def test_summary_get_with_model_version_invalidation(tmp_path):
+    """Verify get_summary returns None when requested model_version differs from stored version."""
+    db_file = tmp_path / "summary_version_test.db"
+    store = DocStore(db_file)
+
+    doc_id = "doc_ver_1"
+    sha = "7" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="ver.pdf",
+            sha256=sha,
+            size_bytes=1024,
+            num_pages=1,
+            status="indexed",
+            upload_time="2026-10-11T12:00:00Z",
+        )
+    )
+
+    summary = SummaryResult(
+        summary_id="summ_ver_12345678",
+        doc_id=doc_id,
+        sha256=sha,
+        profile="overview",
+        summary_text="Overview text.",
+        page_references=[1],
+        created_at="2026-10-11T12:00:00Z",
+        model_version="qwen-2.5-7b",
+    )
+    store.save_summary(summary)
+
+    # Same model version: match
+    assert store.get_summary(sha, "overview", model_version="qwen-2.5-7b") is not None
+    # No version specified: match
+    assert store.get_summary(sha, "overview") is not None
+    # Different model version: mismatch / invalidate
+    assert store.get_summary(sha, "overview", model_version="llama-3.3-70b") is None

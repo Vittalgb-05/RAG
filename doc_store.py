@@ -462,16 +462,22 @@ class DocStore:
             )
             conn.commit()
 
-    def get_summary(self, sha256: str, profile: str) -> SummaryResult | None:
+    def get_summary(
+        self,
+        sha256: str,
+        profile: str,
+        model_version: str | None = None,
+    ) -> SummaryResult | None:
         """
         Retrieve a summary by document SHA-256 and profile type.
 
         Args:
             sha256: 64-character lowercase SHA-256 hex string.
             profile: Summary profile name ('overview', 'detailed', etc.).
+            model_version: Optional model version to invalidate stale cached summaries.
 
         Returns:
-            SummaryResult | None: Canonical SummaryResult with cached=True, or None if not found.
+            SummaryResult | None: Canonical SummaryResult with cached=True, or None if not found or version mismatch.
         """
         if not isinstance(sha256, str) or not isinstance(profile, str):
             raise TypeError("sha256 and profile must be strings")
@@ -485,6 +491,12 @@ class DocStore:
             if row is None:
                 return None
             row_dict = dict(row)
+            if (
+                model_version is not None
+                and row_dict.get("model_version")
+                and row_dict.get("model_version") != model_version
+            ):
+                return None
             try:
                 page_refs = json.loads(row_dict.get("page_references_json") or "[]")
             except (json.JSONDecodeError, TypeError):

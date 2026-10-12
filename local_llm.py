@@ -18,7 +18,14 @@ from prompt_budget import assemble_grounded_messages
 
 
 class AiModel:
-    """Orchestrates document Q&A inference across local or cloud providers."""
+    """Orchestrates document Q&A inference across local or cloud providers.
+
+    Note:
+        When instantiated as a server-level resource (e.g. via @st.cache_resource),
+        AiModel acts as a process singleton. Callers should pass an explicit
+        retrieval_result to validate_response(...) to prevent cross-session evidence
+        contamination in multi-user deployments.
+    """
 
     def __init__(self, provider: BaseModelProvider | None = None) -> None:
         """Initialize AiModel with an explicit provider or auto-detected default.

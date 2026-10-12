@@ -107,7 +107,29 @@ def test_validate_citations_abstention_with_hallucinated_citations() -> None:
     assert result.precision == 0.0
     assert result.abstention_detected is True
     assert "[E1]" in result.hallucinated_citations
-    assert "fabricated citations" in result.message
+    assert "unexpected citations" in result.message
+
+
+def test_validate_citations_empty_response() -> None:
+    """Verify empty response fails validation and returns precision 0.0."""
+    rr = _make_retrieval_result(num_snippets=3)
+
+    result = validate_citations("", rr)
+    assert result.is_valid is False
+    assert result.precision == 0.0
+    assert result.total_citations == 0
+    assert "Empty response" in result.message
+
+
+def test_extract_citations_case_insensitive() -> None:
+    """Verify citation regex extracts lowercase [e1] tags as rank 1."""
+    assert extract_citations("Valid citation [e1] and uppercase [E2].") == [1, 2]
+
+
+def test_is_abstention_benign_prose_does_not_fire() -> None:
+    """Verify that benign analytical statements do not trigger false positive abstention."""
+    # Statements mentioning evidence in clinical / analytical context without claiming lack of context
+    assert is_abstention("The clinical trial showed insufficient evidence of toxicity in cohort A [E1].") is False
 
 
 def test_validate_citations_ungrounded_response() -> None:

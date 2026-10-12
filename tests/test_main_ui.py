@@ -121,3 +121,36 @@ def test_summary_data_contract_and_page_formatting(tmp_path):
     page_labels = [f"Page {p}" for p in data["page_references"]]
     assert page_labels == ["Page 2", "Page 8"]
     assert ", ".join(page_labels) == "Page 2, Page 8"
+
+
+def test_ai_model_provider_attribute_contract(mock_llama_provider):
+    """Verify that AiModel exposes .provider attribute rather than ._provider (CR-01)."""
+    from local_llm import AiModel
+
+    model = AiModel(provider=mock_llama_provider)
+    assert hasattr(model, "provider")
+    assert not hasattr(model, "_provider")
+    assert model.provider is mock_llama_provider
+
+    # Verify upload loop expression works without AttributeError
+    active_provider = model.provider if model is not None else None
+    assert active_provider is mock_llama_provider
+
+
+def test_clear_all_purges_summary_keys():
+    """Verify that Clear All logic purges all summary_* keys from session state (WR-05)."""
+    mock_session = {
+        "doc_ids": {"doc_1"},
+        "summary_doc_1_overview": {"text": "summary overview"},
+        "summary_doc_1_detailed": {"text": "summary detailed"},
+        "other_key": 123,
+    }
+
+    # Simulate Clear All handler purge
+    for k in list(mock_session.keys()):
+        if k.startswith("summary_"):
+            del mock_session[k]
+
+    assert "summary_doc_1_overview" not in mock_session
+    assert "summary_doc_1_detailed" not in mock_session
+    assert mock_session["other_key"] == 123

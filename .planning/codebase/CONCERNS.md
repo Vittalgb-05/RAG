@@ -51,6 +51,25 @@ All 3 Criticals, 6 Warnings, 3 Info items from `.planning/phases/04-persistent-h
 - **IN-02 embedding setter — FIXED.** `HybridRetriever.set_embedding_fn` exists (`hybrid_retriever.py:143-147`), including propagation to `_fallback_store._embedding_fn`.
 - **IN-03 unstripped evidence — FIXED.** `models.py:192` uses `s.content.strip()`.
 
+## Review Fix Status — Phase 05 (Grounded Summarization & QA)
+
+All 3 Criticals, 10 Warnings, 5 Info items from `.planning/phases/05-grounded-summarization-and-qa/05-REVIEW.md` are **FIXED** per `05-REVIEW-FIX.md` and verified against current source:
+
+- **CR-01 `current_model._provider` typo — FIXED.** `main.py:253` accesses `current_model.provider` rather than `_provider`, unblocking PDF visual ingestion; verified by `tests/test_main_ui.py::test_ai_model_provider_attribute_contract`.
+- **CR-02 `page_text=None` crash — FIXED.** `summarizer.py` guards `(getattr(p, "page_text", None) or "").strip()` in `_bundle_pages` and `_format_page_batch`, filters `valid_pages` on non-empty text, and enriches missing text from `doc_store.get_chunks_for_doc(doc_id)`.
+- **CR-03 empty response grounded pass — FIXED.** `citation_validator.py` evaluates empty responses as `is_valid=False, precision=0.0, message="Empty response: no grounded content generated."`; verified by `tests/test_citation_validator.py::test_validate_citations_empty_response`.
+- **WR-01 page provenance fabrication — FIXED.** `summarizer.py` preserves `page_refs = []` when no page citations are emitted; `main.py:614` shows an explicit caption instead of fabricating source pages.
+- **WR-02 summary cache model version invalidation — FIXED.** `DocStore.get_summary` takes optional `model_version` and returns `None` on version mismatch, triggering fresh generation on model upgrade.
+- **WR-03 fast-path prompt-injection guard — FIXED.** `summarizer.py` adds explicit non-execution directives to single-pass user prompt and profile instructions.
+- **WR-04 `AiModel.validate_response` bypass & singleton state — FIXED.** `main.py:482` invokes `ai_model.validate_response(full_response, retrieval_res)`, maintaining `last_verification_result`; documented process singleton caveats in `AiModel`.
+- **WR-05 Clear All summary session purge — FIXED.** `main.py:144-147` purges all `summary_*` keys from `st.session_state` upon Clear All; verified by `tests/test_main_ui.py::test_clear_all_purges_summary_keys`.
+- **WR-06 unbounded page references — FIXED.** `summarizer.py:131` clamps `extract_page_references` with `max_page: int | None = None`; verified by `tests/test_summarizer.py::test_extract_page_references_clamped`.
+- **WR-07 abstention matcher over-firing — FIXED.** `citation_validator.py` tightens `CANONICAL_ABSTENTION_MARKERS` to require complete phrases denoting insufficient information or lack of context.
+- **WR-08 empty document summarization — FIXED.** `summarizer.py` raises `ValueError` before inference or persistence when no valid page text exists; verified by `tests/test_summarizer.py::test_summarize_empty_pages_raises_value_error`.
+- **WR-09 XML boundary case/whitespace bypass — FIXED.** `prompt_budget.py` uses `re.sub(r"</?\s*document_context\s*>", ..., flags=re.IGNORECASE)`; verified by `tests/test_prompt_budget.py::test_sanitize_xml_boundary_case_and_whitespace`.
+- **WR-10 mock fidelity gap — FIXED.** `MockSummarizerProvider` dynamically echoes batch page ranges and aggregate citations in reduce step, asserting full preservation of `[1, 2, 3, 4, 5]`.
+- **IN-01 through IN-05 — FIXED/RESOLVED.** Unique-rank precision metric preserved per D2 design lock (IN-01); abstention message clarifies unexpected citations (IN-02); token thresholds documented with context window budget explanations (IN-03); doc_store cascade notes recorded (IN-04); case-insensitive `[e1]` regex compiled (IN-05).
+
 ## Tech Debt (ordered by severity)
 
 **Dual-index write path (new in Phase 4, replaces "in-memory only" as top debt):**

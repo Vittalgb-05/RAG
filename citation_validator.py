@@ -13,18 +13,22 @@ from models import RetrievalResult
 
 logger = logging.getLogger(__name__)
 
-CITATION_REGEX = re.compile(r"\[E(\d+)\]")
+CITATION_REGEX = re.compile(r"\[E(\d+)\]", re.IGNORECASE)
 
 CANONICAL_ABSTENTION_MARKERS = [
     "does not contain sufficient evidence",
-    "does not contain information",
-    "insufficient information",
-    "insufficient evidence",
+    "does not contain sufficient information",
+    "does not contain information to answer",
+    "insufficient information in the provided context",
+    "insufficient evidence to answer",
+    "insufficient information to answer",
     "cannot find the answer in the document",
     "not enough information in the provided context",
     "not mentioned in the provided document",
     "document does not mention",
-    "no information provided",
+    "no information provided in the document",
+    "the provided document context does not contain",
+    "the document does not contain sufficient evidence",
 ]
 
 
@@ -48,7 +52,7 @@ class CitationVerificationResult(BaseModel):
 def extract_citations(text: str) -> list[int]:
     """Extract and sort unique 1-based citation ranks from response text.
 
-    Matches patterns like [E1], [E2], [E1][E2].
+    Matches patterns like [E1], [E2], [e1], [E1][E2].
 
     Args:
         text: Assistant response text.
@@ -70,7 +74,7 @@ def is_abstention(text: str) -> bool:
     Returns:
         True if text matches canonical abstention phrases, False otherwise.
     """
-    lower = text.lower()
+    lower = text.lower().strip()
     return any(marker in lower for marker in CANONICAL_ABSTENTION_MARKERS)
 
 
@@ -90,12 +94,26 @@ def validate_citations(
         CitationVerificationResult containing precision metrics and diagnostic message.
     """
     text = response_text.strip()
+
+    # 1. Check for empty response (CR-03: empty generation is never valid grounding)
+    if not text:
+        return CitationVerificationResult(
+            is_valid=False,
+            precision=0.0,
+            total_citations=0,
+            valid_citations=[],
+            hallucinated_citations=[],
+            cited_ranks=[],
+            abstention_detected=False,
+            message="Empty response: no grounded content generated.",
+        )
+
     ranks = extract_citations(text)
     total_claimed = len(ranks)
 
     max_valid_rank = len(retrieval_result.snippets) if retrieval_result and retrieval_result.snippets else 0
 
-    # 1. Check for explicit abstention (QA-04)
+    # 2. Check for explicit abstention (QA-04)
     if is_abstention(text):
         if total_claimed == 0:
             return CitationVerificationResult(
@@ -118,21 +136,8 @@ def validate_citations(
                 hallucinated_citations=hallucinated,
                 cited_ranks=[],
                 abstention_detected=True,
-                message=f"Abstention contains fabricated citations: {', '.join(hallucinated)}.",
+                message=f"Abstention contains unexpected citations ({', '.join(hallucinated)}). Abstaining answers must not cite evidence.",
             )
-
-    # 2. Check for empty response
-    if not text:
-        return CitationVerificationResult(
-            is_valid=True,
-            precision=1.0,
-            total_citations=0,
-            valid_citations=[],
-            hallucinated_citations=[],
-            cited_ranks=[],
-            abstention_detected=False,
-            message="Empty response.",
-        )
 
     # 3. Non-abstaining response with 0 citations (Ungrounded)
     if total_claimed == 0:

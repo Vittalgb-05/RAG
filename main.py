@@ -22,7 +22,6 @@ from typing import Any
 from dotenv import load_dotenv
 import streamlit as st
 
-from citation_validator import validate_citations
 from doc_store import DocStore
 from docling_reader import DoclingReader
 from hybrid_retriever import HybridRetriever
@@ -144,6 +143,9 @@ with st.sidebar:
                 st.session_state.hybrid_retriever.close()
             st.session_state.hybrid_retriever = None
             st.session_state.chat_history = []
+            for k in list(st.session_state.keys()):
+                if k.startswith("summary_"):
+                    del st.session_state[k]
             st.rerun()
 
     uploaded_files = st.file_uploader(
@@ -250,7 +252,7 @@ with st.sidebar:
                     # 4c. Visual element detection, cropping, and VLM analysis (VIS-01, VIS-02, VIS-03)
                     visual_analyzer = VisualAnalyzer()
                     current_model = getattr(st.session_state, "ai_model", None) or ai_model
-                    active_provider = current_model._provider if current_model is not None else None
+                    active_provider = current_model.provider if current_model is not None else None
                     evidence_elements = visual_analyzer.analyze_visual_elements(
                         pdf_bytes=raw_bytes,
                         doc_id=doc_id,
@@ -479,7 +481,7 @@ with tab_chat:
                     full_response = st.write_stream(response_stream)
 
                     # Validate citations and abstention (QA-03, QA-04)
-                    verification = validate_citations(full_response, retrieval_res)
+                    verification = ai_model.validate_response(full_response, retrieval_res)
                     if verification.abstention_detected:
                         st.caption("ℹ️ *Explicit abstention — no document evidence found.*")
                     elif verification.is_valid:
@@ -616,3 +618,5 @@ with tab_summary:
                 with st.expander("📄 Referenced Source Pages", expanded=False):
                     st.markdown(f"**Source pages cited:** {', '.join(f'Page {p}' for p in p_refs)}")
                     st.caption(f"Generated at: {active_summary.get('created_at', '')}")
+            else:
+                st.caption("ℹ️ *No explicit page references cited in summary.*")
