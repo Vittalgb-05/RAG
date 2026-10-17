@@ -1,117 +1,137 @@
+<!-- refreshed: 2026-10-17 -->
 # Technology Stack
 
-**Analysis Date:** 2026-10-13
+**Analysis Date:** 2026-10-17
 
 ## Languages
 
 **Primary:**
-- Python 3.11+ — All core application logic, models, ingestion pipelines, storage interfaces, inference providers, and user interface.
-  - Core Modules: `main.py`, `start.py`, `setup.py`, `models.py`, `doc_store.py`, `pdf_reader.py`, `docling_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`, `local_embedding.py`, `vector_index.py`, `hybrid_retriever.py`, `model_provider.py`, `local_llm.py`, `llama_cpp_provider.py`, `litellm_provider.py`, `groq_provider.py`, `prompt_budget.py`, `summarizer.py`, `citation_validator.py`, `upload_validation.py`, `resource_telemetry.py`
-  - Strict type hints with Pydantic v2 schemas (`models.py`, `model_provider.py`, `upload_validation.py`)
+- Python 3.11+ — all application code. Target declared in `pyproject.toml:3` (`target-version = "py311"`) and `setup.py:404` (`python_requires=">=3.11"`); classifiers list 3.11 and 3.12 (`setup.py:443-444`). Modules: `main.py`, `start.py`, `setup.py`, and 18 root-level domain modules (`local_llm.py`, `hybrid_retriever.py`, `doc_store.py`, etc.).
 
 **Secondary:**
-- Markdown — Documentation and benchmarks (`README.md`, `docs/EVALUATION.md`, `docs/LOCAL_INFERENCE.md`, `docs/RUNBOOK.md`)
-- JSON — Research artifacts and container configuration (`.devcontainer/devcontainer.json`, `.planning/research/RESOURCE_PROFILE.json`, `.planning/research/MULTIMODAL_BENCHMARK.json`)
-- TOML — Tooling configuration (`pyproject.toml`)
-- No TypeScript/JavaScript, CSS, or raw SQL source files — 100% Python codebase with declarative Streamlit frontend, stdlib `sqlite3` driver, and Python LanceDB bindings.
+- SQL — embedded DDL strings in `doc_store.py:17-94` (no separate `.sql` files)
+- JSON — `.devcontainer/devcontainer.json`; `.freebuff/project-id` (opaque UUID `4b7e3567-...`); runtime caches (`data/lancedb` fallback `fallback_store.json`, `data/lancedb_bench`)
+- Markdown — docs only (`README.md`, `docs/RUNBOOK.md`, `docs/EVALUATION.md`, `docs/LOCAL_INFERENCE.md`)
+- No JavaScript/TypeScript/CSS — UI is 100% Streamlit Python
 
 ## Runtime
 
 **Environment:**
-- CPython 3.11 / 3.12 / 3.13 (`python_requires = ">=3.11"`)
-- Local Execution: `python start.py` or `streamlit run main.py`
-- Devcontainer / Codespaces: `mcr.microsoft.com/devcontainers/python:1-3.11-bookworm` (`.devcontainer/devcontainer.json`) exposing port 8501
-- Local LLM Backend: External `llama-server` process running `qwen3-vl-2b-instruct-q4_k_m.gguf` + `mmproj` on `http://127.0.0.1:8080`
-- CI Environment: `ubuntu-latest` running Python 3.11 via GitHub Actions (`.github/workflows/ci.yml`)
+- CPython 3.11+ — no `runtime.txt`, no Dockerfile. Development in devcontainer `mcr.microsoft.com/devcontainers/python:1-3.11-bookworm` (`.devcontainer/devcontainer.json:4`); CI uses `ubuntu-latest` with Python 3.11 (`.github/workflows/ci.yml:12,18-21`).
+- External local inference process: `llama-server` (llama.cpp), a native CUDA binary bound to `127.0.0.1:8080` (`docs/LOCAL_INFERENCE.md:48-72`, `llama_cpp_provider.py:25`). Not a Python dependency — must be downloaded/compiled separately (`docs/RUNBOOK.md:76-107`).
+- GPU: NVIDIA CUDA 11.8 or 12.x; locked to a 4 GB VRAM budget (RTX 3050 Laptop target).
 
 **Package Manager:**
-- `pip` for development and user installation (`pip install -r requirements.txt`)
-- `uv` for lockfile compilation and fast CI resolution (`uv pip compile requirements.txt -o requirements-lock.txt`, `uv pip install --system -r requirements-lock.txt`)
-- Lockfile: `requirements-lock.txt` present and synchronized (targeting Python 3.11)
-- Test Dependencies: `requirements-test.txt` (`pytest>=8.3.0`, `reportlab>=4.2.0`, `ruff>=0.9.0`, `psutil>=6.1.0`)
+- pip (primary) — `pip install -r requirements-lock.txt` or `pip install -e .` (`setup.py:267-303`)
+- uv — generates `requirements-lock.txt` via `uv pip compile --universal --python-version 3.11 requirements.txt` (`requirements-lock.txt:1-2`); CI installs with `astral-sh/setup-uv@v5` (`.github/workflows/ci.yml:23-31`)
+- Lockfile: **present** — `requirements-lock.txt` (645 lines, fully pinned, universal Python 3.11)
+- Virtualenv convention: `.venv` (gitignored, `.gitignore:2`); also `.pyvenv.cfg` style activation not committed
 
 ## Frameworks
 
 **Core:**
-- Streamlit 1.42.0 — Web presentation layer, reactivity, streaming output, session state management (`main.py`)
-- Pydantic 2.11.9 — Immutable schemas, runtime validation, serialization, and coordinate bounds (`models.py`, `model_provider.py`)
-- Sentence-Transformers 3.4.1 — CPU-pinned embedding generation with `all-MiniLM-L6-v2` (`local_embedding.py`)
-- LanceDB 0.40.0 (`lancedb>=0.17.0`) & PyArrow 23.0.1 (`pyarrow>=14.0.0`) — Persistent on-disk vector store and FTS BM25 hybrid retrieval (`hybrid_retriever.py`)
-- SQLite (Python standard library `sqlite3`) — ACID document and page-level metadata persistence with WAL mode (`doc_store.py`)
+- Streamlit `1.42.0` — entire UI layer (`main.py`): `st.set_page_config`, sidebar, `st.file_uploader`, `st.chat_input`/`st.chat_message`, `st.write_stream`, `st.status`, `st.cache_resource`, `st.secrets`
+- Pydantic `2.11.9` — canonical immutable data models in `models.py` (Document, Page, Chunk, EvidenceElement, EvidenceSnippet, RetrievalResult, SummaryResult) and provider schemas in `model_provider.py`
+- setuptools — packaging + console-script entry points + custom `download_models` command (`setup.py:397-449`)
 
-**Document Processing:**
-- Docling 2.138.0 (`docling>=2.0.0`) — Layout-aware document parsing, markdown table extraction, and structured reading order (`docling_reader.py`)
-- RapidOCR ONNXRuntime 1.4.4 (`rapidocr-onnxruntime>=1.3.0`) — CPU-based conditional optical character recognition for scanned/low-text pages (`ocr_fallback.py`)
-- PyMuPDF 1.28.2 (`pymupdf>=1.24.0`, `fitz`) — PDF raster rendering, visual drawing bounding-box extraction, and 2x crop generation (`visual_analyzer.py`, `ocr_fallback.py`)
-- pypdf 5.3.0 — Fast digital PDF text extraction fallback (`pdf_reader.py`, `upload_validation.py`)
-- LangChain Text Splitters 0.3.6 — Bounded character splitting via `RecursiveCharacterTextSplitter` (`docling_reader.py`, `ocr_fallback.py`, `pdf_reader.py`)
-- Pillow 11.3.0 (`pillow>=10.2.0`) — Image format verification and in-memory manipulation (`visual_analyzer.py`)
+**Document AI / Extraction:**
+- Docling `>=2.0.0` (resolved `2.138.0`) — layout-aware PDF structure + Markdown table extraction, CPU pipeline `do_ocr=False, do_table_structure=True` (`docling_reader.py:22-31,104-109`)
+- rapidocr-onnxruntime `>=1.3.0` (resolved `1.4.4`) backed by onnxruntime `1.31.0` — conditional CPU OCR fallback on low-text pages (`ocr_fallback.py:20-23`)
+- PyMuPDF (`pymupdf`) `>=1.24.0` (resolved `1.28.2`) — page rasterization, visual-region detection, element cropping (`ocr_fallback.py:26`, `visual_analyzer.py:17-19`)
+- pypdf `5.3.0` — baseline text extraction + validation probe (`pdf_reader.py:3`, `upload_validation.py:12`)
+- langchain-text-splitters `0.3.6` — `RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)` (`pdf_reader.py:35`, `docling_reader.py:172`, `ocr_fallback.py:315`)
+- pillow `>=10.2.0` (resolved `11.3.0`) — image handling for OCR/VLM crops
 
-**Inference & Connectivity:**
-- HTTPX 0.28.1 — Async-capable HTTP transport for local `llama-server` communications and mock transport testing (`llama_cpp_provider.py`)
-- LiteLLM 1.105.0 (`litellm>=1.50.0`) — Multi-provider cloud fallback router (Groq, OpenAI, Anthropic) with strict consent gating (`litellm_provider.py`)
-- Groq 0.15.0 — Direct client for Groq cloud inference (`groq_provider.py`)
+**Embedding / Retrieval:**
+- sentence-transformers `3.4.1` — local `all-MiniLM-L6-v2` embeddings, 384-dim, L2-normalized, CPU-pinned (`local_embedding.py:11,22-37,81`)
+- LanceDB `>=0.17.0` (resolved `0.40.0`) + pyarrow `>=14.0.0` (resolved `23.0.1`) — persistent on-disk vector + FTS index (`hybrid_retriever.py:19-24`)
+- numpy `>=1.26.0,<3.0.0` (resolved `2.4.6`) — embedding array handling
 
-**Testing & Quality:**
-- Pytest 8.3.0+ — Test execution framework with 24 test suites (`tests/`)
-- ReportLab 4.2.0+ — Synthetic PDF document generator for testing and benchmarks (`tests/data/corpus/generate_corpus.py`)
-- Ruff 0.9.0+ — High-performance code linting and formatting configured via `pyproject.toml`
-- psutil 6.1.1 — Process memory and resource profiling (`resource_telemetry.py`)
+**Inference (local + cloud):**
+- litellm `>=1.50.0` (resolved `1.105.0` on Python <3.14, `1.102.4` on >=3.14) — unified cloud adapter to Groq/OpenAI/Anthropic (`litellm_provider.py:18-21`)
+- groq `0.15.0` — native Groq client (`groq_provider.py:12-15`)
+- httpx `0.28.1` — HTTP client for local `llama-server` REST/SSE (`llama_cpp_provider.py:15,63-67`)
 
-**Build & Packaging:**
-- Setuptools (`setup.py`) — Standard packaging defining package `rag-assistant` (v1.0.0) with console script `rag-assistant=start:main`
-- Application Launcher (`start.py`) — Startup orchestration script validating Python 3.11+, scaffolding directories, verifying `llama-server`, and launching Streamlit
+**Testing:**
+- pytest `>=8.3.0` — configured in `pyproject.toml:20-27`; 24 test modules under `tests/`
+- reportlab `>=4.2.0` — synthetic PDF corpus generation (`tests/data/corpus/generate_corpus.py`)
+- ruff `>=0.9.0` — lint + format gate, also a runtime dev tool
+
+**Build/Dev:**
+- ruff `0.9.x` — configured in `pyproject.toml:1-17` (line-length 120, `E`/`F`/`W`, ignores `E501`/`W291`/`W293`)
+- GitHub Actions — `.github/workflows/ci.yml` (checkout → setup Python 3.11 → uv install → ruff check/format → generate corpus → pytest)
 
 ## Key Dependencies
 
 **Critical:**
-- `streamlit==1.42.0` — Interactive web application framework powering all UI workflows.
-- `sentence-transformers==3.4.1` — CPU-pinned embedding model (`all-MiniLM-L6-v2`) generating 384-dimensional vector embeddings without GPU memory overhead.
-- `lancedb>=0.17.0` + `pyarrow>=14.0.0` — Embedded columnar vector storage supporting hybrid vector + FTS search with Reciprocal Rank Fusion.
-- `docling>=2.0.0` — Deep layout parsing recovering complex table structures and layout hierarchies.
-- `rapidocr-onnxruntime>=1.3.0` — High-efficiency CPU OCR preventing pipeline stalling on scanned documents.
-- `pymupdf>=1.24.0` — High-speed PDF rasterizer and vector drawing inspector for bounding-box detection.
-- `pydantic==2.11.9` — Enforces strict runtime validation on documents, chunks, bounding boxes, and providers.
-- `litellm>=1.50.0` & `groq==0.15.0` — Optional cloud fallback adapters guarded by explicit user privacy consent.
+| Package | Version (resolved) | Where used | Why it matters |
+|---|---|---|---|
+| `streamlit` | `1.42.0` | `main.py` | UI runtime; app does not run without it |
+| `pydantic` | `2.11.9` | `models.py`, `model_provider.py` | Canonical schemas across every layer |
+| `docling` | `2.138.0` | `docling_reader.py` | Primary layout/table extraction; falls back to pypdf if absent |
+| `sentence-transformers` | `3.4.1` | `local_embedding.py` | Local embeddings; triggers HuggingFace download on first run |
+| `lancedb` | `0.40.0` | `hybrid_retriever.py` | Persistent vector + FTS store; falls back to in-memory `VectorIndex` |
+| `litellm` | `1.105.0` | `litellm_provider.py` | Only path to opted-in cloud inference |
+| `groq` | `0.15.0` | `groq_provider.py` | Native Groq client for cloud fallback |
+| `httpx` | `0.28.1` | `llama_cpp_provider.py` | Local loopback HTTP/SSE transport |
+| `pymupdf` | `1.28.2` | `ocr_fallback.py`, `visual_analyzer.py` | Page rendering + visual cropping |
+| `rapidocr-onnxruntime` | `1.4.4` | `ocr_fallback.py` | Scanned-page OCR (CPU) |
+| `pypdf` | `5.3.0` | `pdf_reader.py`, `upload_validation.py` | Baseline extraction + page-count validation |
+| `langchain-text-splitters` | `0.3.6` | `pdf_reader.py`, `docling_reader.py`, `ocr_fallback.py` | Chunking only (no chains/agents) |
+| `psutil` | `6.1.1` | `resource_telemetry.py` | Process RSS/VMS telemetry |
+| `python-dotenv` | `1.0.1` | `main.py:24,99` | Loads `.env` before provider key resolution |
 
-**Infrastructure:**
-- `httpx==0.28.1` — HTTP client with connection pooling, timeout controls, and test mock transports.
-- `psutil==6.1.1` — Real-time memory (RSS/VMS) telemetry ensuring safety within a 4 GB VRAM / constrained RAM envelope.
-- `python-dotenv==1.0.1` — Environment variable management for API keys and endpoint configuration.
+**Infrastructure (transitive, significant):**
+- `torch` `2.14.1`, `torchvision` `0.29.1`, `transformers` `4.57.6`, `tokenizers` `0.22.2`, `huggingface-hub` `0.36.2`, `accelerate` `1.15.0` — pulled by sentence-transformers/docling; model weights cached in HuggingFace cache (`README.md` cites `~/.cache/huggingface/`)
+- `onnxruntime` `1.31.0`, `opencv-python` `5.0.0.93`, `opencv-python-headless` `5.0.0.93` — RapidOCR computer vision stack
+- `aiohttp` `3.14.5`, `openai` `2.54.0`, `boto3`/`botocore` `1.43.111`, `requests` `2.34.2`, `tiktoken` `0.14.0`, `langsmith` `0.11.2` — pulled by litellm (broad cloud provider surface; see CONCERNS)
+- `sqlite3` — Python standard library, no package (metadata store `doc_store.py`)
 
 ## Configuration
 
 **Environment:**
-- Local API Keys: Managed via `.env` in the repository root (gitignored) or injected via Streamlit secrets (`st.secrets`).
-- Key Variables:
-  - `GROQ_API_KEY`: API key for Groq inference (cloud mode only).
-  - `OPENAI_API_KEY`: API key for OpenAI models via LiteLLM (cloud mode only).
-  - `ANTHROPIC_API_KEY`: API key for Anthropic models via LiteLLM (cloud mode only).
-  - `LLAMA_SERVER_URL`: Local llama.cpp endpoint (defaults to `http://127.0.0.1:8080`, restricted to loopback unless overridden).
+- Local dev: `.env` in project root, loaded by `load_dotenv()` inside the cached model loader (`main.py:24,99`). `.env` is gitignored (`.gitignore:1`) and **absent from the working tree** — presence noted only, contents never read.
+- Cloud keys precedence (`litellm_provider.py:39-79`, `groq_provider.py:37-47`): explicit arg → `st.session_state.cloud_api_keys` → `st.secrets[<PROVIDER>_API_KEY]` → `os.environ[<PROVIDER>_API_KEY]`.
+- No `.streamlit/secrets.toml` present (no `.streamlit/` directory in repo).
+- `.freebuff/project-id` contains an opaque project UUID (tooling metadata, not a secret).
 
-**Build & Tooling:**
-- `pyproject.toml`:
-  - `[tool.ruff]`: Line length 120, target version `py311`, excludes `.planning`, `.cache`, `data`, `docs`, `*.md`.
-  - `[tool.ruff.lint]`: Selects rules `E`, `F`, `W`; ignores `E501`, `W291`, `W293`; allows `E402` in `scripts/*`.
-  - `[tool.pytest.ini_options]`: Test path `tests/`, file pattern `test_*.py`, ignores `UserWarning` and `DeprecationWarning`.
-- `setup.py`: Packaging metadata, module list, Python `>=3.11` requirement, entry point `rag-assistant=start:main`.
+**Data / State directories (gitignored, created at runtime):**
+- `data/documents.db` — SQLite (`doc_store.py:); `data/lancedb/` and `data/lancedb_bench/` — LanceDB dirs
+- `models/` — GGUF weights: `qwen3-vl-2b-instruct-q4_k_m.gguf`, `mmproj-f16.gguf` (`setup.py:44-63`); a partial `qwen3-vl-2b-instruct-q4_k_m.tmp` present in the working tree
+- `.cache/` — extraction artifacts keyed by `<sha256>/<CONFIG_VERSION>` (`models.py:14,17-30`)
+
+**Build:**
+- `requirements.txt` (17 direct deps), `requirements-lock.txt` (resolved), `requirements-test.txt` (pytest/reportlab/ruff/psutil)
+- `pyproject.toml` — ruff + pytest config only; no `[build-system]` / packaging metadata (packaging lives in `setup.py`)
+- `setup.py` — `install_requires` read from `requirements.txt` (`setup.py:36-41,430`); `py_modules` lists all 22 root modules (`setup.py:406-429`)
 
 ## Platform Requirements
 
 **Development:**
-- Windows 10/11, macOS, or Linux with Python 3.11+.
-- Hardware Envelope: Designed to operate strictly within a 4 GB GPU VRAM envelope (local Qwen3-VL 2B consumes ~2.4 GB VRAM; embeddings and OCR pinned to CPU RAM).
-- Local Model Weights (optional for local inference):
-  - `qwen3-vl-2b-instruct-q4_k_m.gguf`
-  - `mmproj-qwen3-vl-2b-instruct-f16.gguf`
-- Minimum RAM: 8 GB system RAM recommended (16 GB optimal).
+- Python 3.11+ / pip or uv / `.venv` (`docs/RUNBOOK.md:16-17`)
+- Windows 11 or Linux; NVIDIA GPU with 4 GB VRAM and CUDA 11.8/12.x recommended (`docs/RUNBOOK.md:11-17`)
+- 16 GB system RAM; ~10 GB SSD; `llama-server` native binary on PATH or repo root (`docs/RUNBOOK.md:76-80`)
+- Windows HuggingFace symlink warning may require Developer Mode or `HF_HUB_DISABLE_SYMLINKS_WARNING=1` (`docs/RUNBOOK.md:67-70`)
 
 **Production:**
-- Standalone local deployment via `python start.py`.
-- Cloud hosting supported on Streamlit Community Cloud (with cloud provider API keys and user consent enabled).
-- Containerized development supported via `.devcontainer`.
+- Intended deployment is a **single-user workstation** running Streamlit and `llama-server` on the same machine (`docs/RUNBOOK.md:240-245`)
+- Hosted deployment caveat: a remote Streamlit instance cannot reach `127.0.0.1:8080`, so remote hosting requires dedicated model endpoints/tunneling (`README.md:216`, `docs/RUNBOOK.md:245`)
+- No container image, no Streamlit Cloud config committed
+
+## Entry Points
+
+| Entry | Command | File |
+|---|---|---|
+| Launcher (pre-flight + Streamlit) | `python start.py [--port 8501 --host localhost --headless --llama-host 127.0.0.1 --llama-port 8080]` | `start.py:106-132` |
+| Direct app | `streamlit run main.py` | `main.py` |
+| Console script | `rag-assistant=start:main` | `setup.py:432-436` |
+| Setup console script | `rag-setup=setup:main_cli` | `setup.py:434` |
+| Model download script | `rag-download-models=setup:download_models_cli` | `setup.py:435` |
+| Full setup | `python setup.py [setup\|--deps-only\|--models-only\|--skip-vlm\|--force\|--lockfile]` | `setup.py:452-485` |
+| Devcontainer autostart | `streamlit run main.py --server.enableCORS false --server.enableXsrfProtection false` | `.devcontainer/devcontainer.json:21-23` |
+| Benchmarks | `python scripts/benchmark_baseline.py`, `scripts/benchmark_multimodal.py`, `scripts/profile_resources.py` | `scripts/` |
+| Tests | `pytest tests/ -v` | `pyproject.toml:20-22` |
 
 ---
 
-*Stack analysis: 2026-10-13*
-*Update after major dependency changes*
+*Stack analysis: 2026-10-17*
