@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 try:
     from rapidocr_onnxruntime import RapidOCR
 except ImportError:
-    RapidOCR = None  # type: ignore[assignment, misc]
+    try:
+        from rapidocr import RapidOCR
+    except ImportError:
+        RapidOCR = None  # type: ignore[assignment, misc]
 
 try:
     import fitz  # PyMuPDF

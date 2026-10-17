@@ -15,4 +15,6 @@ build/
 htmlcov/
 unused/
 .cache/
+models/
+*.gguf
 

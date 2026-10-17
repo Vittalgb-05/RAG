@@ -5,8 +5,11 @@ compatible with cosine similarity search in VectorIndex.
 """
 
 import logging
-
+import os
 from pathlib import Path
+
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
 
 from sentence_transformers import SentenceTransformer
 

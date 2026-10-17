@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,6 +25,18 @@ import urllib.request
 from typing import Any
 
 from setuptools import Command, find_packages, setup
+
+# Ensure UTF-8 stdout/stderr across Windows consoles (cp1252/cp437)
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -181,6 +194,8 @@ def precache_embedding_model(model_name: str = "all-MiniLM-L6-v2") -> bool:
     """Download and pre-cache SentenceTransformer model into local cache."""
     print(f"\n🧠 Pre-caching local embedding model: {model_name}...")
     try:
+        os.environ.setdefault("USE_TF", "0")
+        os.environ.setdefault("USE_TORCH", "1")
         from sentence_transformers import SentenceTransformer
 
         # Warm up process cache and verify model weights exist
@@ -199,13 +214,16 @@ def precache_ocr_model() -> bool:
     """Download and pre-cache RapidOCR ONNX model weights."""
     print("\n🔍 Pre-caching RapidOCR ONNX models...")
     try:
-        from rapidocr_onnxruntime import RapidOCR
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError:
+            from rapidocr import RapidOCR
 
         _ = RapidOCR()
         print("  ✓ RapidOCR ONNX weights verified and ready for offline inference.")
         return True
     except ImportError:
-        print("  ℹ️ rapidocr-onnxruntime not installed in current environment; skipping pre-cache.")
+        print("  ℹ️ rapidocr not installed in current environment; skipping pre-cache.")
         return False
     except Exception as err:
         print(f"  ⚠️ Warning: Could not initialize RapidOCR: {err}")
@@ -450,29 +468,47 @@ setup_kwargs: dict[str, Any] = dict(
 
 
 if __name__ == "__main__":
-    # If invoked directly with no arguments or with custom CLI flags
     raw_args = sys.argv[1:]
 
-    # Recognized direct setup actions
-    if not raw_args or raw_args[0] in ("setup", "--setup"):
+    custom_flags = {"--deps-only", "--models-only", "--skip-vlm", "--lockfile", "--force"}
+    is_custom_invocation = bool(
+        not raw_args
+        or raw_args[0] in ("setup", "--setup", "download_models", "download-models")
+        or any(arg in custom_flags for arg in raw_args)
+    )
+
+    if is_custom_invocation:
+        # Filter out sub-command keyword if present for argparse
+        filtered_args = list(raw_args)
+        is_download_cmd = False
+        if filtered_args and filtered_args[0] in ("setup", "--setup"):
+            filtered_args.pop(0)
+        elif filtered_args and filtered_args[0] in ("download_models", "download-models"):
+            filtered_args.pop(0)
+            is_download_cmd = True
+
         parser = argparse.ArgumentParser(
             description="Set up dependencies and download models for RAG Assistant",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         )
         parser.add_argument("--deps-only", action="store_true", help="Only install Python dependencies")
         parser.add_argument("--models-only", action="store_true", help="Only download models and caches")
+        parser.add_argument("--models-dir", type=str, default="models", help="Destination folder for GGUF models")
         parser.add_argument("--skip-vlm", action="store_true", help="Skip downloading large VLM GGUF models")
         parser.add_argument("--force", action="store_true", help="Force re-download existing model files")
         parser.add_argument("--lockfile", action="store_true", help="Use requirements-lock.txt for install")
 
-        parsed, _ = parser.parse_known_args(raw_args[1:] if raw_args else [])
+        parsed, _ = parser.parse_known_args(filtered_args)
 
         if parsed.deps_only:
             ensure_project_directories()
             sys.exit(0 if install_dependencies(use_lockfile=parsed.lockfile) else 1)
-        elif parsed.models_only:
+        elif parsed.models_only or is_download_cmd:
             ensure_project_directories()
-            sys.exit(0 if download_all_models(force=parsed.force, skip_vlm=parsed.skip_vlm) else 1)
+            target_dir = REPO_ROOT / parsed.models_dir
+            sys.exit(
+                0 if download_all_models(models_dir=target_dir, force=parsed.force, skip_vlm=parsed.skip_vlm) else 1
+            )
         else:
             sys.exit(
                 run_full_setup(
@@ -482,5 +518,5 @@ if __name__ == "__main__":
                 )
             )
 
-    # Otherwise delegate to setuptools (e.g. `python setup.py install`, `python setup.py download_models`)
+    # Otherwise delegate to setuptools (e.g. `python setup.py bdist_wheel`, `python setup.py sdist`)
     setup(**setup_kwargs)
