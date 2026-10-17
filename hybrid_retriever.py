@@ -6,9 +6,13 @@ is unavailable (RETR-01, RETR-02, RETR-03, RETR-04).
 """
 
 from collections.abc import Callable
+import json
 import logging
+import math
 from pathlib import Path
+import re
 from typing import Any
+import warnings
 
 from models import BBox, Chunk, EvidenceSnippet, RetrievalResult
 from vector_index import VectorIndex
@@ -22,6 +26,11 @@ try:
 except ImportError:
     lancedb = None  # type: ignore[assignment]
     pa = None  # type: ignore[assignment]
+
+
+def _escape_sql_literal(value: str) -> str:
+    """Escape single quotes in string literals for LanceDB SQL filter clauses (CR-03)."""
+    return str(value).replace("'", "''")
 
 
 DEFAULT_DB_URI = Path(__file__).resolve().parent / "data" / "lancedb"
@@ -128,8 +137,6 @@ class HybridRetriever:
         if not self._fallback_file.exists():
             return
         try:
-            import json
-
             with open(self._fallback_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             docs = data.get("documents", [])
@@ -162,8 +169,6 @@ class HybridRetriever:
     def _save_fallback_store(self) -> None:
         """Persist fallback store to disk."""
         try:
-            import json
-
             self.db_uri.mkdir(parents=True, exist_ok=True)
             serializable_docs = []
             for d in self._fallback_store.documents:
@@ -216,7 +221,7 @@ class HybridRetriever:
         """Check if any chunks for the given doc_id exist in the index."""
         if self._has_lancedb and self._table is not None:
             try:
-                safe_doc_id = doc_id.replace("'", "''")
+                safe_doc_id = _escape_sql_literal(doc_id)
                 results = self._table.search().where(f"doc_id = '{safe_doc_id}'").limit(1).to_list()
                 return len(results) > 0
             except Exception:
@@ -314,8 +319,6 @@ class HybridRetriever:
                     if hasattr(bbox, "model_dump_json"):
                         bbox_json = bbox.model_dump_json()
                     elif isinstance(bbox, dict):
-                        import json
-
                         bbox_json = json.dumps(bbox)
 
                 records.append(
@@ -350,7 +353,7 @@ class HybridRetriever:
                     else:
                         chunk_ids = [r["chunk_id"] for r in records if r["chunk_id"]]
                         if chunk_ids:
-                            safe_ids = [cid.replace("'", "''") for cid in chunk_ids]
+                            safe_ids = [_escape_sql_literal(cid) for cid in chunk_ids]
                             quoted_ids = ", ".join(f"'{cid}'" for cid in safe_ids)
                             try:
                                 self._table.delete(f"chunk_id IN ({quoted_ids})")
@@ -379,7 +382,7 @@ class HybridRetriever:
         # Remove from LanceDB
         if self._has_lancedb and self._table is not None:
             try:
-                safe_doc_id = doc_id.replace("'", "''")
+                safe_doc_id = _escape_sql_literal(doc_id)
                 self._table.delete(f"doc_id = '{safe_doc_id}'")
                 logger.info("Deleted chunks for doc_id=%s from LanceDB.", doc_id)
             except Exception as err:
@@ -439,9 +442,6 @@ class HybridRetriever:
 
     def _bm25_search_fallback(self, query: str, k: int = 5) -> list[dict[str, Any]]:
         """Pure-Python BM25 keyword search across stored chunks (RETR-03)."""
-        import math
-        import re
-
         query_terms = [w.lower() for w in re.findall(r"\w+", query) if len(w) > 1]
         if not query_terms:
             return []
@@ -640,10 +640,20 @@ class HybridRetriever:
 
     def search(self, question: str, k: int = 3) -> list[tuple[dict[str, Any], float]]:
         """Legacy-compatible search facade returning (doc_dict, score) tuples."""
+        warnings.warn(
+            "HybridRetriever.search() is deprecated, use search_hybrid() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         result = self.search_hybrid(question, k=k)
         return [(s.model_dump(), s.score) for s in result.snippets]
 
     def get_context(self, question: str, k: int = 3) -> str:
         """Legacy-compatible context facade returning formatted evidence."""
+        warnings.warn(
+            "HybridRetriever.get_context() is deprecated, use search_hybrid() and RetrievalResult.formatted_evidence() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         result = self.search_hybrid(question, k=k)
         return result.formatted_evidence()

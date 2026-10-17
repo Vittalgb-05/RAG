@@ -15,8 +15,13 @@ from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
 
+# Disable LiteLLM external telemetry by default for privacy (Security concern 1)
+os.environ.setdefault("LITELLM_TELEMETRY", "False")
+
 try:
     import litellm
+
+    litellm.telemetry = False
 except ImportError:
     litellm = None  # type: ignore[assignment]
 
@@ -70,8 +75,12 @@ def _resolve_api_key_for_model(model_name: str, explicit_key: str | None = None)
     try:
         import streamlit as st
 
-        if hasattr(st, "secrets") and target_var in st.secrets:
-            return str(st.secrets[target_var])
+        if hasattr(st, "secrets"):
+            try:
+                if target_var in st.secrets:
+                    return str(st.secrets[target_var])
+            except (KeyError, FileNotFoundError, AttributeError):
+                pass
     except Exception:
         pass
 
@@ -122,6 +131,13 @@ class LiteLLMProvider(BaseModelProvider):
     def set_consent(self, consented: bool) -> None:
         """Update explicit user consent state."""
         self.user_consented = bool(consented)
+
+    def _scrub_credentials(self, text: str) -> str:
+        """Scrub raw API key from error strings or logs."""
+        resolved_key = self.api_key or _resolve_api_key_for_model(self.model_name)
+        if resolved_key and resolved_key in text:
+            return text.replace(resolved_key, "[REDACTED_API_KEY]")
+        return text
 
     def _assert_consent(self) -> None:
         """Verify user consent prior to transmitting document data."""
@@ -218,8 +234,9 @@ class LiteLLMProvider(BaseModelProvider):
             choice = response.choices[0]
             return choice.message.content or ""
         except Exception as err:
-            logger.error("LiteLLM generation failure (%s): %s", self.model_name, err)
-            raise RuntimeError(f"Cloud provider generation error ({self.model_name}): {err}") from err
+            scrubbed = self._scrub_credentials(str(err))
+            logger.error("LiteLLM generation failure (%s): %s", self.model_name, scrubbed)
+            raise RuntimeError(f"Cloud provider generation error ({self.model_name}): {scrubbed}") from err
 
     def stream_text(
         self,
@@ -261,7 +278,7 @@ class LiteLLMProvider(BaseModelProvider):
                 "temperature": clamped_temp,
                 "stream": True,
                 "timeout": self.timeout,
-                "num_retries": self.num_retries,
+                "num_retries": 0,
             }
             if self.api_key:
                 kwargs["api_key"] = self.api_key
@@ -274,8 +291,9 @@ class LiteLLMProvider(BaseModelProvider):
                     if content:
                         yield str(content)
         except Exception as err:
-            logger.error("LiteLLM streaming failure (%s): %s", self.model_name, err)
-            raise RuntimeError(f"Cloud provider streaming error ({self.model_name}): {err}") from err
+            scrubbed = self._scrub_credentials(str(err))
+            logger.error("LiteLLM streaming failure (%s): %s", self.model_name, scrubbed)
+            raise RuntimeError(f"Cloud provider streaming error ({self.model_name}): {scrubbed}") from err
 
     def analyze_image(
         self,
@@ -332,8 +350,9 @@ class LiteLLMProvider(BaseModelProvider):
             choice = response.choices[0]
             return choice.message.content or ""
         except Exception as err:
-            logger.error("LiteLLM vision failure (%s): %s", self.model_name, err)
-            raise RuntimeError(f"Cloud provider vision error ({self.model_name}): {err}") from err
+            scrubbed = self._scrub_credentials(str(err))
+            logger.error("LiteLLM vision failure (%s): %s", self.model_name, scrubbed)
+            raise RuntimeError(f"Cloud provider vision error ({self.model_name}): {scrubbed}") from err
 
     def close(self) -> None:
         """Close provider resources (no-op for LiteLLM stateless client)."""

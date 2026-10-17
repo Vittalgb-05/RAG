@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+
+# Enforce PyTorch backend and suppress Keras 3 / TensorFlow integrations
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -93,7 +99,7 @@ def launch_streamlit(port: int = 8501, host: str = "localhost", headless: bool =
     print("   Press Ctrl+C to stop the server.\n")
 
     try:
-        proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
+        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
         return proc.returncode
     except KeyboardInterrupt:
         print("\n\n🛑 Application stopped by user.")

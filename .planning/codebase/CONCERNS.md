@@ -266,4 +266,17 @@
 
 ---
 
-*Concerns audit: 2026-10-17*
+*Concerns audit: 2026-10-17*  
+*Concerns resolved: 2026-10-18 (Session: fix-all-concerns-and-keras3)*
+- Resolved Keras 3 runtime crash via top-level PyTorch backend enforcement in `main.py` and `start.py`.
+- Deduplicated session security reset in `main.py` via `_reset_session_security_state()`.
+- Guarded `st.secrets` access in `main.py` and `litellm_provider.py`.
+- Keyed `document_metadata` by `doc_id` in `main.py` to prevent filename collisions.
+- Derived content-hash `doc_<sha16>` when doc_id is omitted in readers.
+- Hoisted inline imports and added `DeprecationWarning` to legacy facades in `hybrid_retriever.py` and `local_embedding.py`.
+- Disabled LiteLLM telemetry and set `num_retries=0` in `stream_text`.
+- Scrubbed API credentials from error messages and logs in `litellm_provider.py`.
+- Escaped SQL literals in LanceDB queries and added `models/`, `*.gguf`, `*.tmp`, `*.onnx` to `.gitignore`.
+- Added thread safety lock to `OcrEngine.ocr_page_image`.
+- Added `tests/test_groq_provider.py` and `tests/test_start_launcher.py`.
+- Reconciled documentation claims in `docs/EVALUATION.md`, `README.md`, and `docs/RUNBOOK.md` (248 tests / 24 test suites).

@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 import re
 import pypdf
@@ -21,6 +22,22 @@ class PdfReader:
             self.filename = Path(file_or_path).name
         else:
             self.filename = getattr(file_or_path, "name", "unknown.pdf")
+
+        self._sha256 = None
+        try:
+            if isinstance(file_or_path, (str, Path)):
+                p = Path(file_or_path)
+                if p.exists() and p.is_file():
+                    self._sha256 = hashlib.sha256(p.read_bytes()).hexdigest()
+            elif hasattr(file_or_path, "getvalue"):
+                self._sha256 = hashlib.sha256(file_or_path.getvalue()).hexdigest()
+            elif hasattr(file_or_path, "seek") and hasattr(file_or_path, "read"):
+                pos = file_or_path.tell()
+                self._sha256 = hashlib.sha256(file_or_path.read()).hexdigest()
+                file_or_path.seek(pos)
+        except Exception:
+            self._sha256 = None
+
         self.pages_text = ""
         self.page_chunks = []
         self.page_records: list[Page] = []
@@ -38,7 +55,8 @@ class PdfReader:
             length_function=len,
         )
 
-        effective_doc_id = doc_id or f"doc_{self.filename}"
+        fallback_hash = self._sha256 or hashlib.sha256(self.filename.encode("utf-8")).hexdigest()
+        effective_doc_id = doc_id or f"doc_{fallback_hash[:16]}"
         chunk_prefix = sha12 if sha12 else self.filename
 
         self.page_chunks = []

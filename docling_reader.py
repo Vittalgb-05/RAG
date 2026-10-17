@@ -7,6 +7,7 @@ conversion failures.
 """
 
 from collections import defaultdict
+import hashlib
 import io
 import logging
 from pathlib import Path
@@ -89,8 +90,13 @@ class DoclingReader:
         Returns:
             Concatenated extracted document text.
         """
-        effective_doc_id = doc_id or f"doc_{self.filename}"
-        chunk_prefix = sha12 if sha12 else self.filename
+        raw_hash = (
+            hashlib.sha256(self._raw_bytes).hexdigest()
+            if self._raw_bytes
+            else hashlib.sha256(self.filename.encode("utf-8")).hexdigest()
+        )
+        effective_doc_id = doc_id or f"doc_{raw_hash[:16]}"
+        chunk_prefix = sha12 or raw_hash[:12]
 
         if not self._has_docling:
             logger.info("docling package missing; using PdfReader fallback for %s.", self.filename)

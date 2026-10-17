@@ -9,6 +9,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
+import threading
 from typing import Any
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -64,6 +65,7 @@ class OcrEngine:
         """
         self._recognizer = recognizer
         self._renderer = renderer
+        self._ocr_lock = threading.Lock()
 
         if self._recognizer is None and RapidOCR is not None:
             # RapidOCR runs on CPU by default via ONNX Runtime CPUExecutionProvider
@@ -130,42 +132,43 @@ class OcrEngine:
         if not image_data:
             return "", 0.0
 
-        if self._recognizer is None and RapidOCR is not None:
-            try:
-                self._recognizer = RapidOCR()
-            except Exception as e:
-                logger.warning("Lazy RapidOCR initialization failed: %s", e)
+        with self._ocr_lock:
+            if self._recognizer is None and RapidOCR is not None:
+                try:
+                    self._recognizer = RapidOCR()
+                except Exception as e:
+                    logger.warning("Lazy RapidOCR initialization failed: %s", e)
+                    return "", 0.0
+
+            if self._recognizer is None:
                 return "", 0.0
 
-        if self._recognizer is None:
-            return "", 0.0
+            res = self._recognizer(image_data)
+            # RapidOCR returns tuple (result, elapse) or raw result list
+            result_list = res[0] if isinstance(res, tuple) else res
+            if not result_list:
+                return "", 0.0
 
-        res = self._recognizer(image_data)
-        # RapidOCR returns tuple (result, elapse) or raw result list
-        result_list = res[0] if isinstance(res, tuple) else res
-        if not result_list:
-            return "", 0.0
+            lines: list[str] = []
+            scores: list[float] = []
+            for item in result_list:
+                # Format: [[box_points], text, score]
+                if isinstance(item, (list, tuple)) and len(item) >= 3:
+                    text_line = str(item[1]).strip()
+                    if text_line:
+                        lines.append(text_line)
+                    try:
+                        scores.append(float(item[2]))
+                    except (ValueError, TypeError):
+                        pass
+                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                    text_line = str(item[0]).strip()
+                    if text_line:
+                        lines.append(text_line)
 
-        lines: list[str] = []
-        scores: list[float] = []
-        for item in result_list:
-            # Format: [[box_points], text, score]
-            if isinstance(item, (list, tuple)) and len(item) >= 3:
-                text_line = str(item[1]).strip()
-                if text_line:
-                    lines.append(text_line)
-                try:
-                    scores.append(float(item[2]))
-                except (ValueError, TypeError):
-                    pass
-            elif isinstance(item, (list, tuple)) and len(item) == 2:
-                text_line = str(item[0]).strip()
-                if text_line:
-                    lines.append(text_line)
-
-        full_text = "\n".join(lines)
-        avg_score = sum(scores) / len(scores) if scores else 0.0
-        return full_text, avg_score
+            full_text = "\n".join(lines)
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            return full_text, avg_score
 
 
 def _process_page_ocr(

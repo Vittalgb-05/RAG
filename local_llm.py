@@ -94,10 +94,11 @@ class AiModel:
     """Orchestrates document Q&A inference across local or cloud providers.
 
     Note:
-        When instantiated as a server-level resource (e.g. via @st.cache_resource),
-        AiModel acts as a process singleton. Callers should pass an explicit
-        retrieval_result to validate_response(...) to prevent cross-session evidence
-        contamination in multi-user deployments.
+        In the application, AiModel is instantiated per session in st.session_state
+        (via get_session_ai_model) to isolate user consent, active cloud credentials,
+        and model routing across users (P1 audit). Callers should pass an explicit
+        retrieval_result to validate_response(...) to prevent cross-turn evidence
+        contamination.
     """
 
     def __init__(

@@ -7,7 +7,7 @@
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-Local_Inference-000000?logo=cplusplus)](https://github.com/ggerganov/llama.cpp)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Hybrid_Vector_DB-black)](https://lancedb.com/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-226%20Passed-success)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-248%20Passed-success)](tests/)
 
 ---
 
@@ -103,7 +103,7 @@ RAG/
 │   ├── RUNBOOK.md              # Installation, model acquisition, operations guide
 │   ├── EVALUATION.md           # Benchmarks, VRAM profile, and test metrics
 │   └── LOCAL_INFERENCE.md      # llama-server tuning reference for 4 GB GPUs
-├── tests/                      # Automated pytest suite (226 tests, 100% passing)
+├── tests/                      # Automated pytest suite (248 tests, 100% passing)
 ├── requirements.txt            # Production runtime dependencies
 ├── requirements-lock.txt       # Deterministic deployment lockfile (Python 3.11)
 └── requirements-test.txt       # Test-only dependencies
@@ -222,7 +222,7 @@ Open `http://localhost:8501` in your browser.
 The suite runs fully offline with mocked inference, embeddings, and GPU telemetry:
 
 ```bash
-# Full suite (226 tests)
+# Full suite (248 tests)
 pytest tests/ -v
 
 # Linter

@@ -17,4 +17,5 @@ unused/
 .cache/
 models/
 *.gguf
-
+*.tmp
+*.onnx

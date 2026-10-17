@@ -18,8 +18,14 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 from typing import Any
+
+# Enforce PyTorch backend and suppress Keras 3 / TensorFlow integrations
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 from dotenv import load_dotenv
 import streamlit as st
@@ -41,6 +47,48 @@ from visual_analyzer import VisualAnalyzer
 logger = logging.getLogger(__name__)
 
 MAX_CHAT_TURNS = 50
+
+
+def safe_has_secret(key: str) -> bool:
+    """Safely check if key exists in st.secrets without throwing FileNotFoundError or KeyError."""
+    try:
+        if hasattr(st, "secrets"):
+            return key in st.secrets
+    except Exception:
+        return False
+    return False
+
+
+def _reset_session_security_state() -> None:
+    """Reset session security state, in-memory models, and cleanse credentials (WR-02)."""
+    st.session_state.doc_ids = set()
+    st.session_state.indexed_files = set()
+    st.session_state.document_metadata = {}
+    st.session_state.local_embedding = None
+    if st.session_state.get("hybrid_retriever"):
+        try:
+            st.session_state.hybrid_retriever.close()
+        except Exception:
+            pass
+    st.session_state.hybrid_retriever = None
+    st.session_state.chat_history = []
+    for k in list(st.session_state.keys()):
+        if k.startswith("summary_"):
+            del st.session_state[k]
+
+    if st.session_state.get("active_cloud_provider"):
+        try:
+            st.session_state.active_cloud_provider.close()
+        except Exception:
+            pass
+    st.session_state.active_cloud_provider = None
+    st.session_state._cached_cloud_model = None
+    st.session_state._cached_cloud_key = None
+    st.session_state.cloud_mode = False
+    st.session_state.cloud_mode_toggle = False
+    st.session_state.user_consented = False
+    st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
+
 
 # ------------------------------------------------------------------
 # Page configuration  (must be the very first Streamlit call)
@@ -196,7 +244,7 @@ with st.sidebar:
 
         st.session_state.cloud_model = CLOUD_PROVIDER_OPTIONS[selected_provider_key][1]
         env_var_name = CLOUD_PROVIDER_OPTIONS[selected_provider_key][2]
-        env_has_key = bool(os.environ.get(env_var_name) or (hasattr(st, "secrets") and env_var_name in st.secrets))
+        env_has_key = bool(os.environ.get(env_var_name) or safe_has_secret(env_var_name))
         key_placeholder = f"Configured via {env_var_name}" if env_has_key else f"Enter {env_var_name}"
 
         current_key = st.session_state.cloud_api_keys.get(selected_provider_key, "")
@@ -296,31 +344,7 @@ with st.sidebar:
     col_clear, col_purge = st.columns(2)
     with col_clear:
         if st.button("Clear Session", use_container_width=True, help="Reset in-memory chat and session state"):
-            st.session_state.doc_ids = set()
-            st.session_state.indexed_files = set()
-            st.session_state.document_metadata = {}
-            st.session_state.local_embedding = None
-            if st.session_state.get("hybrid_retriever"):
-                st.session_state.hybrid_retriever.close()
-            st.session_state.hybrid_retriever = None
-            st.session_state.chat_history = []
-            for k in list(st.session_state.keys()):
-                if k.startswith("summary_"):
-                    del st.session_state[k]
-
-            # Reset cloud posture and cleanse session credentials (WR-02)
-            if st.session_state.get("active_cloud_provider"):
-                try:
-                    st.session_state.active_cloud_provider.close()
-                except Exception:
-                    pass
-            st.session_state.active_cloud_provider = None
-            st.session_state._cached_cloud_model = None
-            st.session_state._cached_cloud_key = None
-            st.session_state.cloud_mode = False
-            st.session_state.cloud_mode_toggle = False
-            st.session_state.user_consented = False
-            st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
+            _reset_session_security_state()
             st.rerun()
 
     with col_purge:
@@ -340,35 +364,12 @@ with st.sidebar:
                 temp_retriever.close()
 
             if CACHE_DIR.exists():
-                import shutil
-
                 try:
                     shutil.rmtree(CACHE_DIR, ignore_errors=True)
                 except Exception as err:
                     logger.warning("Failed to remove cache dir %s: %s", CACHE_DIR, err)
 
-            st.session_state.doc_ids = set()
-            st.session_state.indexed_files = set()
-            st.session_state.document_metadata = {}
-            st.session_state.local_embedding = None
-            st.session_state.hybrid_retriever = None
-            st.session_state.chat_history = []
-            for k in list(st.session_state.keys()):
-                if k.startswith("summary_"):
-                    del st.session_state[k]
-
-            if st.session_state.get("active_cloud_provider"):
-                try:
-                    st.session_state.active_cloud_provider.close()
-                except Exception:
-                    pass
-            st.session_state.active_cloud_provider = None
-            st.session_state._cached_cloud_model = None
-            st.session_state._cached_cloud_key = None
-            st.session_state.cloud_mode = False
-            st.session_state.cloud_mode_toggle = False
-            st.session_state.user_consented = False
-            st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
+            _reset_session_security_state()
             st.toast("Purged all persistent databases, vectors, and disk caches.")
             st.rerun()
 
@@ -418,8 +419,9 @@ with st.sidebar:
                     st.info(f"Already indexed (`{doc_id}`) — skipped duplicate.")
                     st.session_state.doc_ids.add(doc_id)
                     st.session_state.indexed_files.add(filename)
-                    st.session_state.document_metadata[filename] = {
+                    st.session_state.document_metadata[doc_id] = {
                         "doc_id": doc_id,
+                        "filename": filename,
                         "sha256": validated.sha256,
                         "upload_time": existing_doc.upload_time
                         if existing_doc
@@ -547,8 +549,9 @@ with st.sidebar:
                 # 8. Update session state
                 st.session_state.doc_ids.add(doc_id)
                 st.session_state.indexed_files.add(filename)
-                st.session_state.document_metadata[filename] = {
+                st.session_state.document_metadata[doc_id] = {
                     "doc_id": doc_id,
+                    "filename": filename,
                     "sha256": validated.sha256,
                     "upload_time": now_iso,
                     "pages": validated.num_pages,
@@ -567,11 +570,12 @@ with st.sidebar:
             )
 
         st.markdown("##### Indexed Documents:")
-        for filename, meta in st.session_state.document_metadata.items():
-            doc_id_label = f" (`{meta['doc_id']}`)" if "doc_id" in meta else ""
+        for doc_key, meta in st.session_state.document_metadata.items():
+            fname = meta.get("filename", doc_key)
+            doc_id_label = f" (`{meta.get('doc_id', doc_key)}`)"
             display_time = meta["upload_time"][:19].replace("T", " ")
             st.success(
-                f"**`{filename}`**{doc_id_label}\n\n{meta['pages']} pages · {meta['chunks']} chunks · Indexed at {display_time}"
+                f"**`{fname}`**{doc_id_label}\n\n{meta['pages']} pages · {meta['chunks']} chunks · Indexed at {display_time}"
             )
     else:
         st.info("Upload a PDF to get started.")
@@ -831,13 +835,23 @@ with tab_summary:
     st.markdown("## 📑 Document Summarizer")
     st.caption("Generate grounded, page-referenced summaries across 5 analytical profiles.")
 
-    if not st.session_state.indexed_files:
+    if not st.session_state.document_metadata and not st.session_state.indexed_files:
         st.info("Upload and index a PDF in the sidebar to enable summarization.")
     else:
-        file_options = sorted(list(st.session_state.indexed_files))
-        selected_file = st.selectbox("Select Document to Summarize", options=file_options)
-        file_meta = st.session_state.document_metadata.get(selected_file, {})
-        selected_doc_id = file_meta.get("doc_id", "")
+        doc_options = list(st.session_state.document_metadata.keys())
+        if doc_options:
+            selected_doc_id = st.selectbox(
+                "Select Document to Summarize",
+                options=doc_options,
+                format_func=lambda k: f"{st.session_state.document_metadata[k].get('filename', k)} ({k})",
+            )
+            file_meta = st.session_state.document_metadata.get(selected_doc_id, {})
+        else:
+            file_options = sorted(list(st.session_state.indexed_files))
+            selected_file = st.selectbox("Select Document to Summarize", options=file_options)
+            file_meta = st.session_state.document_metadata.get(selected_file, {})
+            selected_doc_id = file_meta.get("doc_id", "")
+
         selected_sha = file_meta.get("sha256", "")
         if not selected_sha and selected_doc_id:
             doc_rec = doc_store.get_document(selected_doc_id)

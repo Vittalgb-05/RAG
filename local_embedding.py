@@ -7,13 +7,15 @@ compatible with cosine similarity search in VectorIndex.
 import logging
 import os
 from pathlib import Path
+import warnings
 
 os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("USE_TORCH", "1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 from sentence_transformers import SentenceTransformer
 
-from models import RetrievalResult
+from models import EvidenceSnippet, RetrievalResult
 from vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
@@ -109,11 +111,13 @@ class LocalEmbedding:
         return self.store.search(question, k=k)
 
     def search_hybrid(self, question: str, k: int = 5) -> RetrievalResult:
-        """
-        Execute dense search returning canonical RetrievalResult container (RETR-03, RETR-04).
-        """
+        """Execute dense search returning canonical RetrievalResult container (RETR-03, RETR-04)."""
+        warnings.warn(
+            "LocalEmbedding.search_hybrid() is deprecated; use HybridRetriever.search_hybrid() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         results = self.search(question, k=k)
-        from models import EvidenceSnippet
 
         snippets = []
         for rank, (doc, score) in enumerate(results, start=1):

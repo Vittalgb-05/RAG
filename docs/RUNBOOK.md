@@ -184,7 +184,7 @@ Navigate to `http://localhost:8501` in your browser.
 3. Ingestion executes through:
    - SHA-256 deduplication (skips re-indexing if content is identical).
    - Layout-aware Docling table and structure parsing.
-   - RapidOCR fallback on scanned pages (< 30 characters detected).
+   - RapidOCR fallback on scanned pages (< 50 characters detected).
    - Visual figure cropping and Qwen3-VL 2B captioning.
    - LanceDB dense vector indexing + SQLite FTS5 lexical indexing.
 

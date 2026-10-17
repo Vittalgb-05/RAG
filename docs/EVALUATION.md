@@ -11,36 +11,41 @@ The system enforces automated unit, integration, and regression testing covering
 
 | Metric | Result | Target SLA | Status |
 |---|---|---|---|
-| **Total Test Cases** | **217** | ≥ 200 | ✅ EXCEEDED |
-| **Pass Rate** | **100% (217 / 217)** | 100% | ✅ SATISFIED |
-| **Test Execution Time** | **50.6 seconds** | < 90s | ✅ SATISFIED |
-| **Test Modules Covered** | **23 test suites** | Complete coverage | ✅ SATISFIED |
+| **Total Test Cases** | **248** | ≥ 200 | ✅ EXCEEDED |
+| **Pass Rate** | **100% (248 / 248)** | 100% | ✅ SATISFIED |
+| **Test Execution Time** | **~31 seconds** | < 90s | ✅ SATISFIED |
+| **Test Modules Covered** | **24 test suites** | Complete coverage | ✅ SATISFIED |
 | **Linter Compliance (Ruff)** | **0 errors, 0 warnings** | 0 errors | ✅ SATISFIED |
-| **Code Formatting (Ruff)** | **100% clean (46 files)** | 100% clean | ✅ SATISFIED |
+| **Code Formatting (Ruff)** | **100% clean (51 files)** | 100% clean | ✅ SATISFIED |
 | **Network Isolation in Tests** | **100% offline (no mock leaks)** | 100% offline | ✅ SATISFIED |
 
 ### Test Suite Distribution Across Modules
 
 ```
-tests/test_audit_fixes.py ......................... [ 11%]
-tests/test_benchmark_metrics.py ................... [ 20%]
-tests/test_citation_verifier.py ................... [ 26%]
-tests/test_cloud_privacy.py ....................... [ 31%]
-tests/test_doc_store.py ........................... [ 35%]
-tests/test_docling_parser.py ...................... [ 41%]
-tests/test_hybrid_retriever.py .................... [ 47%]
-tests/test_lancedb_index.py ....................... [ 51%]
-tests/test_llama_cpp_provider.py .................. [ 56%]
-tests/test_model_provider.py ...................... [ 58%]
-tests/test_models.py .............................. [ 67%]
-tests/test_ocr_fallback.py ........................ [ 71%]
-tests/test_pdf_reader.py .......................... [ 75%]
-tests/test_prompt_budget.py ....................... [ 80%]
-tests/test_resource_telemetry.py .................. [ 85%]
-tests/test_summarizer.py .......................... [ 89%]
-tests/test_upload_validation.py ................... [ 93%]
-tests/test_vector_index.py ........................ [ 96%]
-tests/test_visual_analyzer.py ..................... [100%]
+tests/test_cache_invalidation.py ................. [  2%]
+tests/test_citation_validator.py ................. [  7%]
+tests/test_cloud_privacy.py ...................... [ 10%]
+tests/test_concurrency_lock.py .................. [ 14%]
+tests/test_doc_store.py .......................... [ 20%]
+tests/test_docling_reader.py ..................... [ 23%]
+tests/test_groq_provider.py ...................... [ 26%]
+tests/test_hybrid_retriever.py ................... [ 32%]
+tests/test_litellm_provider.py ................... [ 37%]
+tests/test_llama_cpp_provider.py ................. [ 43%]
+tests/test_local_embedding.py .................... [ 44%]
+tests/test_local_llm.py .......................... [ 50%]
+tests/test_main_ui.py ............................ [ 53%]
+tests/test_model_provider.py ..................... [ 58%]
+tests/test_models.py ............................. [ 66%]
+tests/test_ocr_fallback.py ....................... [ 69%]
+tests/test_pdf_reader.py ......................... [ 73%]
+tests/test_prompt_budget.py ...................... [ 77%]
+tests/test_resource_telemetry.py ................. [ 83%]
+tests/test_start_launcher.py ..................... [ 86%]
+tests/test_summarizer.py ......................... [ 90%]
+tests/test_upload_validation.py .................. [ 93%]
+tests/test_vector_index.py ....................... [ 96%]
+tests/test_visual_analyzer.py .................... [100%]
 ```
 
 ---
