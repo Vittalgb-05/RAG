@@ -97,6 +97,75 @@ def get_gpu_memory_info(force_refresh: bool = False) -> dict[str, float] | None:
         return gpu_dict.copy() if gpu_dict is not None else None
 
 
+def get_compute_apps_gpu_memory() -> list[dict[str, Any]]:
+    """Query active compute applications and their VRAM allocations via nvidia-smi.
+
+    Uses `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits`.
+
+    Returns:
+        List of dicts: [{"pid": int, "process_name": str, "used_mb": float}, ...]
+        or empty list if nvidia-smi is unavailable, fails, or no compute apps are running.
+    """
+    try:
+        cmd = [
+            "nvidia-smi",
+            "--query-compute-apps=pid,process_name,used_memory",
+            "--format=csv,noheader,nounits",
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2.0,
+        )
+        stdout = result.stdout.strip()
+        apps: list[dict[str, Any]] = []
+        if stdout:
+            for line in stdout.splitlines():
+                parts = [x.strip() for x in line.split(",")]
+                if len(parts) >= 3:
+                    try:
+                        apps.append(
+                            {
+                                "pid": int(parts[0]),
+                                "process_name": parts[1],
+                                "used_mb": float(parts[2]),
+                            }
+                        )
+                    except (ValueError, TypeError):
+                        continue
+        return apps
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError, IndexError) as err:
+        logger.debug("Compute apps telemetry unavailable via nvidia-smi: %s", err)
+        return []
+    except Exception as err:
+        logger.debug("Unexpected error querying compute apps: %s", err)
+        return []
+
+
+def get_resident_model_gpu_memory(
+    process_names: tuple[str, ...] = ("llama-server", "llama-server.exe"),
+) -> float | None:
+    """Query live VRAM consumption of resident llama-server or LLM process if running.
+
+    Args:
+        process_names: Substrings or exact process names to match.
+
+    Returns:
+        Total VRAM in MB if matching process is active and reported, or None.
+    """
+    apps = get_compute_apps_gpu_memory()
+    matched_total = 0.0
+    found = False
+    for app in apps:
+        app_name = app.get("process_name", "").lower()
+        if any(p.lower() in app_name for p in process_names):
+            matched_total += app.get("used_mb", 0.0)
+            found = True
+    return round(matched_total, 1) if found else None
+
+
 def get_process_memory_info() -> dict[str, float]:
     """Query current process resident set size (RSS) and virtual memory (VMS).
 
@@ -237,9 +306,14 @@ def get_system_telemetry_snapshot() -> dict[str, Any]:
                 "max_ms": max(times),
             }
 
+    compute_apps = get_compute_apps_gpu_memory()
+    resident_gpu_mb = get_resident_model_gpu_memory()
+
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "gpu": gpu_info,
         "process": proc_info,
+        "compute_apps": compute_apps,
+        "resident_gpu_mb": resident_gpu_mb,
         "stages": stage_summaries,
     }

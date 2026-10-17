@@ -26,8 +26,10 @@ from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 from models import Document, Page
 from pdf_reader import PdfReader
 from resource_telemetry import (
+    get_compute_apps_gpu_memory,
     get_gpu_memory_info,
     get_process_memory_info,
+    get_resident_model_gpu_memory,
     LatencyTracker,
 )
 from summarizer import Summarizer
@@ -267,22 +269,39 @@ def run_resource_profile() -> dict:
         # Projected VRAM calculation based on live hardware audit
         # Fall back to 487.0 MB (empirical Windows 11 DWM baseline) in headless/CI environments where nvidia-smi is absent
         dwm_overhead_mb = initial_gpu_mem["used_mb"] if initial_gpu_mem else 487.0
-        model_weights_mb = 1450.0
-        vision_proj_mb = 450.0
-        kv_cache_4k_mb = 510.0
-        cuda_scratch_mb = 350.0
-        projected_peak_vram_mb = round(
-            dwm_overhead_mb + model_weights_mb + vision_proj_mb + kv_cache_4k_mb + cuda_scratch_mb, 1
-        )
+        resident_vram_mb = get_resident_model_gpu_memory()
+        compute_apps = get_compute_apps_gpu_memory()
+
+        if resident_vram_mb is not None and resident_vram_mb > 0:
+            # Dynamically sampled resident VRAM from running llama-server process (P0/Tech Debt resolution)
+            vram_source = "live_resident_sampled"
+            model_weights_mb = resident_vram_mb
+            vision_proj_mb = 0.0
+            kv_cache_4k_mb = 0.0
+            cuda_scratch_mb = 0.0
+            projected_peak_vram_mb = round(dwm_overhead_mb + resident_vram_mb, 1)
+            print(f"  - Windows DWM / Driver Overhead: {dwm_overhead_mb:.1f} MB")
+            print(f"  - Live Resident llama-server VRAM: {resident_vram_mb:.1f} MB (live nvidia-smi sampled)")
+        else:
+            # Fall back to calibrated analytical constants for headless/mock environments
+            vram_source = "analytical_constants"
+            model_weights_mb = 1450.0
+            vision_proj_mb = 450.0
+            kv_cache_4k_mb = 510.0
+            cuda_scratch_mb = 350.0
+            projected_peak_vram_mb = round(
+                dwm_overhead_mb + model_weights_mb + vision_proj_mb + kv_cache_4k_mb + cuda_scratch_mb, 1
+            )
+            print(f"  - Windows DWM / Driver Overhead: {dwm_overhead_mb:.1f} MB")
+            print(f"  - Model Weights (Qwen3-VL 2B Q4_K_M): {model_weights_mb:.1f} MB")
+            print(f"  - Multimodal Projector (mmproj-f16): {vision_proj_mb:.1f} MB")
+            print(f"  - KV Cache (4K FP16 Bounded): {kv_cache_4k_mb:.1f} MB")
+            print(f"  - CUDA Workspace & Scratch Buffers: {cuda_scratch_mb:.1f} MB")
+
         vram_target_mb = 3800.0
         vram_headroom_mb = round(4096.0 - projected_peak_vram_mb, 1)
 
-        print(f"  - Windows DWM / Driver Overhead: {dwm_overhead_mb:.1f} MB")
-        print(f"  - Model Weights (Qwen3-VL 2B Q4_K_M): {model_weights_mb:.1f} MB")
-        print(f"  - Multimodal Projector (mmproj-f16): {vision_proj_mb:.1f} MB")
-        print(f"  - KV Cache (4K FP16 Bounded): {kv_cache_4k_mb:.1f} MB")
-        print(f"  - CUDA Workspace & Scratch Buffers: {cuda_scratch_mb:.1f} MB")
-        print(f"  - Total Projected Peak VRAM: {projected_peak_vram_mb:.1f} MB")
+        print(f"  - Total Projected Peak VRAM: {projected_peak_vram_mb:.1f} MB (mode: {vram_source})")
         print(f"  - Memory Safety Target: <= {vram_target_mb:.1f} MB -> COMPLIANT")
         print(f"  - Available Safety Headroom: {vram_headroom_mb:.1f} MB")
 
@@ -290,6 +309,9 @@ def run_resource_profile() -> dict:
         profile_data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "target_gpu": "NVIDIA GeForce RTX 3050 Laptop GPU (4,096 MB VRAM)",
+            "vram_measurement_mode": vram_source,
+            "resident_model_vram_mb": resident_vram_mb,
+            "compute_apps": compute_apps,
             "memory_safety_target_mb": vram_target_mb,
             "projected_peak_vram_mb": projected_peak_vram_mb,
             "vram_headroom_mb": vram_headroom_mb,

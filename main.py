@@ -73,7 +73,6 @@ for key, default in [
     ("cloud_provider", "groq"),  # active cloud provider: "groq", "openai", "anthropic"
     ("cloud_model", "groq/llama-3.3-70b-versatile"),  # model identifier for LiteLLM
     ("cloud_api_keys", {"groq": "", "openai": "", "anthropic": ""}),  # per-provider session API keys
-    ("cloud_api_key", ""),  # legacy fallback compatibility
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -322,8 +321,6 @@ with st.sidebar:
             st.session_state.cloud_mode_toggle = False
             st.session_state.user_consented = False
             st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
-            if hasattr(st.session_state, "cloud_api_key"):
-                st.session_state.cloud_api_key = ""
             st.rerun()
 
     with col_purge:
@@ -372,8 +369,6 @@ with st.sidebar:
             st.session_state.cloud_mode_toggle = False
             st.session_state.user_consented = False
             st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
-            if hasattr(st.session_state, "cloud_api_key"):
-                st.session_state.cloud_api_key = ""
             st.toast("Purged all persistent databases, vectors, and disk caches.")
             st.rerun()
 

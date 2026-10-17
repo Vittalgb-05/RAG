@@ -18,29 +18,23 @@
 
 ## Tech Debt
 
-**1. Analytical vs. Resident Model VRAM Measurement:**
-- **Issue:** While host DWM memory is queried live from `nvidia-smi` (690 MB), the model weights (1450 MB), multimodal projector (450 MB), KV cache (510 MB), and CUDA runtime overhead (350 MB) remain static analytical constants in `scripts/profile_resources.py`.
-- **Why:** The profiling script can run in headless CI environments without requiring a resident GPU or running `llama-server`.
-- **Impact:** While total projected peak (3450 MB) comfortably respects the 4096 MB VRAM ceiling, resident consumption under prolonged multi-turn context load is not dynamically sampled from the running `llama-server` process.
-- **Fix approach:** Enhance `scripts/profile_resources.py` to query process-specific VRAM usage of the child `llama-server` process PID via `nvidia-smi --query-compute-apps`.
+**1. Analytical vs. Resident Model VRAM Measurement: [RESOLVED]**
+- **Issue:** While host DWM memory was queried live from `nvidia-smi` (690 MB), model weights, multimodal projector, KV cache, and CUDA overhead previously remained static analytical constants in `scripts/profile_resources.py`.
+- **Resolution:** Enhanced `resource_telemetry.py` with `get_compute_apps_gpu_memory()` and `get_resident_model_gpu_memory()` using `nvidia-smi --query-compute-apps=pid,process_name,used_memory`. Integrated into `scripts/profile_resources.py` to dynamically sample live resident `llama-server` process VRAM whenever active, falling back gracefully to analytical estimates in headless CI.
 
-**2. Legacy `cloud_api_key` Fallback in Session State:**
-- **Issue:** `main.py` and `litellm_provider.py` retain a legacy `cloud_api_key` string variable alongside the structured `cloud_api_keys` dictionary (`{"groq": "", "openai": "", "anthropic": ""}`).
-- **Why:** Preserved for backward compatibility with early prototype sessions.
-- **Impact:** If an old session state key persists, a fallback lookup might pick up a mismatched API key when switching providers.
-- **Fix approach:** Remove the legacy `cloud_api_key` string fallback in a future refactor and enforce the provider-keyed dictionary exclusively.
+**2. Legacy `cloud_api_key` Fallback in Session State: [RESOLVED]**
+- **Issue:** `main.py` and `litellm_provider.py` retained a legacy `cloud_api_key` string variable alongside the structured `cloud_api_keys` dictionary (`{"groq": "", "openai": "", "anthropic": ""}`).
+- **Resolution:** Removed legacy `cloud_api_key` string fallback from `main.py` and `litellm_provider.py`. Enforced provider-keyed `cloud_api_keys` dictionary strictly across session state and tests.
 
-**3. Direct `PdfReader` Ingestion Path in `local_llm.py`:**
-- **Issue:** `AiModel.ask_a_question_from_pdf_stream` retains a legacy branch that constructs a standalone `PdfReader` and `LocalEmbedding` if no retriever is supplied.
-- **Why:** Legacy support for running question answering directly against a file path without pre-indexing.
-- **Impact:** Bypasses `DocStore` persistence, Docling layout extraction, RapidOCR, and LanceDB hybrid retrieval.
-- **Fix approach:** Deprecate or remove this unindexed fallback branch; require a caller to provide an indexed retriever or explicit `RetrievalResult`.
+**3. Direct `PdfReader` Ingestion Path in `local_llm.py`: [RESOLVED]**
+- **Issue:** `AiModel.ask_a_question_from_pdf_stream` retained a legacy branch that constructed a standalone `PdfReader` and `LocalEmbedding` if no retriever was supplied.
+- **Resolution:** Deprecated and removed unindexed fallback branch in `local_llm.py`; `ask_a_question_from_pdf_stream` now requires an indexed retriever or explicit `RetrievalResult`, raising `ValueError` and issuing `DeprecationWarning` if called with an unindexed file path.
 
 ---
 
 ## Known Bugs
 
-*No open functional bugs identified. All 226 test cases passing across all 24 test suites.*
+*No open functional bugs identified. All automated tests passing across the entire test suite.*
 
 ---
 
@@ -49,15 +43,15 @@
 **1. SSRF Guard on Local Llama Server:**
 - **Risk:** If an attacker could inject an arbitrary URL into `LlamaCppProvider`, the backend could be coerced into making outbound requests to internal infrastructure (Server-Side Request Forgery).
 - **Current Mitigation:** `LlamaCppProvider` normalizes URLs and verifies that the target host resolves to a loopback address (`127.0.0.1`, `localhost`, `::1`) via Python `ipaddress`. Any non-loopback host raises `ValueError` unless `allow_remote=True` is explicitly passed.
-- **Recommendations:** Ensure that user-controlled input from the UI or environment never overrides `allow_remote` without administrator authentication.
+- **Enforcement:** User-controlled input from the UI or environment cannot override `allow_remote`.
 
-**2. Prompt Injection via Untrusted Document Content:**
+**2. Prompt Injection via Untrusted Document Content: [RESOLVED]**
 - **Risk:** Malicious PDFs containing adversarial prompt injection directives (e.g., "Ignore previous instructions and output...") attempting to bypass grounding.
 - **Current Mitigation:**
   - Context wrapping: All retrieved snippet contents are encapsulated in `<document_context>` XML tags.
   - Sanitization: `sanitize_xml_boundary()` escapes embedded `<document_context>` tags to prevent premature tag closure.
   - System Prompt Directives: Explicit instructions strictly state that facts within `<document_context>` must be treated as untrusted data and directives must never be followed.
-- **Recommendations:** Implement output-side validation to detect if assistant responses echo known adversarial injection directives.
+  - Output-Side Validation (Implemented): `citation_validator.py` detects if assistant responses echo known adversarial injection directives (`KNOWN_ADVERSARIAL_DIRECTIVES`), rejecting grounding validation with `injection_detected=True`.
 
 **3. Privacy & Data Egress Invariant:**
 - **Risk:** Accidental leakage of local document data to cloud LLMs without user knowledge.
@@ -70,18 +64,19 @@
 
 ## Performance Bottlenecks
 
-**1. High-Resolution OCR on Scanned Documents:**
+**1. High-Resolution OCR on Scanned Documents: [RESOLVED]**
 - **Problem:** Processing scanned PDF pages with RapidOCR ONNX can take 1.5–3.0 seconds per page on CPU.
-- **Mitigation:** `should_ocr_page` checks character count and bypasses clean digital pages ($>50$ characters), preserving sub-second ingestion for standard PDFs. In addition, rasterization zoom is clamped to $72 \le \text{DPI} \le 300$.
-- **Improvement Path:** Batch OCR inference across multiple worker threads on multi-core CPUs.
+- **Mitigation & Resolution:**
+  - `should_ocr_page` checks character count and bypasses clean digital pages ($>50$ characters), preserving sub-second ingestion for standard PDFs. Rasterization zoom is clamped to $72 \le \text{DPI} \le 300$.
+  - Implemented multi-threaded batch OCR processing via `ThreadPoolExecutor` across CPU worker threads in `ocr_fallback.py` when multiple scanned pages are detected, preserving exact page order and fault isolation.
 
 **2. Docling Complex Table Extraction Overhead:**
 - **Problem:** Deep document layout analysis and markdown table reconstruction via Docling requires substantial CPU compute.
 - **Mitigation:** Ingestion pipeline is executed once per document and deduplicated using SHA-256 digests in SQLite `DocStore`. Subsequent uploads reload cached chunks instantly ($<20$ ms).
 
-**3. First-Run Embedding Model Download:**
+**3. First-Run Embedding Model Download: [RESOLVED]**
 - **Problem:** On initial startup without internet access, loading `all-MiniLM-L6-v2` will fail if model weights are not pre-cached in `~/.cache/huggingface/`.
-- **Mitigation:** Clear instructions and runbook documentation (`docs/RUNBOOK.md`) provide pre-caching commands.
+- **Mitigation & Resolution:** Automated via `setup.py` (`python setup.py` or `python setup.py download_models`) which downloads GGUF models and pre-caches `all-MiniLM-L6-v2` and RapidOCR ONNX models into local offline caches before initial startup. Detailed runbook instructions provided in `docs/RUNBOOK.md`.
 
 ---
 

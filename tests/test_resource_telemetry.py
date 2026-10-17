@@ -10,9 +10,11 @@ import pytest
 from resource_telemetry import (
     clear_gpu_cache,
     clear_latency_history,
+    get_compute_apps_gpu_memory,
     get_gpu_memory_info,
     get_latency_history,
     get_process_memory_info,
+    get_resident_model_gpu_memory,
     get_system_telemetry_snapshot,
     LatencyTracker,
     record_stage_latency,
@@ -188,3 +190,44 @@ def test_get_system_telemetry_snapshot() -> None:
     assert stages["map_stage"]["avg_ms"] == 150.0
     assert stages["map_stage"]["min_ms"] == 100.0
     assert stages["map_stage"]["max_ms"] == 200.0
+    assert "compute_apps" in snap
+    assert "resident_gpu_mb" in snap
+
+
+def test_get_compute_apps_gpu_memory_success() -> None:
+    """Test parsing compute apps output from nvidia-smi."""
+    mock_res = MagicMock()
+    mock_res.stdout = "1234, llama-server.exe, 1850.5\n5678, python.exe, 320.0\n"
+
+    with patch("subprocess.run", return_value=mock_res):
+        apps = get_compute_apps_gpu_memory()
+
+    assert len(apps) == 2
+    assert apps[0]["pid"] == 1234
+    assert apps[0]["process_name"] == "llama-server.exe"
+    assert apps[0]["used_mb"] == 1850.5
+    assert apps[1]["pid"] == 5678
+    assert apps[1]["process_name"] == "python.exe"
+
+
+def test_get_compute_apps_gpu_memory_failures() -> None:
+    """Test graceful fallback to empty list when nvidia-smi fails."""
+    with patch("subprocess.run", side_effect=FileNotFoundError):
+        assert get_compute_apps_gpu_memory() == []
+
+    with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["nvidia-smi"])):
+        assert get_compute_apps_gpu_memory() == []
+
+
+def test_get_resident_model_gpu_memory() -> None:
+    """Test matching and aggregating resident model VRAM."""
+    mock_res = MagicMock()
+    mock_res.stdout = "1234, llama-server.exe, 1850.5\n5678, chrome.exe, 400.0\n"
+
+    with patch("subprocess.run", return_value=mock_res):
+        vram = get_resident_model_gpu_memory()
+        assert vram == 1850.5
+
+        # Query for non-existent process
+        vram_other = get_resident_model_gpu_memory(process_names=("vllm",))
+        assert vram_other is None

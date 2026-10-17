@@ -9,6 +9,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 import logging
 import threading
+import warnings
 
 from citation_validator import CitationVerificationResult, validate_citations
 from groq_provider import GroqProvider
@@ -17,7 +18,6 @@ from llama_cpp_provider import LlamaCppProvider
 from local_embedding import LocalEmbedding
 from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 from models import RetrievalResult
-from pdf_reader import PdfReader
 from prompt_budget import assemble_grounded_messages
 
 logger = logging.getLogger(__name__)
@@ -237,10 +237,16 @@ class AiModel:
             relevant_sections = retrieval_result.formatted_evidence()
         else:
             if local_embedding is None and pdf_path:
-                pdf_reader = PdfReader(pdf_path)
-                pdf_paragraphs = pdf_reader.get_paragraphs()
-                local_embedding = LocalEmbedding()
-                local_embedding.build_index(pdf_paragraphs)
+                warnings.warn(
+                    "Direct unindexed PDF ingestion in ask_a_question_from_pdf_stream has been deprecated and removed. "
+                    "Callers must index documents via DocStore/LanceDB and provide an indexed retriever or explicit RetrievalResult.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                raise ValueError(
+                    "Direct unindexed PDF ingestion in ask_a_question_from_pdf_stream has been removed. "
+                    "Please provide an indexed retriever (LocalEmbedding or HybridRetriever) or explicit RetrievalResult."
+                )
 
             # Contextualize search query with previous user question if history exists
             search_query = prompt

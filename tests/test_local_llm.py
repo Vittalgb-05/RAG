@@ -5,6 +5,7 @@ and non-crashing degraded startup when all inference backends are offline.
 """
 
 from unittest.mock import MagicMock
+import pytest
 from groq_provider import GroqProvider
 from llama_cpp_provider import LlamaCppProvider
 from local_llm import AiModel
@@ -246,3 +247,20 @@ def test_ai_model_with_precomputed_retrieval_result(mock_llama_provider) -> None
 
     assert len(tokens) > 0
     assert model.last_retrieval_result is custom_result
+
+
+def test_direct_pdf_path_without_retriever_raises_error(mock_llama_provider) -> None:
+    """Verify calling ask_a_question_from_pdf_stream with unindexed pdf_path raises ValueError."""
+    model = AiModel(provider=mock_llama_provider)
+
+    with pytest.raises(
+        ValueError, match="Direct unindexed PDF ingestion in ask_a_question_from_pdf_stream has been removed"
+    ):
+        list(
+            model.ask_a_question_from_pdf_stream(
+                pdf_path="some_file.pdf",
+                prompt="test query",
+                local_embedding=None,
+                retrieval_result=None,
+            )
+        )

@@ -249,3 +249,12 @@ def test_per_provider_api_key_lookup(monkeypatch) -> None:
 
     anthropic_key = _resolve_api_key_for_model("anthropic/claude-3-5-haiku-20241022")
     assert anthropic_key == "sk_ant_secret"
+
+    # Verify that if provider key is empty, legacy cloud_api_key is strictly ignored
+    fake_state_empty = FakeSessionState(
+        cloud_api_keys={"groq": "", "openai": "", "anthropic": ""},
+        cloud_api_key="legacy_polluted_key",
+    )
+    monkeypatch.setattr(st, "session_state", fake_state_empty, raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    assert _resolve_api_key_for_model("groq/llama-3.3-70b-versatile") is None

@@ -40,12 +40,28 @@ Activate the environment:
   source .venv/bin/activate
   ```
 
-### Step 2: Install Dependencies
+### Step 2: Automated Full Setup (Recommended)
 
-Use the tested production lockfile:
+Run the all-in-one setup tool to install dependencies, verify directories, download required GGUF models, and pre-cache local embedding and OCR models:
 ```bash
-pip install --upgrade pip
-pip install -r requirements-lock.txt
+python setup.py
+```
+
+Or run dedicated sub-commands as needed:
+```bash
+# Explicit full setup using requirements-lock.txt
+python setup.py setup --lockfile
+
+# Install only Python dependencies
+python setup.py --deps-only
+
+# Download only local models (GGUF weights + embedding/OCR cache)
+python setup.py download_models
+# Or via CLI flag:
+python setup.py --models-only
+
+# Standard editable package install
+pip install -e .
 ```
 
 > **Windows Symlink Tip**: If Hugging Face Hub warns about symlinks during embedding model downloads, either enable Developer Mode in Windows Settings (`Settings > System > For developers > Developer Mode`) or set the environment variable:
@@ -63,8 +79,19 @@ Download the pre-compiled `llama.cpp` release with CUDA support from the [offici
 - **Windows**: `llama-bXXXX-bin-win-cuda-cu12.4-x64.zip` (unzip and ensure `llama-server.exe` is in your PATH or in the repository root).
 - **Linux**: Compile with `make GGML_CUDA=1` or download the pre-built Linux CUDA package.
 
-### Step 2: Download Model Weights
+### Step 2: Download Model Weights & Pre-Cache Offline Models
 
+#### Option A: Automated via `setup.py` (Recommended)
+```bash
+python setup.py download_models
+```
+This automatically downloads:
+1. `models/qwen3-vl-2b-instruct-q4_k_m.gguf` (Qwen2-VL-2B Instruct base model)
+2. `models/mmproj-f16.gguf` (Multimodal vision adapter)
+3. Pre-caches SentenceTransformers `all-MiniLM-L6-v2` embedding weights in local HuggingFace cache.
+4. Pre-caches RapidOCR ONNX model weights in local cache for offline execution.
+
+#### Option B: Manual Download (Alternative)
 Create a `models/` directory in the repository root:
 ```bash
 mkdir models

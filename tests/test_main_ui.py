@@ -170,7 +170,6 @@ def test_clear_all_resets_cloud_posture_and_credentials():
         "_cached_cloud_model": "groq/llama-3.3-70b-versatile",
         "_cached_cloud_key": "gsk_secret",
         "cloud_api_keys": {"groq": "gsk_secret", "openai": "sk_secret", "anthropic": ""},
-        "cloud_api_key": "legacy_key",
     }
 
     # Simulate Clear All handler logic
@@ -183,8 +182,6 @@ def test_clear_all_resets_cloud_posture_and_credentials():
     mock_session["cloud_mode_toggle"] = False
     mock_session["user_consented"] = False
     mock_session["cloud_api_keys"] = {"groq": "", "openai": "", "anthropic": ""}
-    if "cloud_api_key" in mock_session:
-        mock_session["cloud_api_key"] = ""
 
     mock_provider.close.assert_called_once()
     assert mock_session["cloud_mode"] is False
@@ -192,7 +189,6 @@ def test_clear_all_resets_cloud_posture_and_credentials():
     assert mock_session["user_consented"] is False
     assert mock_session["active_cloud_provider"] is None
     assert mock_session["cloud_api_keys"] == {"groq": "", "openai": "", "anthropic": ""}
-    assert mock_session["cloud_api_key"] == ""
 
 
 def test_consent_dialog_approval_and_dismissal():

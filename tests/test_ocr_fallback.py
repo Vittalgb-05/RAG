@@ -324,3 +324,42 @@ def test_ocr_chunk_char_offsets_and_monotonic_ids():
     assert updated_chunks[1]["char_start"] is not None
     assert updated_chunks[1]["char_end"] is not None
     assert updated_chunks[1]["char_end"] > updated_chunks[1]["char_start"]
+
+
+def test_multithreaded_batch_ocr_processing():
+    """Verify concurrent thread-pool batch execution preserves page ordering across multi-page documents."""
+    mock_recognizer = MagicMock(
+        side_effect=lambda img: (
+            [[[[0, 0], [1, 0], [1, 1], [0, 1]], f"Text from {img.decode()}", 0.95]],
+            0.01,
+        )
+    )
+    mock_renderer = MagicMock(side_effect=lambda pdf, page_num: f"page_{page_num}_img".encode())
+    engine = OcrEngine(recognizer=mock_recognizer, renderer=mock_renderer)
+
+    pages = [
+        Page(doc_id="doc_batch", page_num=1, status="empty", char_count=0, num_chunks=0),
+        Page(doc_id="doc_batch", page_num=2, status="empty", char_count=0, num_chunks=0),
+        Page(doc_id="doc_batch", page_num=3, status="empty", char_count=0, num_chunks=0),
+    ]
+
+    pdf_bytes = b"%PDF-1.4..."
+    updated_pages, updated_chunks = apply_conditional_ocr(
+        pdf_bytes=pdf_bytes,
+        page_records=pages,
+        existing_chunks=[],
+        doc_id="doc_batch",
+        sha12="batch1234567",
+        filename="batch.pdf",
+        engine=engine,
+        threshold=50,
+    )
+
+    assert len(updated_pages) == 3
+    assert [p.page_num for p in updated_pages] == [1, 2, 3]
+    assert all(p.status == "ok" for p in updated_pages)
+    assert len(updated_chunks) == 3
+    assert [c["page"] for c in updated_chunks] == [1, 2, 3]
+    assert "Text from page_1_img" in updated_chunks[0]["content"]
+    assert "Text from page_2_img" in updated_chunks[1]["content"]
+    assert "Text from page_3_img" in updated_chunks[2]["content"]

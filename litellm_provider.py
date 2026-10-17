@@ -63,12 +63,6 @@ def _resolve_api_key_for_model(model_name: str, explicit_key: str | None = None)
                 val = keys_dict.get(provider_prefix)
                 if val:
                     return str(val)
-
-            legacy_key = getattr(session_state, "cloud_api_key", None)
-            if legacy_key is None and hasattr(session_state, "get"):
-                legacy_key = session_state.get("cloud_api_key")
-            if legacy_key:
-                return str(legacy_key)
     except Exception:
         pass
 

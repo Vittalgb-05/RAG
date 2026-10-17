@@ -31,6 +31,21 @@ CANONICAL_ABSTENTION_MARKERS = [
     "the document does not contain sufficient evidence",
 ]
 
+KNOWN_ADVERSARIAL_DIRECTIVES: tuple[str, ...] = (
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "disregard all previous",
+    "disregard previous instructions",
+    "system prompt:",
+    "system prompt leak",
+    "developer instructions:",
+    "jailbreak successful",
+    "dan mode",
+    "bypass security controls",
+    "you have been hacked",
+    "i have been instructed to ignore",
+)
+
 
 class CitationVerificationResult(BaseModel):
     """Result schema for automated response citation precision verification."""
@@ -46,7 +61,26 @@ class CitationVerificationResult(BaseModel):
     )
     cited_ranks: list[int] = Field(default_factory=list, description="Sorted list of valid 1-based snippet ranks.")
     abstention_detected: bool = Field(default=False, description="Whether response explicitly abstains from answering.")
+    injection_detected: bool = Field(
+        default=False, description="Whether adversarial prompt injection directive was detected."
+    )
     message: str = Field(default="", description="Human-readable verification diagnostic.")
+
+
+def detect_adversarial_injection(text: str) -> tuple[bool, str | None]:
+    """Detect whether text echoes or executes known adversarial prompt injection directives.
+
+    Args:
+        text: Assistant response text.
+
+    Returns:
+        Tuple of (is_detected, matched_pattern).
+    """
+    lower = text.lower().strip()
+    for directive in KNOWN_ADVERSARIAL_DIRECTIVES:
+        if directive in lower:
+            return True, directive
+    return False, None
 
 
 def extract_citations(text: str) -> list[int]:
@@ -113,7 +147,22 @@ def validate_citations(
 
     max_valid_rank = len(retrieval_result.snippets) if retrieval_result and retrieval_result.snippets else 0
 
-    # 2. Check for explicit abstention (QA-04)
+    # 2. Check for adversarial prompt injection directive echo (Security mitigation)
+    has_injection, injection_pattern = detect_adversarial_injection(text)
+    if has_injection:
+        return CitationVerificationResult(
+            is_valid=False,
+            precision=0.0,
+            total_citations=total_claimed,
+            valid_citations=[],
+            hallucinated_citations=[f"[E{r}]" for r in ranks],
+            cited_ranks=[],
+            abstention_detected=False,
+            injection_detected=True,
+            message=f"Adversarial prompt injection directive detected in output ('{injection_pattern}'). Grounding validation rejected for security.",
+        )
+
+    # 3. Check for explicit abstention (QA-04)
     if is_abstention(text):
         if total_claimed == 0:
             return CitationVerificationResult(
