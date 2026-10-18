@@ -12,6 +12,15 @@ CLEAN_PDF = CORPUS_DIR / "clean_digital.pdf"
 SCANNED_PDF = CORPUS_DIR / "scanned_sample.pdf"
 
 
+def test_ocr_fallback_uses_modern_pymupdf_import():
+    """Regression: use `import pymupdf` rather than the deprecated `fitz` alias (no startup warning)."""
+    import pymupdf
+
+    import ocr_fallback
+
+    assert ocr_fallback.fitz is pymupdf
+
+
 def test_should_ocr_page_thresholds():
     """Verify < 50 character threshold and status conditions."""
     # Under 50 chars -> triggers

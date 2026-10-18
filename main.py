@@ -36,6 +36,7 @@ from hybrid_retriever import HybridRetriever
 from litellm_provider import LiteLLMProvider
 from local_embedding import LocalEmbedding
 from local_llm import AiModel
+from logging_setup import suppress_torch_classes_scan_warning
 from models import Chunk, Document, Page, cache_dir_for
 from ocr_fallback import apply_conditional_ocr
 from prompt_budget import bound_chat_history
@@ -45,6 +46,9 @@ from upload_validation import MAX_FILE_MB, validate_pdf_bytes
 from visual_analyzer import VisualAnalyzer
 
 logger = logging.getLogger(__name__)
+
+# Silence Streamlit's benign file-watcher traceback for `torch.classes` (see logging_setup).
+suppress_torch_classes_scan_warning()
 
 MAX_CHAT_TURNS = 50
 

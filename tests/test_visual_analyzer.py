@@ -381,3 +381,12 @@ def test_max_regions_cap_enforced():
         max_regions=5,
     )
     assert len(elements) == 5
+
+
+def test_visual_analyzer_uses_modern_pymupdf_import():
+    """Regression: use `import pymupdf` rather than the deprecated `fitz` alias (no startup warning)."""
+    import pymupdf
+
+    import visual_analyzer
+
+    assert visual_analyzer.fitz is pymupdf

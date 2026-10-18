@@ -15,7 +15,7 @@ from models import BBox, EvidenceElement
 logger = logging.getLogger(__name__)
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz  # Modern import; the legacy `fitz` alias is deprecated in PyMuPDF >= 1.24
 except ImportError:
     fitz = None  # type: ignore[assignment]
 
