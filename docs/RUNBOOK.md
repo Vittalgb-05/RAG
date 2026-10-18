@@ -86,7 +86,7 @@ Download the pre-compiled `llama.cpp` release with CUDA support from the [offici
 python setup.py download_models
 ```
 This automatically downloads:
-1. `models/qwen3-vl-2b-instruct-q4_k_m.gguf` (Qwen2-VL-2B Instruct base model)
+1. `models/qwen3-vl-2b-instruct-q4_k_m.gguf` (Qwen2-VL 2B Instruct GGUF weights, saved locally as `qwen3-vl-2b-instruct-q4_k_m.gguf`)
 2. `models/mmproj-f16.gguf` (Multimodal vision adapter)
 3. Pre-caches SentenceTransformers `all-MiniLM-L6-v2` embedding weights in local HuggingFace cache.
 4. Pre-caches RapidOCR ONNX model weights in local cache for offline execution.
@@ -97,7 +97,7 @@ Create a `models/` directory in the repository root:
 mkdir models
 ```
 
-Download the 4-bit quantized Qwen3-VL 2B model and multimodal projection weights:
+Download the 4-bit quantized Qwen2-VL 2B Instruct model weights and multimodal projection adapter (saved locally as `qwen3-vl-2b-instruct-q4_k_m.gguf`):
 ```bash
 # 1. Main model GGUF (~1.4 GB)
 curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/qwen2-vl-2b-instruct-q4_k_m.gguf
