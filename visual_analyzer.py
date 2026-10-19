@@ -6,6 +6,7 @@ queries the active BaseModelProvider via analyze_image, and produces canonical
 EvidenceElement records with isolated model provenance (VIS-01, VIS-02, VIS-03).
 """
 
+import hashlib
 import logging
 from typing import Any
 
@@ -43,6 +44,7 @@ class VisualAnalyzer:
         """
         self._region_detector = region_detector
         self._cropper = cropper
+        self._region_cache: dict[str, list[dict[str, Any]]] = {}
 
     def detect_visual_regions(self, pdf_bytes: bytes) -> list[dict[str, Any]]:
         """Detect bounding boxes for raster images and vector diagrams.
@@ -55,6 +57,13 @@ class VisualAnalyzer:
         """
         if self._region_detector is not None:
             return self._region_detector(pdf_bytes)
+
+        if not pdf_bytes:
+            return []
+
+        pdf_sha = hashlib.sha256(pdf_bytes).hexdigest()
+        if pdf_sha in self._region_cache:
+            return list(self._region_cache[pdf_sha])
 
         if fitz is None:
             logger.warning("PyMuPDF (fitz) is not installed; visual region detection skipped.")
@@ -133,6 +142,7 @@ class VisualAnalyzer:
         except Exception as e:
             logger.error("Visual region detection error: %s", e)
 
+        self._region_cache[pdf_sha] = list(regions)
         return regions
 
     def crop_visual_element(
@@ -261,10 +271,14 @@ class VisualAnalyzer:
 
             if supports_vision and provider is not None and crop_bytes:
                 try:
-                    description = provider.analyze_image(
-                        image_bytes=crop_bytes,
-                        prompt=prompt,
-                    )
+                    # Concurrency gate: serialize visual inference with GPU chat & summarization
+                    from local_llm import InferenceGate
+
+                    with InferenceGate.hold(timeout=60.0):
+                        description = provider.analyze_image(
+                            image_bytes=crop_bytes,
+                            prompt=prompt,
+                        )
                 except Exception as err:
                     logger.error("VLM image analysis failed for %s: %s", element_id, err)
                     description = f"[Visual element: analysis failed: {err}]"

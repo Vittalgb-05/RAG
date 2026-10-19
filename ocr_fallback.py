@@ -109,6 +109,14 @@ class OcrEngine:
                         return None
                     page = doc.load_page(page_num - 1)
                     zoom = eff_dpi / 72.0
+                    # Bounded resource guard: limit total rendered pixels to 2048x2048 (~4.2M px)
+                    page_rect = page.rect
+                    max_total_pixels = 2048 * 2048
+                    est_pixels = (page_rect.width * zoom) * (page_rect.height * zoom)
+                    if est_pixels > max_total_pixels:
+                        scale = (max_total_pixels / max(1.0, est_pixels)) ** 0.5
+                        zoom = max(0.5, zoom * scale)
+
                     matrix = fitz.Matrix(zoom, zoom)
                     pix = page.get_pixmap(matrix=matrix)
                     return pix.tobytes("png")

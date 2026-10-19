@@ -75,6 +75,7 @@ class DoclingReader:
         self.pages_text = ""
         self.page_chunks: list[dict[str, Any]] = []
         self.page_records: list[Page] = []
+        self.fallback_used: bool = False
 
     @staticmethod
     def _export_table_markdown(table_obj: Any, doc: Any = None) -> str:
@@ -115,6 +116,7 @@ class DoclingReader:
 
         if not self._has_docling:
             logger.info("docling package missing; using PdfReader fallback for %s.", self.filename)
+            self.fallback_used = True
             self.pages_text = self._fallback_reader.extract_text(doc_id=effective_doc_id, sha12=chunk_prefix)
             self.page_chunks = self._fallback_reader.get_paragraphs()
             self.page_records = self._fallback_reader.get_page_records()
@@ -206,6 +208,7 @@ class DoclingReader:
                     "No items extracted by docling for %s; falling back to PdfReader.",
                     self.filename,
                 )
+                self.fallback_used = True
                 self.pages_text = self._fallback_reader.extract_text(doc_id=effective_doc_id, sha12=chunk_prefix)
                 self.page_chunks = self._fallback_reader.get_paragraphs()
                 self.page_records = self._fallback_reader.get_page_records()
@@ -308,6 +311,7 @@ class DoclingReader:
 
         except Exception as err:
             logger.warning("Conversion error (%s); falling back to PdfReader.", err)
+            self.fallback_used = True
             self.pages_text = self._fallback_reader.extract_text(doc_id=effective_doc_id, sha12=chunk_prefix)
             self.page_chunks = self._fallback_reader.get_paragraphs()
             self.page_records = self._fallback_reader.get_page_records()

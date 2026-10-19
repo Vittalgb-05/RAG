@@ -290,3 +290,20 @@ def test_endpoint_loopback_accepted_addresses() -> None:
         provider = LlamaCppProvider(base_url=url)
         assert provider.base_url == url.rstrip("/")
         provider.close()
+
+
+def test_endpoint_docker_hostnames_accepted() -> None:
+    """Test Docker internal hostnames are accepted for containerized deployments."""
+    for url in ["http://host.docker.internal:8080", "http://llama-server:8080"]:
+        provider = LlamaCppProvider(base_url=url)
+        assert provider.base_url == url
+        provider.close()
+
+
+def test_endpoint_env_vars_consumed(monkeypatch) -> None:
+    """Test LLAMA_SERVER_HOST and LLAMA_SERVER_PORT are consumed when base_url is omitted."""
+    monkeypatch.setenv("LLAMA_SERVER_HOST", "host.docker.internal")
+    monkeypatch.setenv("LLAMA_SERVER_PORT", "9090")
+    provider = LlamaCppProvider()
+    assert provider.base_url == "http://host.docker.internal:9090"
+    provider.close()

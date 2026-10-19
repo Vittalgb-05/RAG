@@ -242,16 +242,15 @@ class DocStore:
             rows = cursor.fetchall()
             return [Document.model_validate(dict(row)) for row in rows]
 
-    def record_page(self, page: Page) -> None:
+    def record_pages_batch(self, pages: list[Page]) -> None:
         """
-        Insert or update a page-level extraction record.
+        Store a batch of page records in a single atomic transaction.
 
         Args:
-            page: Canonical Page instance.
+            pages: List of canonical Page instances.
         """
-        if not isinstance(page, Page):
-            raise TypeError(f"Expected Page instance, got {type(page).__name__}")
-
+        if not pages:
+            return
         query = """
         INSERT INTO pages (doc_id, page_num, status, char_count, error, num_chunks)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -261,19 +260,32 @@ class DocStore:
             error = excluded.error,
             num_chunks = excluded.num_chunks;
         """
-        with self._connect() as conn:
-            conn.execute(
-                query,
+        params = []
+        for p in pages:
+            if not isinstance(p, Page):
+                raise TypeError(f"Expected Page instance, got {type(p).__name__}")
+            params.append(
                 (
-                    page.doc_id,
-                    page.page_num,
-                    page.status,
-                    page.char_count,
-                    page.error,
-                    page.num_chunks,
-                ),
+                    p.doc_id,
+                    p.page_num,
+                    p.status,
+                    p.char_count,
+                    p.error,
+                    p.num_chunks,
+                )
             )
+        with self._connect() as conn:
+            conn.executemany(query, params)
             conn.commit()
+
+    def record_page(self, page: Page) -> None:
+        """
+        Insert or update a page-level extraction record.
+
+        Args:
+            page: Canonical Page instance.
+        """
+        self.record_pages_batch([page])
 
     def record_chunks(self, chunks: list[Chunk]) -> None:
         """
