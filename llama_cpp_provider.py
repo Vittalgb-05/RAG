@@ -9,6 +9,9 @@ import base64
 from collections.abc import Generator
 import ipaddress
 import json
+from pathlib import Path
+import shutil
+import sys
 import time
 from urllib.parse import urlparse
 
@@ -100,8 +103,15 @@ class LlamaCppProvider(BaseModelProvider):
             )
         except (httpx.ConnectError, httpx.ConnectTimeout):
             elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+            local_bin = (
+                Path(__file__).resolve().parent
+                / "tools"
+                / "llama-server"
+                / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
+            )
+            bin_cmd = str(local_bin) if local_bin.exists() and not shutil.which("llama-server") else "llama-server"
             setup_cmd = (
-                f"llama-server -m models/{self.model_name}-instruct-q4_k_m.gguf "
+                f"{bin_cmd} -m models/{self.model_name}-instruct-q4_k_m.gguf "
                 f"--mmproj models/mmproj-f16.gguf -c {self.context_window} -ngl 28 --port 8080"
             )
             return HealthStatus(

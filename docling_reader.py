@@ -76,6 +76,21 @@ class DoclingReader:
         self.page_chunks: list[dict[str, Any]] = []
         self.page_records: list[Page] = []
 
+    @staticmethod
+    def _export_table_markdown(table_obj: Any, doc: Any = None) -> str:
+        """Safely export a table to markdown, supplying parent doc to suppress deprecation warnings."""
+        if not hasattr(table_obj, "export_to_markdown"):
+            return ""
+        try:
+            if doc is not None:
+                try:
+                    return str(table_obj.export_to_markdown(doc=doc) or "")
+                except TypeError:
+                    return str(table_obj.export_to_markdown() or "")
+            return str(table_obj.export_to_markdown() or "")
+        except Exception:
+            return ""
+
     def extract_text(
         self,
         doc_id: str | None = None,
@@ -134,7 +149,7 @@ class DoclingReader:
                     # Check if item is a TableItem with markdown export
                     if hasattr(item, "export_to_markdown"):
                         try:
-                            table_md = item.export_to_markdown()
+                            table_md = self._export_table_markdown(item, doc=docling_doc)
                             if table_md and table_md.strip():
                                 page_items[page_no].append(table_md.strip())
                                 continue
@@ -146,7 +161,7 @@ class DoclingReader:
                             for t in docling_doc.tables:
                                 t_page = getattr(t.prov[0], "page_no", 1) if hasattr(t, "prov") and t.prov else 1
                                 if t_page == page_no and hasattr(t, "export_to_markdown"):
-                                    t_md = t.export_to_markdown()
+                                    t_md = self._export_table_markdown(t, doc=docling_doc)
                                     if t_md and t_md.strip() and t_md.strip() not in page_items[page_no]:
                                         page_items[page_no].append(t_md.strip())
                                         table_exported = True
@@ -164,7 +179,7 @@ class DoclingReader:
                     page_no = 1
                     if hasattr(table, "prov") and table.prov:
                         page_no = getattr(table.prov[0], "page_no", 1)
-                    table_md = table.export_to_markdown() if hasattr(table, "export_to_markdown") else ""
+                    table_md = self._export_table_markdown(table, doc=docling_doc)
                     if table_md and table_md.strip() and table_md.strip() not in page_items[page_no]:
                         page_items[page_no].append(table_md.strip())
 

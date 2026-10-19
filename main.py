@@ -37,7 +37,7 @@ from litellm_provider import LiteLLMProvider
 from local_embedding import LocalEmbedding
 from local_llm import AiModel
 from logging_setup import suppress_torch_classes_scan_warning
-from models import Chunk, Document, Page, cache_dir_for
+from models import Chunk, Document, EvidenceElement, Page, cache_dir_for
 from ocr_fallback import apply_conditional_ocr
 from prompt_budget import bound_chat_history
 from resource_telemetry import get_gpu_memory_info, get_process_memory_info
@@ -114,6 +114,7 @@ st.set_page_config(
 
 for key, default in [
     ("doc_ids", set()),  # set of doc_id hashes we have already indexed in this session
+    ("failed_doc_ids", set()),  # set of doc_ids that failed extraction/indexing in this session
     ("indexed_files", set()),  # set of filenames displayed in the UI
     ("document_metadata", {}),  # dict mapping filename -> metadata dict
     ("local_embedding", None),  # unified index spanning all uploaded documents
@@ -450,7 +451,9 @@ with st.sidebar:
                             new_pdf_uploaded = True
                     continue
 
-                new_pdf_uploaded = True
+                if doc_id in st.session_state.failed_doc_ids:
+                    st.error(f"Processing previously failed for `{filename}`. Remove and re-upload to retry.")
+                    continue
 
                 # 4. Text extraction with page-level fault isolation and progress indicator
                 st.write(f"Extracting text from `{filename}`…")
@@ -459,6 +462,7 @@ with st.sidebar:
                 # CR-02: Guard reader construction and text extraction against malformed PDFs
                 paragraphs: list[dict[str, Any]] = []
                 page_records: list[Page] = []
+                evidence_elements: list[EvidenceElement] = []
                 try:
                     pdf_stream = io.BytesIO(raw_bytes)
                     docling_reader = DoclingReader(pdf_stream, filename=filename)
@@ -487,17 +491,68 @@ with st.sidebar:
                         if (active_provider is not None and active_provider.get_capabilities().is_local)
                         else None
                     )
-                    evidence_elements = visual_analyzer.analyze_visual_elements(
-                        pdf_bytes=raw_bytes,
-                        doc_id=doc_id,
-                        provider=local_vlm_provider,
-                    )
-                    if evidence_elements:
-                        doc_store.record_evidence_elements(evidence_elements)
+
+                    detected_regions = visual_analyzer.detect_visual_regions(raw_bytes)
+                    if (
+                        detected_regions
+                        and local_vlm_provider is not None
+                        and local_vlm_provider.get_capabilities().supports_vision
+                    ):
+                        with st.status(
+                            f"Analyzing visual elements in `{filename}` with local VLM on GPU...",
+                            expanded=False,
+                        ) as vision_status:
+
+                            def _vision_progress(cur: int, tot: int, desc: str) -> None:
+                                if vision_status:
+                                    vision_status.update(label=f"Analyzing visual elements: {cur}/{tot} ({desc})...")
+
+                            evidence_elements = visual_analyzer.analyze_visual_elements(
+                                pdf_bytes=raw_bytes,
+                                doc_id=doc_id,
+                                provider=local_vlm_provider,
+                                progress_callback=_vision_progress,
+                            )
+                            if vision_status:
+                                vision_status.update(
+                                    label=f"Visual analysis complete ({len(evidence_elements)} elements)",
+                                    state="complete",
+                                    expanded=False,
+                                )
+                    else:
+                        evidence_elements = visual_analyzer.analyze_visual_elements(
+                            pdf_bytes=raw_bytes,
+                            doc_id=doc_id,
+                            provider=local_vlm_provider,
+                        )
 
                 except Exception as err:
                     st.error(f"Could not extract text from `{filename}` ({err})")
+                    st.session_state.failed_doc_ids.add(doc_id)
                     continue
+
+                # Upsert Document record FIRST to satisfy SQLite Foreign Key constraints for evidence_elements & summaries
+                now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                doc_model = Document(
+                    doc_id=doc_id,
+                    filename=filename,
+                    sha256=validated.sha256,
+                    size_bytes=validated.size_bytes,
+                    num_pages=validated.num_pages,
+                    status="indexed",
+                    upload_time=now_iso,
+                    num_chunks=len(paragraphs),
+                )
+                try:
+                    doc_store.upsert_document(doc_model)
+                except sqlite3.IntegrityError:
+                    st.info(f"Document `{filename}` already recorded.")
+
+                if evidence_elements:
+                    try:
+                        doc_store.record_evidence_elements(evidence_elements)
+                    except Exception as ev_err:
+                        logger.warning("Failed to record evidence elements for %s: %s", doc_id, ev_err)
 
                 for idx, page in enumerate(page_records):
                     doc_store.record_page(page)
@@ -520,22 +575,6 @@ with st.sidebar:
                 # 6. Persist metadata and chunks in DocStore (CR-03 & WR-03)
                 chunk_models = [Chunk.model_validate(p) for p in paragraphs]
                 doc_store.record_chunks(chunk_models)
-
-                now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                doc_model = Document(
-                    doc_id=doc_id,
-                    filename=filename,
-                    sha256=validated.sha256,
-                    size_bytes=validated.size_bytes,
-                    num_pages=validated.num_pages,
-                    status="indexed",
-                    upload_time=now_iso,
-                    num_chunks=len(paragraphs),
-                )
-                try:
-                    doc_store.upsert_document(doc_model)
-                except sqlite3.IntegrityError:
-                    st.info(f"Document `{filename}` already recorded.")
 
                 # 7. Best-effort disk cache write (STORE-03)
                 try:
@@ -561,6 +600,7 @@ with st.sidebar:
                     "pages": validated.num_pages,
                     "chunks": len(paragraphs),
                 }
+                new_pdf_uploaded = True
                 st.success(f"**`{filename}`** indexed successfully (`{doc_id}`)")
 
             if new_pdf_uploaded:

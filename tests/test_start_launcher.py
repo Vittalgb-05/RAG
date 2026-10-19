@@ -32,6 +32,29 @@ def test_ensure_directories(tmp_path):
         assert (tmp_path / "data").exists()
         assert (tmp_path / ".cache").exists()
         assert (tmp_path / "models").exists()
+        assert (tmp_path / "tools").exists()
+
+
+def test_get_llama_server_binary_prefers_path(tmp_path):
+    """Verify get_llama_server_binary returns binary from PATH when found."""
+    with patch("shutil.which", return_value="/usr/local/bin/llama-server"):
+        from pathlib import Path
+
+        assert start.get_llama_server_binary() == Path("/usr/local/bin/llama-server")
+
+
+def test_get_llama_server_binary_finds_local_tools(tmp_path):
+    """Verify get_llama_server_binary finds local tools binary when not in PATH."""
+    local_bin = (
+        tmp_path / "tools" / "llama-server" / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
+    )
+    local_bin.parent.mkdir(parents=True, exist_ok=True)
+    local_bin.write_text("binary", encoding="utf-8")
+
+    with patch("shutil.which", return_value=None):
+        with patch("start.REPO_ROOT", tmp_path):
+            found = start.get_llama_server_binary()
+            assert found == local_bin
 
 
 def test_check_llama_server_healthy(capsys):
@@ -91,3 +114,19 @@ def test_main_cli_args_parsing():
                         rc = start.main()
                         assert rc == 0
                         mock_launch.assert_called_once_with(port=9000, host="127.0.0.1", headless=True)
+
+
+def test_main_cli_start_llama_lifecycle(tmp_path):
+    """Verify main() spawns and terminates background llama-server when --start-llama is passed."""
+    mock_proc = MagicMock()
+    test_args = ["start.py", "--start-llama"]
+    with patch.object(sys, "argv", test_args):
+        with patch("start.check_python_version", return_value=True):
+            with patch("start.ensure_directories"):
+                with patch("start.start_llama_server_process", return_value=mock_proc) as mock_start:
+                    with patch("start.launch_streamlit", return_value=0):
+                        rc = start.main()
+                        assert rc == 0
+                        mock_start.assert_called_once()
+                        mock_proc.terminate.assert_called_once()
+                        mock_proc.wait.assert_called_once_with(timeout=5)

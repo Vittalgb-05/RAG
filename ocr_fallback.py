@@ -144,14 +144,32 @@ class OcrEngine:
                 return "", 0.0
 
             res = self._recognizer(image_data)
-            # RapidOCR returns tuple (result, elapse) or raw result list
-            result_list = res[0] if isinstance(res, tuple) else res
-            if not result_list:
+            # RapidOCR v3+ returns RapidOCROutput dataclass (with .txts and .scores)
+            # Older versions or wrappers return tuple (result, elapse) or raw result list.
+            target = res[0] if isinstance(res, tuple) and len(res) > 0 else res
+
+            # Handle RapidOCROutput or objects with .txts attribute
+            if hasattr(target, "txts"):
+                raw_txts = getattr(target, "txts", None) or ()
+                raw_scores = getattr(target, "scores", None) or ()
+                lines = [str(t).strip() for t in raw_txts if str(t).strip()]
+                scores: list[float] = []
+                for s in raw_scores:
+                    try:
+                        scores.append(float(s))
+                    except (ValueError, TypeError):
+                        pass
+                full_text = "\n".join(lines)
+                avg_score = sum(scores) / len(scores) if scores else 0.0
+                return full_text, avg_score
+
+            # Guard against non-iterable target
+            if not isinstance(target, (list, tuple)):
                 return "", 0.0
 
             lines: list[str] = []
             scores: list[float] = []
-            for item in result_list:
+            for item in target:
                 # Format: [[box_points], text, score]
                 if isinstance(item, (list, tuple)) and len(item) >= 3:
                     text_line = str(item[1]).strip()

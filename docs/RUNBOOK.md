@@ -73,10 +73,16 @@ pip install -e .
 
 ## 3. Local Model Acquisition (llama.cpp)
 
-### Step 1: Download `llama-server`
+### Step 1: Automated Download of `llama-server` via `setup.py`
 
-Download the pre-compiled `llama.cpp` release with CUDA support from the [official llama.cpp releases](https://github.com/ggerganov/llama.cpp/releases):
-- **Windows**: `llama-bXXXX-bin-win-cuda-cu12.4-x64.zip` (unzip and ensure `llama-server.exe` is in your PATH or in the repository root).
+`setup.py` automatically detects your GPU (CUDA on NVIDIA GPUs vs CPU) and installs `llama-server` into `tools/llama-server/`:
+```bash
+python setup.py --llama-server
+```
+*(Or run `python setup.py` for the complete initial setup: dependencies, models, and llama-server in one pass).*
+
+Alternatively, you can manually download `llama.cpp` releases from the [official llama.cpp releases](https://github.com/ggerganov/llama.cpp/releases):
+- **Windows**: `llama-bXXXX-bin-win-cuda-12.4-x64.zip` + `cudart-llama-bin-win-cuda-12.4-x64.zip` (extract into `tools/llama-server` or system PATH).
 - **Linux**: Compile with `make GGML_CUDA=1` or download the pre-built Linux CUDA package.
 
 ### Step 2: Download Model Weights & Pre-Cache Offline Models
@@ -114,7 +120,11 @@ Launch `llama-server` with parameters specifically tuned for 4 GB VRAM systems:
 
 ### Windows PowerShell:
 ```powershell
-.\llama-server.exe `
+# Option 1: Automatic combined launch (starts llama-server and Streamlit UI together)
+python start.py --start-llama
+
+# Option 2: Run llama-server manually in a separate window
+.\tools\llama-server\llama-server.exe `
   -m models/qwen3-vl-2b-instruct-q4_k_m.gguf `
   --mmproj models/mmproj-f16.gguf `
   -c 4096 `

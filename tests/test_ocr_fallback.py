@@ -372,3 +372,54 @@ def test_multithreaded_batch_ocr_processing():
     assert "Text from page_1_img" in updated_chunks[0]["content"]
     assert "Text from page_2_img" in updated_chunks[1]["content"]
     assert "Text from page_3_img" in updated_chunks[2]["content"]
+
+
+def test_rapidocr_output_dataclass_handling():
+    """Verify ocr_page_image correctly extracts text/scores from modern RapidOCROutput dataclasses."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeRapidOCROutput:
+        boxes: list | None
+        txts: tuple[str, ...] | None
+        scores: tuple[float, ...] | None
+
+    output = FakeRapidOCROutput(
+        boxes=None,
+        txts=("Heading line 1", "Body text line 2"),
+        scores=(0.98, 0.94),
+    )
+    mock_recognizer = MagicMock(return_value=output)
+    engine = OcrEngine(recognizer=mock_recognizer)
+
+    text, avg_score = engine.ocr_page_image(b"fake_image_bytes")
+    assert text == "Heading line 1\nBody text line 2"
+    assert round(avg_score, 2) == 0.96
+
+
+def test_rapidocr_output_dataclass_empty_handling():
+    """Verify ocr_page_image handles empty RapidOCROutput (None txts/scores) gracefully."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeRapidOCROutput:
+        boxes: list | None = None
+        txts: tuple[str, ...] | None = None
+        scores: tuple[float, ...] | None = None
+
+    mock_recognizer = MagicMock(return_value=FakeRapidOCROutput())
+    engine = OcrEngine(recognizer=mock_recognizer)
+
+    text, avg_score = engine.ocr_page_image(b"fake_image_bytes")
+    assert text == ""
+    assert avg_score == 0.0
+
+
+def test_rapidocr_non_iterable_unrecognized_output_does_not_crash():
+    """Verify unexpected non-iterable object does not raise TypeError."""
+    mock_recognizer = MagicMock(return_value=object())
+    engine = OcrEngine(recognizer=mock_recognizer)
+
+    text, avg_score = engine.ocr_page_image(b"fake_image_bytes")
+    assert text == ""
+    assert avg_score == 0.0

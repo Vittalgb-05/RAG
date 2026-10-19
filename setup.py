@@ -19,9 +19,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from typing import Any
 
 from setuptools import Command, find_packages, setup
@@ -77,15 +79,16 @@ MODEL_REGISTRY: list[dict[str, Any]] = [
 
 
 def ensure_project_directories() -> None:
-    """Ensure runtime persistence and cache directories exist."""
+    """Ensure runtime persistence, tools, and cache directories exist."""
     dirs = [
         REPO_ROOT / "models",
         REPO_ROOT / "data",
         REPO_ROOT / ".cache",
+        REPO_ROOT / "tools",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
-    print("✓ Project directories initialized (models/, data/, .cache/)")
+    print("✓ Project directories initialized (models/, data/, .cache/, tools/)")
 
 
 def format_bytes(size: int | float) -> str:
@@ -282,6 +285,214 @@ def download_all_models(
     return all_ok
 
 
+LLAMA_SERVER_RELEASE = "b11718"
+LLAMA_SERVER_BASE_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
+LLAMA_SERVER_MIRROR_BASE_URL = f"https://github.com/ggerganov/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
+
+
+def detect_nvidia_gpu() -> bool:
+    """Detect if an NVIDIA GPU with driver support is available."""
+    try:
+        res = subprocess.run(["nvidia-smi"], capture_output=True, timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def get_local_llama_server_path(tools_dir: Path | None = None) -> Path:
+    """Return local path to llama-server executable."""
+    base = tools_dir or (REPO_ROOT / "tools" / "llama-server")
+    return base / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
+
+
+def download_and_extract_archive(
+    urls: list[str],
+    dest_dir: Path,
+    archive_name: str,
+    min_size_bytes: int = 1_000_000,
+    force: bool = False,
+) -> bool:
+    """Download an archive and extract its contents into dest_dir.
+
+    Args:
+        urls: List of mirror URLs for the archive.
+        dest_dir: Directory where archive contents should be extracted.
+        archive_name: Filename of the temporary downloaded archive.
+        min_size_bytes: Minimum expected archive size.
+        force: If True, re-download archive.
+
+    Returns:
+        True if successfully downloaded and extracted.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    temp_archive = dest_dir / archive_name
+
+    download_ok = download_file_with_progress(
+        urls=urls,
+        dest_path=temp_archive,
+        min_size_bytes=min_size_bytes,
+        force=force,
+    )
+    if not download_ok:
+        return False
+
+    print(f"  📦 Extracting {archive_name} to {dest_dir.name}...")
+    try:
+        if archive_name.endswith(".zip"):
+            with zipfile.ZipFile(temp_archive, "r") as z:
+                z.extractall(dest_dir)
+        elif archive_name.endswith((".tar.gz", ".tgz")):
+            with tarfile.open(temp_archive, "r:gz") as t:
+                t.extractall(dest_dir)
+        else:
+            print(f"  ⚠️ Unsupported archive format: {archive_name}")
+            return False
+
+        temp_archive.unlink(missing_ok=True)
+        return True
+    except Exception as err:
+        print(f"  ❌ Error extracting {archive_name}: {err}")
+        temp_archive.unlink(missing_ok=True)
+        return False
+
+
+def setup_llama_server(
+    tools_dir: Path | None = None,
+    force: bool = False,
+    cpu_only: bool = False,
+) -> bool:
+    """Download, extract, and verify native llama-server binary.
+
+    Args:
+        tools_dir: Target tools directory (default: tools/llama-server).
+        force: If True, re-download even if already present.
+        cpu_only: If True, force CPU build regardless of GPU presence.
+
+    Returns:
+        True if llama-server is ready and operational, False otherwise.
+    """
+    dest_dir = tools_dir or (REPO_ROOT / "tools" / "llama-server")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    exe_path = get_local_llama_server_path(dest_dir)
+
+    print("=" * 68)
+    print("  ⚙️ LLAMA-SERVER ACQUISITION & NATIVE RUNTIME SETUP")
+    print("=" * 68)
+
+    # 1. Check if already installed and runnable
+    if not force and exe_path.exists():
+        try:
+            res = subprocess.run([str(exe_path), "--version"], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                print(f"  ✓ Native llama-server already installed and operational at:\n     {exe_path}")
+                print("=" * 68)
+                return True
+        except Exception:
+            print("  ⚠️ Existing llama-server failed verification check. Re-installing...")
+
+    has_gpu = detect_nvidia_gpu() and not cpu_only
+    print(f"  • Platform: {sys.platform} | NVIDIA GPU Detected: {has_gpu} (cpu_only={cpu_only})")
+
+    # 2. Acquire platform binary
+    if sys.platform == "win32":
+        if has_gpu:
+            print("  • Targeting Windows x64 with CUDA 12 acceleration...")
+            cuda_bin_urls = [
+                f"{LLAMA_SERVER_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-win-cuda-12.4-x64.zip",
+                f"{LLAMA_SERVER_MIRROR_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-win-cuda-12.4-x64.zip",
+            ]
+            cuda_rt_urls = [
+                f"{LLAMA_SERVER_BASE_URL}/cudart-llama-bin-win-cuda-12.4-x64.zip",
+                f"{LLAMA_SERVER_MIRROR_BASE_URL}/cudart-llama-bin-win-cuda-12.4-x64.zip",
+            ]
+
+            bin_ok = download_and_extract_archive(
+                urls=cuda_bin_urls,
+                dest_dir=dest_dir,
+                archive_name=f"llama-{LLAMA_SERVER_RELEASE}-win-cuda.zip",
+                min_size_bytes=50_000_000,
+                force=force,
+            )
+            rt_ok = download_and_extract_archive(
+                urls=cuda_rt_urls,
+                dest_dir=dest_dir,
+                archive_name=f"cudart-{LLAMA_SERVER_RELEASE}-win.zip",
+                min_size_bytes=50_000_000,
+                force=force,
+            )
+
+            # Test execution of CUDA binary
+            if bin_ok and rt_ok and exe_path.exists():
+                try:
+                    res = subprocess.run([str(exe_path), "--version"], capture_output=True, text=True, timeout=5)
+                    if res.returncode == 0:
+                        print(f"\n  ✓ llama-server with CUDA acceleration successfully configured at:\n     {exe_path}")
+                        print("=" * 68)
+                        return True
+                except Exception as err:
+                    print(f"  ⚠️ CUDA build verification failed ({err}). Falling back to CPU build...")
+
+        # Fallback or CPU mode for Windows
+        print("  • Targeting Windows x64 CPU build...")
+        cpu_urls = [
+            f"{LLAMA_SERVER_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-win-cpu-x64.zip",
+            f"{LLAMA_SERVER_MIRROR_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-win-cpu-x64.zip",
+        ]
+        download_and_extract_archive(
+            urls=cpu_urls,
+            dest_dir=dest_dir,
+            archive_name=f"llama-{LLAMA_SERVER_RELEASE}-win-cpu.zip",
+            min_size_bytes=10_000_000,
+            force=force,
+        )
+
+    elif sys.platform == "linux":
+        if has_gpu:
+            print("  • Targeting Linux x86_64 with CUDA acceleration...")
+            urls = [
+                f"{LLAMA_SERVER_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-cuda-12.8-x64.tar.gz",
+                f"{LLAMA_SERVER_MIRROR_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-cuda-12.8-x64.tar.gz",
+            ]
+        else:
+            print("  • Targeting Linux x86_64 CPU build...")
+            urls = [
+                f"{LLAMA_SERVER_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz",
+                f"{LLAMA_SERVER_MIRROR_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz",
+            ]
+        download_and_extract_archive(
+            urls=urls,
+            dest_dir=dest_dir,
+            archive_name=f"llama-{LLAMA_SERVER_RELEASE}-linux.tar.gz",
+            min_size_bytes=10_000_000,
+            force=force,
+        )
+        if exe_path.exists():
+            try:
+                exe_path.chmod(exe_path.stat().st_mode | 0o755)
+            except Exception:
+                pass
+    else:
+        print(f"  ℹ️ Platform '{sys.platform}' requires manual llama-server installation.")
+        print("     See docs/RUNBOOK.md or https://github.com/ggml-org/llama.cpp/releases")
+        return False
+
+    # 3. Final verification
+    if exe_path.exists():
+        try:
+            res = subprocess.run([str(exe_path), "--version"], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                print(f"\n  ✓ llama-server successfully configured at:\n     {exe_path}")
+                print("=" * 68)
+                return True
+        except Exception as err:
+            print(f"  ❌ Error executing llama-server: {err}")
+
+    print("  ❌ Could not successfully configure llama-server.")
+    print("     Please refer to docs/LOCAL_INFERENCE.md for manual setup steps.")
+    print("=" * 68)
+    return False
+
+
 def install_dependencies(
     use_lockfile: bool = False,
     upgrade: bool = False,
@@ -325,8 +536,10 @@ def run_full_setup(
     skip_vlm: bool = False,
     force_models: bool = False,
     use_lockfile: bool = False,
+    skip_llama: bool = False,
+    cpu_only: bool = False,
 ) -> int:
-    """Execute complete initial setup: directories, dependencies, and model downloads."""
+    """Execute complete initial setup: directories, dependencies, models, and native llama-server."""
     print("=" * 68)
     print("  🚀 Local-First Multimodal PDF Intelligence System — Setup")
     print("=" * 68)
@@ -336,7 +549,7 @@ def run_full_setup(
     # Step 1: Install dependencies
     deps_ok = install_dependencies(use_lockfile=use_lockfile)
     if not deps_ok:
-        print("⚠️ Warning: Dependency installation reported issues. Continuing with model download...")
+        print("⚠️ Warning: Dependency installation reported issues. Continuing with setup...")
 
     # Step 2: Download models
     download_all_models(
@@ -345,7 +558,13 @@ def run_full_setup(
         skip_vlm=skip_vlm,
     )
 
-    # Step 3: Install current package in editable mode
+    # Step 3: Download and set up native llama-server
+    if not skip_llama:
+        setup_llama_server(force=force_models, cpu_only=cpu_only)
+    else:
+        print("  ℹ️ Skipping llama-server setup (--skip-llama-server).")
+
+    # Step 4: Install current package in editable mode
     print("\n📦 Registering local package...")
     try:
         subprocess.run(
@@ -359,7 +578,7 @@ def run_full_setup(
     print("\n" + "=" * 68)
     print("  🎉 Setup Complete!")
     print("  To launch the application, run:")
-    print("      python start.py")
+    print("      python start.py --start-llama")
     print("=" * 68 + "\n")
     return 0
 
@@ -390,6 +609,32 @@ class DownloadModelsCommand(Command):
         )
 
 
+class SetupLlamaServerCommand(Command):
+    """Custom setuptools command to acquire native llama-server binary."""
+
+    description = "Download and verify native llama-server binary (CUDA or CPU)"
+    user_options = [
+        ("tools-dir=", None, "Target directory for tools (default: tools/llama-server)"),
+        ("force", "f", "Force re-download even if already present"),
+        ("cpu-only", None, "Force CPU build instead of CUDA"),
+    ]
+
+    def initialize_options(self) -> None:
+        self.tools_dir = "tools/llama-server"
+        self.force = False
+        self.cpu_only = False
+
+    def finalize_options(self) -> None:
+        self.tools_dir = str((REPO_ROOT / self.tools_dir).resolve())
+
+    def run(self) -> None:
+        setup_llama_server(
+            tools_dir=Path(self.tools_dir),
+            force=bool(self.force),
+            cpu_only=bool(self.cpu_only),
+        )
+
+
 def main_cli() -> int:
     """CLI entry point for rag-setup command."""
     return run_full_setup()
@@ -407,6 +652,22 @@ def download_models_cli() -> int:
         models_dir=REPO_ROOT / args.models_dir,
         force=args.force,
         skip_vlm=args.skip_vlm,
+    )
+    return 0 if ok else 1
+
+
+def setup_llama_server_cli() -> int:
+    """CLI entry point for rag-setup-llama command."""
+    parser = argparse.ArgumentParser(description="Download and configure native llama-server")
+    parser.add_argument("--tools-dir", type=str, default="tools/llama-server", help="Destination tools folder")
+    parser.add_argument("--force", action="store_true", help="Force re-download even if already present")
+    parser.add_argument("--cpu-only", action="store_true", help="Force CPU build instead of CUDA")
+    args = parser.parse_args()
+
+    ok = setup_llama_server(
+        tools_dir=REPO_ROOT / args.tools_dir,
+        force=args.force,
+        cpu_only=args.cpu_only,
     )
     return 0 if ok else 1
 
@@ -451,10 +712,12 @@ setup_kwargs: dict[str, Any] = dict(
             "rag-assistant=start:main",
             "rag-setup=setup:main_cli",
             "rag-download-models=setup:download_models_cli",
+            "rag-setup-llama=setup:setup_llama_server_cli",
         ],
     },
     cmdclass={
         "download_models": DownloadModelsCommand,
+        "setup_llama_server": SetupLlamaServerCommand,
     },
     classifiers=[
         "Programming Language :: Python :: 3",
@@ -470,32 +733,59 @@ setup_kwargs: dict[str, Any] = dict(
 if __name__ == "__main__":
     raw_args = sys.argv[1:]
 
-    custom_flags = {"--deps-only", "--models-only", "--skip-vlm", "--lockfile", "--force"}
+    custom_flags = {
+        "--deps-only",
+        "--models-only",
+        "--llama-only",
+        "--llama-server",
+        "--skip-vlm",
+        "--skip-llama",
+        "--skip-llama-server",
+        "--cpu-only",
+        "--lockfile",
+        "--force",
+    }
+    subcommands = {
+        "setup",
+        "--setup",
+        "download_models",
+        "download-models",
+        "setup_llama_server",
+        "setup-llama",
+    }
     is_custom_invocation = bool(
-        not raw_args
-        or raw_args[0] in ("setup", "--setup", "download_models", "download-models")
-        or any(arg in custom_flags for arg in raw_args)
+        not raw_args or raw_args[0] in subcommands or any(arg in custom_flags for arg in raw_args)
     )
 
     if is_custom_invocation:
         # Filter out sub-command keyword if present for argparse
         filtered_args = list(raw_args)
         is_download_cmd = False
+        is_llama_cmd = False
         if filtered_args and filtered_args[0] in ("setup", "--setup"):
             filtered_args.pop(0)
         elif filtered_args and filtered_args[0] in ("download_models", "download-models"):
             filtered_args.pop(0)
             is_download_cmd = True
+        elif filtered_args and filtered_args[0] in ("setup_llama_server", "setup-llama"):
+            filtered_args.pop(0)
+            is_llama_cmd = True
 
         parser = argparse.ArgumentParser(
-            description="Set up dependencies and download models for RAG Assistant",
+            description="Set up dependencies, download models, and configure llama-server for RAG Assistant",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         )
         parser.add_argument("--deps-only", action="store_true", help="Only install Python dependencies")
         parser.add_argument("--models-only", action="store_true", help="Only download models and caches")
+        parser.add_argument(
+            "--llama-only", "--llama-server", action="store_true", help="Only set up native llama-server"
+        )
         parser.add_argument("--models-dir", type=str, default="models", help="Destination folder for GGUF models")
+        parser.add_argument("--tools-dir", type=str, default="tools/llama-server", help="Destination folder for tools")
         parser.add_argument("--skip-vlm", action="store_true", help="Skip downloading large VLM GGUF models")
-        parser.add_argument("--force", action="store_true", help="Force re-download existing model files")
+        parser.add_argument("--skip-llama", "--skip-llama-server", action="store_true", help="Skip llama-server setup")
+        parser.add_argument("--cpu-only", action="store_true", help="Force CPU build for llama-server")
+        parser.add_argument("--force", action="store_true", help="Force re-download existing files")
         parser.add_argument("--lockfile", action="store_true", help="Use requirements-lock.txt for install")
 
         parsed, _ = parser.parse_known_args(filtered_args)
@@ -509,12 +799,20 @@ if __name__ == "__main__":
             sys.exit(
                 0 if download_all_models(models_dir=target_dir, force=parsed.force, skip_vlm=parsed.skip_vlm) else 1
             )
+        elif parsed.llama_only or is_llama_cmd:
+            ensure_project_directories()
+            target_tools = REPO_ROOT / parsed.tools_dir
+            sys.exit(
+                0 if setup_llama_server(tools_dir=target_tools, force=parsed.force, cpu_only=parsed.cpu_only) else 1
+            )
         else:
             sys.exit(
                 run_full_setup(
                     skip_vlm=parsed.skip_vlm,
                     force_models=parsed.force,
                     use_lockfile=parsed.lockfile,
+                    skip_llama=parsed.skip_llama,
+                    cpu_only=parsed.cpu_only,
                 )
             )
 

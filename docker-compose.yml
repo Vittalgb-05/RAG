@@ -1,0 +1,51 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-assistant-app
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount data, models, and cache for persistence on host
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./.cache:/app/.cache
+    environment:
+      - PYTHONUNBUFFERED=1
+      - USE_TF=0
+      - USE_TORCH=1
+      # Connect to host-running llama-server or companion container
+      - LLAMA_SERVER_HOST=host.docker.internal
+      - LLAMA_SERVER_PORT=8080
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Optional containerized llama-server for full Docker isolation (CUDA GPU)
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: rag-llama-server
+    profiles: ["gpu"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    command: >
+      -m /models/qwen3-vl-2b-instruct-q4_k_m.gguf
+      --mmproj /models/mmproj-f16.gguf
+      -c 4096
+      -ngl 28
+      --port 8080
+      --host 0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped

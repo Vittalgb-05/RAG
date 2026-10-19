@@ -19,3 +19,5 @@ models/
 *.gguf
 *.tmp
 *.onnx
+*.zip
+tools/

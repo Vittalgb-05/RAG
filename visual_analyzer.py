@@ -196,6 +196,7 @@ class VisualAnalyzer:
         provider: BaseModelProvider | None = None,
         prompt: str = DEFAULT_VISION_PROMPT,
         max_regions: int = 20,
+        progress_callback: Any = None,
     ) -> list[EvidenceElement]:
         """Detect, crop, and generate VLM descriptions for visual elements.
 
@@ -209,6 +210,7 @@ class VisualAnalyzer:
             provider: Optional BaseModelProvider instance (e.g. Qwen3-VL 2B or Groq fallback).
             prompt: Targeted vision query prompt.
             max_regions: Maximum visual regions to analyze to preserve memory/time budgets (default 20).
+            progress_callback: Optional callable (current, total, label) -> None for UI progress updates.
 
         Returns:
             List of EvidenceElement models representing visual artifacts.
@@ -244,6 +246,12 @@ class VisualAnalyzer:
             kind = reg["kind"]
             bbox = reg["bbox"]
             element_id = f"elem_{doc_id}_p{page_num}_{kind}_{idx:02d}"
+
+            if progress_callback is not None:
+                try:
+                    progress_callback(idx + 1, len(regions), f"{kind} (page {page_num})")
+                except Exception:
+                    pass
 
             try:
                 crop_bytes = self.crop_visual_element(pdf_bytes, page_num, bbox)

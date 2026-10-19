@@ -272,3 +272,25 @@ def test_docling_reader_chunk_char_offsets():
         assert c["char_end"] > c["char_start"]
         # Slice of full text matches chunk content
         assert full_text[c["char_start"] : c["char_end"]] == c["content"]
+
+
+def test_export_table_markdown_with_doc_parameter():
+    """Verify _export_table_markdown forwards doc when supported and falls back when not."""
+
+    class ModernTable:
+        def export_to_markdown(self, doc=None):
+            return f"| Header |\n| Value ({getattr(doc, 'name', 'none')}) |"
+
+    class LegacyTable:
+        def export_to_markdown(self):
+            return "| Header |\n| Value (legacy) |"
+
+    class FakeDoc:
+        name = "test_doc"
+
+    doc = FakeDoc()
+    modern_out = DoclingReader._export_table_markdown(ModernTable(), doc=doc)
+    assert "Value (test_doc)" in modern_out
+
+    legacy_out = DoclingReader._export_table_markdown(LegacyTable(), doc=doc)
+    assert "Value (legacy)" in legacy_out
