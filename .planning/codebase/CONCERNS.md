@@ -1,417 +1,502 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-10-20
+**Analysis Date:** 2026-10-21
 
-Scope: full repository at commit `2c4e1d0` (working tree). Severity reflects impact on the project's two hard invariants: the 4 GB VRAM ceiling and "zero network egress in local mode", plus data-loss/privacy risk.
-
-## Prior Concern Resolution Status
-
-The `2c4e1d0` commit ("eliminate leaking code, refactor to chatbot-first UI, and resolve CONCERNS.md issues") and the preceding `2978dca` hardening commit are assessed below. Do not treat the commit message as proof of closure.
-
-| Previously-flagged concern | Status | Evidence |
-|---|---|---|
-| Purge re-ingestion loop | **Partially closed — new loop introduced** | `uploader_key` is rotated on Clear/Purge (`main.py:70`, `ui/views.py:669`) but **not after a successful upload**. Combined with dedupe returning `success=True` (`ui/ingestion_service.py:97-108`), the post-upload `st.rerun()` (`ui/views.py:136-137`) re-runs with the same files still in the widget and reruns forever. See Known Bugs #1. |
-| No startup hydration | **Largely closed, shallow** | `hydrate_startup_state()` restores SQLite docs and opens LanceDB (`ui/hydration.py:13-58`, called at `main.py:142`). It never verifies that each `indexed` SQLite doc actually has vectors, and does not hydrate `failed` docs. See Known Bugs #4. |
-| Docker local-inference env mismatch | **Largely closed for Compose, open for standalone image** | `LLAMA_SERVER_URL`/`HOST`/`PORT` parsing and `host.docker.internal` allowlist in `llama_cpp_provider.py:44-73`; `docker-compose.yml:18-19` sets the host. A bare `docker run` (no Compose env) still defaults to `127.0.0.1:8080` *inside the container*, which cannot reach a host llama-server. |
-| Python 3.13 OCR gap | **Partially closed, unverified** | Conditional pins in `requirements.txt:13-14` (`rapidocr` for ≥3.13) and RapidOCR v3 output handling in `ocr_fallback.py:154-197`. CI only tests Python 3.11 (`.github/workflows/ci.yml:12-18`); `docs/RUNBOOK.md:17` still states 3.11/3.12; `setup.py:722-729` classifies only 3.11/3.12. No 3.13 CI evidence. |
-| Duplicate visual detection | **Closed (functionally)** | SHA-256 region cache in `visual_analyzer.py:64-66,145`. `IngestionService` still calls `detect_visual_regions()` and then `analyze_visual_elements()` (which detects again), but the second pass is cached (`ui/ingestion_service.py:160-172`). Extra call, no extra PyMuPDF work. |
-| Unindexed LanceDB search | **Open** | Dedupe trusts SQLite status/chunk count only (`ui/ingestion_service.py:97-108`); hydration trusts `retriever.count_chunks() > 0` globally (`ui/hydration.py:47-56`). If `data/lancedb/` is deleted or a doc's vectors are missing, the UI still enables chat and retrieval silently returns nothing. |
-| Ungated VLM inference | **Largely closed, with a data-quality leak** | `InferenceGate.hold(timeout=60.0)` wraps `analyze_image` (`visual_analyzer.py:272-281`). On timeout/failure the error string is written as the element content (`visual_analyzer.py:282-284`) and then **indexed as retrievable evidence** (`ui/ingestion_service.py:216-217,247-248`). |
-| PyMuPDF AGPL licensing | **Disclosure closed, compliance risk open** | `docs/LICENSES.md` documents AGPL-3.0/commercial terms. PyMuPDF remains a hard runtime dependency (`requirements.txt:15`) and `README.md:247-249` still describes the project as MIT only. |
-| Test gaps | **Partially closed** | ~285 test functions in 29 files, including concurrency, hydration, cloud privacy, and ingestion-empty-case tests. Still no end-to-end ingestion test, no coverage gate, no Python-version matrix, and no test for the upload rerun loop. See Test Coverage Gaps. |
-
----
+Scope: full repository — root production modules, `ui/`, launcher/installer scripts, Docker/CI configuration, dependency manifests, and `tests/`. The codebase contains ~17,500 Python lines (7,488 in `tests/`) and 296 tests. No `TODO`, `FIXME`, `HACK`, or `XXX` markers were found in production code. Severity reflects user-visible impact under the project constraints: single-user laptop, 4 GB VRAM, Windows-first, and zero egress in local mode.
 
 ## Tech Debt
 
-**Legacy workspace aliases and duplicated routing:**
-- Issue: `WORKSPACES` uses `"Chat"` but `ui/views.py:640` still sets `active_workspace = "Ask Documents"`, and `main.py:295-296,333` keeps backward-compatible aliases (`"Workspace"`, `"Ask Documents"`, `"Library"`).
-- Files: `main.py:287-308,331-358`, `ui/views.py:638-641`
-- Impact: Two sources of truth for navigation; future renames require touching three places.
-- Fix approach: Introduce a single `Workspace` enum/constant module, have `render_library_view` set `"Chat"`, and drop alias branches once tests are updated.
+**UI render monolith (`ui/views.py`):**
+- Issue: A single 852-line module owns the sidebar uploader, chat rendering, streamed inference, citation drawer, summarizer, document library, danger zone, and settings/diagnostics. Layout, session-state mutation, provider lifecycle, ingestion orchestration, and error presentation are interleaved.
+- Files: `ui/views.py` (852 lines), `main.py` (363 lines)
+- Impact: UI behavior cannot be exercised without importing Streamlit. No test imports `ui.views` or calls its `render_*` functions, so the streaming, sanitization, summary-cache, and upload-loop paths have no direct regression net. The view layer also mutates `st.session_state` keys that are initialized manually in `main.py`.
+- Fix approach: Extract per-workspace controllers with explicit inputs (store, retriever, provider, session adapter), keep `ui/views.py` as thin composition, and move upload and summary generation into service calls that can be tested without Streamlit.
 
-**Dead code / unused parameters:**
-- Issue: `safe_has_secret()` (`main.py:46-53`) and `MAX_CHAT_TURNS` (`main.py:43`) are unused; `render_chat_view(doc_store=...)` and `render_settings_view(ai_model=...)` accept parameters they never use (`ui/views.py:184-189,684-690`). `LocalEmbedding.store` (`local_embedding.py:72`) is constructed but the ingestion path uses `HybridRetriever` instead.
-- Files: `main.py`, `ui/views.py`, `local_embedding.py`
-- Impact: Misleads readers and static analysis; no runtime effect.
-- Fix approach: Remove unused symbols/params or use them; delete the dead `VectorIndex` path in `LocalEmbedding` once legacy callers are gone.
+**Import-time side effects in `main.py`:**
+- Issue: Importing `main.py` mutates `os.environ`, imports Streamlit, constructs a module-level `DocStore`, runs schema migrations, hydrates session state, constructs `AiModel`, probes provider health, and updates cloud state.
+- Files: `main.py:14-18`, `main.py:142`, `main.py:145`, `main.py:148-190`
+- Impact: The composition root is not safely importable for integration tests. A locked SQLite file, invalid `LLAMA_SERVER_URL`, or missing dependency becomes a full-page Streamlit traceback instead of a recoverable UI state.
+- Fix approach: Introduce `bootstrap() -> AppContext` invoked once from a Streamlit entry guard, return typed startup errors, and keep module import side-effect free.
 
-**Promised library features are absent:**
-- Issue: The docstring promises "retry, re-index" (`ui/views.py:594`) but the UI exposes only Chat/Delete plus a global purge.
-- Files: `ui/views.py:590-676`
-- Impact: A `failed` document can only be retried by deleting and re-uploading; there is no way to rebuild vectors after a LanceDB loss.
-- Fix approach: Add per-document "Re-index" (re-run `IngestionService.ingest_pdf` with `force`) and "Retry" actions, or correct the docstring/UI copy.
+**Packaging and runtime installer conflated in `setup.py`:**
+- Issue: `setup.py` is an 820-line setuptools script that also performs network downloads, archive extraction, binary installation, pre-caching, and CLI parsing.
+- Files: `setup.py:57-77`, `setup.py:103-193`, `setup.py:308-346`, `setup.py:385`, `setup.py:700-730`
+- Impact: Installing the package imports download/install machinery; security-sensitive network and archive logic lives in packaging code and is only exercised through mocked tests.
+- Fix approach: Move model/binary installation into a dedicated `installer/` module with checksum verification and staged extraction; keep `setup.py` limited to metadata and entry points.
 
-**Doc/implementation drift:**
-- Issue: `docs/RUNBOOK.md:17` excludes Python 3.13; `README.md` does not mention the AGPL disclosure or the mandatory local `llama-server`; `CLAUDE.md` still describes the old Groq-only/SQLite-less stack.
-- Files: `docs/RUNBOOK.md`, `README.md`, `CLAUDE.md`, `docs/LICENSES.md`
-- Impact: New contributors and operators follow stale setup instructions.
-- Fix approach: Regenerate `CLAUDE.md` from the current map and align RUNBOOK/README with `requirements.txt`, Compose, and the licensing doc.
+**Broad exception handling and silent degradation:**
+- Issue: 86 `except Exception` handlers exist in production code, 20 in `ui/` alone. Several discard the error entirely (`except Exception: pass`), including database status rollback, FTS/index maintenance, and cache deletion.
+- Files: `ui/ingestion_service.py:294-300`, `ui/lifecycle_service.py:49-53`, `ui/lifecycle_service.py:102-107`, `hybrid_retriever.py:216`, `hybrid_retriever.py:227`, `hybrid_retriever.py:364`, `hybrid_retriever.py:452`, `hybrid_retriever.py:668`, `local_llm.py:55-64`
+- Impact: Failures are logged at debug/warning or not at all. The UI can report success while vectors, cache, or document status are inconsistent. A deleted document can remain retrievable because LanceDB deletion errors are swallowed (see Known Bugs).
+- Fix approach: Catch specific exceptions, return typed failure results, and make destructive operations fail closed. Reserve best-effort cleanup for `finally` blocks with `logger.exception` and surface aggregate warnings to the caller.
 
-**Dual rendering fallbacks (`st.html` vs `st.markdown(unsafe_allow_html=True)`):**
-- Issue: Every component has a runtime `hasattr(st, "html")` branch (`ui/components.py:63-66,80-83,107-110`; `main.py:267-270,321-324`; `ui/views.py:239-242,315-318,630-633,720-723,733-736`).
-- Files: `ui/components.py`, `ui/views.py`, `main.py`
-- Impact: Two rendering paths with different escaping semantics; the fallback is the path that caused the earlier "leaking HTML" bug.
-- Fix approach: Pin Streamlit ≥ the version that guarantees `st.html`, then delete the fallback branches and always escape interpolated user data.
+**Deprecated compatibility facades:**
+- Issue: `HybridRetriever.search()` and `get_context()` are deprecated wrappers around `search_hybrid()`, and `LocalEmbedding.search_hybrid()` remains as a second retrieval entry point.
+- Files: `hybrid_retriever.py:695-712`, `local_embedding.py:121-146`
+- Impact: Two retrieval APIs with different result shapes increase the chance that new code bypasses canonical `RetrievalResult` construction, citation numbering, or document filtering.
+- Fix approach: Remove the facades, update callers to `search_hybrid(query, k, doc_ids)`, and add a single canonical retrieval contract test.
 
-**No centralized logging configuration:**
-- Issue: Modules emit `logger.info`/`logger.warning`, but nothing calls `logging.basicConfig`; several modules still use `print` for diagnostics (`doc_store.py:154`, `upload_validation.py:106`, `pdf_reader.py:131`).
-- Files: `logging_setup.py`, `doc_store.py`, `upload_validation.py`, `pdf_reader.py`
-- Impact: Ingestion diagnostics are usually dropped at the default `WARNING` level, while `print` lines leak filenames/doc IDs to stdout unredacted.
-- Fix approach: Configure the root logger once in `main.py`/`start.py` from an env-controlled level, replace `print` with module loggers, and redact filenames at INFO if logs are shared.
+**Manual `CONFIG_VERSION` controls cache and summary invalidation:**
+- Issue: `CONFIG_VERSION` is a manually maintained string controlling cache paths and summary cache keys. Chunking, extraction, or prompt changes silently reuse old artifacts unless the string is bumped.
+- Files: `models.py:13-30`, `summarizer.py:330`, `summarizer.py:403`, `ui/views.py:552`
+- Impact: A code change can display chunks or summaries produced by older extraction/chunking logic with no visible warning. Cache directories for old versions also accumulate on disk.
+- Fix approach: Derive the version from a hash of chunking/extraction/prompt configuration, store it in SQLite and the vector table, and invalidate or migrate on mismatch.
 
-**Unpinned runtime ranges vs. lockfile:**
-- Issue: `requirements.txt` uses open ranges for the riskiest packages (`docling>=2.0.0`, `lancedb>=0.17.0`, `pymupdf>=1.24.0`, `litellm>=1.50.0`, `numpy>=1.26,<3`), while `requirements-lock.txt` pins specific versions (docling 2.138.0, lancedb 0.40.0, pymupdf 1.28.2, numpy 2.4.6, torch 2.14.1) that CI uses.
-- Files: `requirements.txt`, `requirements-lock.txt`, `Dockerfile:30-31`, `.github/workflows/ci.yml:24-27`
-- Impact: Docker builds and local installs can resolve different versions than CI; a future `docling`/`lancedb` minor can break the API at any time.
-- Fix approach: Make the lockfile authoritative (`pip install -r requirements-lock.txt` in Docker and setup), or use `uv sync` with a checked-in `uv.lock` and a single install path.
-
----
+**Embedding-model metadata is declared but unused:**
+- Issue: `chunks.embedding_model` exists in SQLite (`doc_store.py:52`) and on the `Chunk` model (`models.py:72`), but no ingestion, OCR, Docling, or reindex path ever populates it. The LanceDB row schema has no embedding-model or embedding-dimension field at all.
+- Files: `doc_store.py:300-345`, `hybrid_retriever.py:320-340`, `local_embedding.py:50-68`
+- Impact: After swapping `all-MiniLM-L6-v2` or changing dimensions, old and new vectors can coexist with meaningless similarities and no way to detect which model produced a row.
+- Fix approach: Populate `embedding_model`, add `embedding_dim`/`config_version` to the vector row schema, reject incompatible writes, and trigger a full reindex on model change.
 
 ## Known Bugs
 
-**Infinite rerun / re-ingestion loop after a successful upload (P0):**
-- Symptoms: After uploading one or more PDFs, the sidebar status flickers "Ready! Indexed 1 file(s)" indefinitely and the Streamlit script saturates a CPU core; the app never becomes idle.
-- Files: `ui/views.py:72-137`, `ui/ingestion_service.py:97-108`, `main.py:70`
-- Trigger: Upload any valid PDF, let ingestion finish. The uploader widget retains its files; `st.rerun()` re-executes the block; dedupe returns `success=True`; `new_docs_indexed` becomes 1 again; `st.rerun()` fires again.
-- Workaround: Manually remove the file from the uploader (or use "Clear Session") after ingestion.
-- Fix approach: Rotate `st.session_state.uploader_key` immediately after processing any upload (success or failure) before `st.rerun()`, and/or only count a document in `new_docs_indexed` when it was actually newly indexed, not when deduped. Add a regression test that calls the render function twice with the same fake uploader payload.
+**Live streamed assistant output bypasses sanitization (High):**
+- Symptoms: During generation, `st.write_stream(response_stream)` renders model tokens directly as Markdown. Markdown image syntax such as `![x](https://attacker.example/pixel.png)` in model output causes the browser to request the URL in local mode. The same content is sanitized only on the next rerun, when chat history is re-rendered.
+- Files: `ui/views.py:402` (stream), `ui/views.py:280-284` (history sanitization)
+- Trigger: A PDF containing an injected instruction or a model inventing a Markdown image URL; any response containing remote Markdown images or links.
+- Workaround: None in the UI. Users can avoid clicking generated links, but images load automatically.
+- Fix approach: Buffer tokens and sanitize before each incremental render, or render plain text during streaming and only render Markdown after sanitization. Add a regression test asserting no remote URL reaches `st.write_stream`/`st.markdown` in local mode.
 
-**Purge/Delete does not erase everything it claims to erase (privacy):**
-- Symptoms: After "Purge All Data Now", previously retrieved document text and citations remain visible in the chat transcript, and full extracted page/chunk text remains on disk in `.cache/<sha256>/<CONFIG_VERSION>/pages.json` and `chunks.json`.
-- Files: `ui/views.py:659-676` (purge leaves `chat_history`, `.cache`, `local_embedding`, and `selected_chat_doc` untouched), `ui/views.py:163-176` and `643-655` (single-doc delete leaves the cache dir and `summary_<doc_id>_*` session keys), `ui/ingestion_service.py:278-288` (cache writer)
-- Trigger: Upload → chat → Purge All Data Now, then inspect the chat pane or `.cache/`.
-- Fix approach: On purge, also clear `chat_history`, `selected_chat_doc`, `selected_summary_doc`, summary session keys, and remove `.cache/` (or all per-doc cache dirs). On single delete, remove `cache_dir_for(base, sha)` and the doc's summary keys. Make the purge copy accurately state what is removed.
+**User prompt rendered without sanitization (Medium):**
+- Symptoms: The submitted prompt is rendered with `st.markdown(effective_prompt)`.
+- Files: `ui/views.py:358`
+- Trigger: A prompt containing Markdown image/link syntax, including pasted document text.
+- Fix approach: Render the prompt as escaped text (`st.text` or `html.escape` with plain Markdown disabled) or pass it through `sanitize_display_markdown`.
 
-**Deduped upload silently succeeds when vectors are missing:**
-- Symptoms: Chat is enabled, retrieval returns zero snippets, and the model abstains or (older behavior) answers without evidence, even though the library shows the document as indexed with N chunks.
-- Files: `ui/ingestion_service.py:97-108`, `ui/hydration.py:47-56`, `ui/views.py:372-390`
-- Trigger: Delete `data/lancedb/` (or the fallback JSON) while `data/documents.db` survives, then re-upload the same PDF. SQLite says `indexed` / `num_chunks > 0`, so ingestion short-circuits.
-- Fix approach: In the dedupe branch, verify `self.retriever.has_document(doc_id)` (and chunk count) before returning success; otherwise re-index from the SQLite chunks/cache. In hydration, filter `document_metadata` to docs present in the retriever, or expose a "vectors missing" state.
+**Stale summaries are presented as current (High):**
+- Symptoms: Two independent staleness paths exist. The session cache key `summary_{doc_id}_{profile}` omits the model and `CONFIG_VERSION`, so switching local/cloud models shows the old summary until the session is cleared. Separately, the strict SQLite lookup with `model_version=expected_version` is followed by an unversioned fallback lookup, which returns a summary produced by a different provider, model, or config.
+- Files: `ui/views.py:529`, `ui/views.py:550`, `ui/views.py:552-555`, `doc_store.py:487-534`, `doc_store.py:84`
+- Trigger: Generate a summary, switch local/cloud model or bump `CONFIG_VERSION`, open the document again; or clear the session and reopen a document with an older cached summary.
+- Impact: Users cannot tell whether a summary reflects the current model or configuration. The summary table's `UNIQUE(sha256, profile)` does not include `model_version`, so a new model also overwrites the previous row.
+- Fix approach: Remove the unversioned fallback or display it with an explicit "stale — regenerate" badge; include model and config version in the session cache key; include `model_version` in the uniqueness key or keep historical versions.
 
-**Cloud consent "Cancel" can re-open the dialog indefinitely:**
-- Symptoms: Toggling "Enable Cloud Inference" on, then pressing "Cancel (Keep 100% Local)", immediately shows the consent dialog again; the toggle remains on.
-- Files: `ui/views.py:699-713`, `main.py:219-225`
-- Cause: The toggle is keyed `settings_cloud_toggle` and its session value stays `True`; the cancel handler sets `cloud_mode=False` but not the widget key. On rerun `cloud_active != cloud_mode`, so the dialog is requested again.
-- Fix approach: Key the toggle to a state variable that is reset in both consent branches, or use an `on_change` callback that sets `st.session_state.settings_cloud_toggle = False` on cancel. Add a Streamlit AppTest regression test.
+**Gate-busy notice is persisted as an assistant answer (Medium):**
+- Symptoms: When `InferenceGate.acquire(timeout=60.0)` fails, the stream generator yields a human warning string beginning with an emoji. The view treats it as model output, writes it to chat history, and runs citation validation on it, producing an "Unverified Citations (0%)" state.
+- Files: `local_llm.py:298-301`, `ui/views.py:402-440`, `tests/test_concurrency_lock.py:169-177`
+- Trigger: Summarize a large document (holding the gate for minutes) and send a chat message from any session.
+- Impact: The warning is indistinguishable from an assistant response and pollutes the transcript; the test suite currently codifies this behavior.
+- Fix approach: Return a typed busy status/exception instead of yielding text; have the view render a retryable info state without appending an assistant turn.
 
-**Visual evidence is attributed to the doc_id, not the filename:**
-- Symptoms: Citation chips and evidence drawers for VLM-derived chunks show `doc_ab12…` instead of `report.pdf`.
-- Files: `hybrid_retriever.py:389` (`"filename": el.doc_id`), `ui/views.py:305-333,419-440`
-- Trigger: Upload a PDF with a figure, ask about it.
-- Fix approach: Pass/store the original filename in `EvidenceElement` (or look it up from `DocStore` in `index_evidence_elements`) and index that as `filename`.
+**Deleted documents can remain retrievable (High):**
+- Symptoms: `LifecycleService.delete_document` removes the SQLite row but only logs LanceDB deletion failures and still returns `True`. Retrieval is unrestricted when the chat filter is "all" (`doc_id=None`), so stale vectors from the deleted document can still be returned and cited in a fresh or current session.
+- Files: `ui/lifecycle_service.py:31-73`, `ui/lifecycle_service.py:49-53`, `hybrid_retriever.py:414-432`, `hybrid_retriever.py:615-625`
+- Trigger: LanceDB file lock, table compaction error, process crash during deletion, or a delete while another session holds the table.
+- Impact: Privacy-critical data that the user believes deleted can still appear in answers and citation chips.
+- Fix approach: Delete vectors first (or use a SQLite tombstone and two-phase deletion), retry vector deletion on hydration, filter retrieval against SQLite-documented IDs even when `doc_id=None`, and report success only after both stores confirm.
 
-**Failed VLM analyses become searchable "evidence":**
-- Symptoms: Answers cite "[Visual element: analysis failed: InferenceGate acquisition timed out…]" or "[Visual element: vision analysis unavailable]" as if it were document content.
-- Files: `visual_analyzer.py:282-294`, `ui/ingestion_service.py:216-217,247-248`, `hybrid_retriever.py:383-400`
-- Trigger: Start a long chat generation in another session (holds `InferenceGate` > 60 s) while uploading a PDF with figures, or run with a non-vision local model.
-- Fix approach: Skip persistence/indexing of placeholder/error elements (filter on a `status`/`analysis_ok` field), and surface a per-document "N figures not analyzed" warning instead.
+**Re-ingestion leaves stale chunks and partial writes (High):**
+- Symptoms: `record_chunks` and `record_pages_batch` only upsert by primary key. Re-processing a document whose extraction changes (Docling to pypdf fallback, OCR replacing page chunks, changed chunk boundaries) leaves old chunk IDs in SQLite and LanceDB. A failure after SQLite writes leaves chunks/pages/evidence behind while marking the document failed.
+- Files: `ui/ingestion_service.py:237-309`, `ui/ingestion_service.py:283-309`, `doc_store.py:255-345`, `ocr_fallback.py:250-315`
+- Trigger: Re-index a document after extraction behavior changes; simulate a LanceDB failure after SQLite commit; OCR a page whose prior chunks included headings/captions.
+- Impact: Orphan chunks remain retrievable, inflate chunk counts, and can contradict newer extraction output.
+- Fix approach: Delete all chunks/evidence/pages for `doc_id` in the same transaction before inserting, or diff against persisted chunk IDs. Wrap document status, chunks, pages, and evidence in one transaction and compensate vector writes on failure. Add a re-ingestion test that asserts no orphan chunks remain.
 
-**Library "Chat" button writes a legacy workspace value:**
-- Symptoms: Navigation works, but `st.session_state.active_workspace` is `"Ask Documents"` until the user next touches the radio.
-- Files: `ui/views.py:638-641`, `main.py:331-339`
-- Fix approach: Set `"Chat"` directly.
+**Reindex reports failure after partial success (Medium):**
+- Symptoms: `reindex_document` indexes text chunks first, then indexes evidence elements without embeddings. When `HybridRetriever.embedding_fn` is unset, the evidence call raises and the method returns `False`, although text chunks were already replaced. Reindex also never deletes chunks that no longer exist in SQLite.
+- Files: `ui/lifecycle_service.py:134-166`, `hybrid_retriever.py:378-409`
+- Trigger: Reindex a document with visual evidence while the retriever was constructed without `embedding_fn` (for example, a retriever hydrated without `set_embedding_fn`).
+- Fix approach: Pass computed embeddings for evidence, delete existing vectors for the document first, and return a structured result separating text/evidence outcomes. Do not mutate the index until all inputs are validated.
 
----
+**PNG crops are sent as JPEG (Medium):**
+- Symptoms: `VisualAnalyzer.crop_visual_element` returns PNG bytes, but `LlamaCppProvider.analyze_image` labels every payload as `data:image/jpeg;base64`.
+- Files: `visual_analyzer.py:148-198`, `llama_cpp_provider.py:286-295`
+- Trigger: Any local visual analysis request.
+- Impact: MIME sniffing may reject the image or decode it incorrectly depending on the llama-server build, reducing visual-description quality without an explicit error.
+- Fix approach: Pass the actual MIME type from the crop function (or convert to JPEG explicitly) and add a provider test asserting the data URL prefix matches the bytes.
+
+**Model weights and model name do not match (High for evaluation honesty):**
+- Symptoms: `setup.py` downloads Qwen2-VL 2B weights and saves them as `qwen3-vl-2b-instruct-q4_k_m.gguf`. `README.md`, `docs/LOCAL_INFERENCE.md`, `start.py`, and `docker-compose.yml` refer to Qwen3-VL. The vision projector is likewise Qwen2-VL.
+- Files: `setup.py:57-77`, `start.py:127-149`, `docker-compose.yml:38-39`, `README.md:17-18`, `README.md:153-157`, `docs/LOCAL_INFERENCE.md:1-18`
+- Trigger: Fresh setup using documented commands.
+- Impact: Users and evaluators believe they are running Qwen3-VL when the installed weights are Qwen2-VL. Capability, VRAM, and quality claims are not tied to the artifact actually executed.
+- Fix approach: Choose one model generation, pin the exact Hugging Face revision and file hash, and use matching names in the registry, launcher, Compose file, and documentation.
+
+**Invalid local provider URL can crash startup (Medium):**
+- Symptoms: An invalid `LLAMA_SERVER_URL`/`LLAMA_SERVER_HOST` raises `ValueError` during `LlamaCppProvider.__init__`. `main.py` constructs `AiModel` at import time without catching it, so the app fails instead of showing an "invalid endpoint" diagnostic.
+- Files: `llama_cpp_provider.py:44-73`, `local_llm.py:168-185`, `main.py:148-158`
+- Trigger: Set `LLAMA_SERVER_URL=https://example.com` or a malformed host without `allow_remote=True`.
+- Fix approach: Catch configuration errors in `AiModel`/bootstrap, return an `error` health status with remediation text, and validate environment values once at startup.
+
+**Cloud health reports "ready" without a network check (Medium):**
+- Symptoms: `GroqProvider.check_health` and `LiteLLMProvider.check_health` return `healthy` when a key/client exists, without validating the key or connectivity. The UI shows "Cloud ready"; the first query then fails with an authentication or network error.
+- Files: `groq_provider.py:59-83`, `litellm_provider.py:150-173`
+- Trigger: Expired or malformed API key, provider outage, blocked egress.
+- Fix approach: Distinguish `configured` from `reachable`, perform a cheap authenticated probe on consent/activation, and cache the result with a TTL.
+
+**Offline startup probes the local provider twice (Medium):**
+- Symptoms: `main.py` calls `ai_model.check_health()` on every rerun. When the active local provider is unhealthy, `AiModel.check_health` constructs a second `LlamaCppProvider` and probes it again, doubling the connection timeout before the page renders.
+- Files: `main.py:190`, `local_llm.py:187-207`, `llama_cpp_provider.py:89-141`
+- Trigger: Start Streamlit without llama-server; interact with any widget.
+- Impact: Roughly 4 seconds of added latency per rerun when the server is down.
+- Fix approach: Probe once per rerun, cache health for a few seconds, and reuse the existing client/timeout budget.
 
 ## Security Considerations
 
-**No authentication and a network-exposed default in Docker (High):**
-- Risk: Anyone who can reach port 8501 can upload documents, read all persisted documents, toggle cloud mode with their own key, and purge data. There is no login, session isolation by user, or CSRF-protected auth layer (Streamlit's XSRF token is not authentication).
-- Files: `Dockerfile:47-53` (`--server.address=0.0.0.0`), `docker-compose.yml:7-8` (`ports: 8501:8501` published on all interfaces), `.streamlit/config.toml`
-- Current mitigation: Local-only design assumption; XSRF protection enabled.
-- Recommendations: Default Compose to `127.0.0.1:8501:8501`, document a reverse proxy with auth (or Streamlit OIDC) for any shared host, and refuse to bind `0.0.0.0` unless an explicit `--allow-network` flag is set.
+**Local-mode egress is enforced by regex, not a browser boundary (High):**
+- Risk: The sanitizer is a set of regexes. It misses reference-style Markdown images/links (`![x][ref]` plus `[ref]: https://...`), angle-bracket destinations (`[x](<https://...>)`), autolinks, `mailto:`/`data:` destinations, HTML `srcset`, `<video>/<source>`, `<svg>`, `<base>`, `<meta http-equiv=refresh>`, and attribute spacing such as `href = "https://..."`. Raw HTML in chat is escaped by default, but Markdown features are still rendered.
+- Files: `ui/sanitizer.py:9-30`, `ui/sanitizer.py:33-79`, `ui/views.py:284`, `ui/views.py:402`, `tests/test_sanitizer.py`
+- Current mitigation: Regex replacement of external Markdown/HTML images and links when `allow_external=False`; tests cover one example per pattern.
+- Recommendations: Replace regex filtering with an allowlist-based Markdown renderer, or add a Content-Security-Policy restricting `img-src`/`connect-src` to `self` when a reverse proxy is used. Add tests for reference links, autolinks, `srcset`, `svg`, and `data:` URLs. Sanitize streamed output (see Known Bugs).
 
-**Docker build context includes secrets and multi-GB model weights (High):**
-- Risk: `.dockerignore` omits `.env`, `models/`, `*.gguf`, `.planning/`, `tests/`, and `application_screenshots/`. A local `.env` present at build time (absent now) would be copied into an image layer by `COPY . .`; 2.2 GB of GGUF weights in `models/` would also be copied, bloating the image and potentially redistributing model weights.
-- Files: `.dockerignore`, `Dockerfile:33-38`, `models/` (2.2 GB locally: `qwen3-vl-2b-instruct-q4_k_m.gguf`, `mmproj-f16.gguf`), `.gitignore:1,18-19`
-- Current mitigation: `models/` and `.env` are gitignored, so they are not in git.
-- Recommendations: Add `.env`, `.env.*`, `models/`, `*.gguf`, `*.onnx`, `.planning/`, `tests/`, `application_screenshots/`, `data/`, and `.cache/` to `.dockerignore`; consider a dedicated `models` build stage or a runtime download to a mounted volume.
+**Cloud summarization transmits entire documents, beyond the consent wording (High):**
+- Risk: The consent dialog says user prompts and "retrieved document excerpts" are transmitted. Summarization does not retrieve excerpts; it loads every page, bundles up to 2,000 tokens per map call, and sends full document text to the cloud provider. There is no per-document confirmation, byte-count display, or audit record.
+- Files: `main.py:200-219` (consent text), `summarizer.py:233-289` (map-reduce over all pages), `summarizer.py:378-391` (full-text token count), `ui/views.py:535`
+- Current mitigation: Session-level consent toggle; cloud mode is off by default.
+- Recommendations: Treat full-document summarization as a distinct consent scope with an explicit per-action dialog showing page count and provider; log provider, model, document hash, page range, and timestamp; never send visual crops or raw pages.
 
-**Delete/Purge leaves document text on disk (High privacy):**
-- See Known Bugs #2. Extracted page/chunk text persists under `.cache/<sha>/<version>/` and in the chat transcript after the user is told data was erased.
-- Files: `ui/views.py:659-676`, `ui/ingestion_service.py:277-288`
-- Recommendations: Make purge the single source of truth for erasure, including cache and transcript; add a test asserting the cache directory and chat history are empty afterwards.
+**Consent enforcement is uneven and in-memory only (High):**
+- Risk: `LiteLLMProvider` enforces a boolean `user_consented` on each text/image call, but `GroqProvider` has no consent parameter or check. `AiModel._detect_provider` constructs and returns `GroqProvider` whenever `cloud_mode=True` and no explicit cloud provider is supplied; `set_cloud_mode(True)` without a provider can therefore select a provider with no consent gate.
+- Files: `litellm_provider.py:142-148`, `groq_provider.py:18-52`, `groq_provider.py:99-161`, `local_llm.py:168-185`, `local_llm.py:145-166`
+- Current mitigation: The Streamlit UI constructs a consented `LiteLLMProvider`; the direct `GroqProvider` path is not used by the settings UI.
+- Recommendations: Remove the `GroqProvider` fallback or give it the same consent gate; make consent an explicit object carrying scope, provider, model, and expiry; require it in every cloud provider constructor; add tests that unconsented construction/generation fails for both providers.
 
-**Prompt injection can reach the system message (Medium):**
-- Risk: Retrieved document text is interpolated into the **system** prompt (`prompt_budget.py:21-23,114`), which is the highest-trust position. The only structural defense is escaping `</document_context>` (`prompt_budget.py:26-40`), and output detection is a 13-phrase blocklist (`citation_validator.py:34-47,70-83`) that a paraphrase trivially bypasses. A malicious PDF can therefore steer answers or exfiltrate the system prompt through markdown links.
-- Files: `prompt_budget.py`, `citation_validator.py`, `ui/sanitizer.py`
-- Current mitigation: Explicit "treat as untrusted" instruction in the system prompt; XML boundary escaping; blocklist; citation-precision verification.
-- Recommendations: Move untrusted context to the user message (or add a separate context role), delimit each snippet with non-guessable markers, strip/neutralize link syntax in local mode, and add a canary-based injection test rather than relying on phrase matching.
+**SSRF/loopback allowlist is hostname-based and permissive (Medium):**
+- Risk: `LlamaCppProvider` accepts `host.docker.internal` and `llama-server` as "local" without DNS resolution, accepts `allow_remote=True` as a public flag, and does not require HTTPS or reject embedded credentials. `LLAMA_SERVER_URL`, `LLAMA_SERVER_HOST`, and `LLAMA_SERVER_PORT` are environment-controlled and not validated at bootstrap.
+- Files: `llama_cpp_provider.py:44-83`
+- Current mitigation: Default URL is loopback; remote endpoints require an explicit constructor flag that the UI does not expose.
+- Recommendations: Resolve hostnames and reject any non-loopback address at connect time, allow only the exact configured host/port, reject URL userinfo, and document that `host.docker.internal` is trusted only in the Compose network. Add a DNS-rebinding test.
 
-**Local-mode sanitizer does not block links or arbitrary HTML (Medium):**
-- Risk: `sanitize_markdown_for_local` removes Markdown images, `<img>` tags, and `<script>` (`ui/sanitizer.py:19-49`) but leaves `[text](https://…)`, `<a href>`, `<iframe>`, CSS `url(...)`, and other browser-initiated requests. The test only asserts that the image URL is removed; the `[click](https://evil.com)` link in the same fixture is not asserted (`tests/test_ui_smoke.py:113-124`).
-- Files: `ui/sanitizer.py`, `tests/test_ui_smoke.py`
-- Current mitigation: External images/scripts are blocked; "zero egress" is true for automatic image loads only.
-- Recommendations: Strip or rewrite all external link targets in local mode (`[text]` without href), strip `iframe`/`object`/`embed`/`style`, and update the test to assert the link target is gone.
+**Downloaded binaries and model weights are trusted without integrity verification (High):**
+- Risk: `setup.py` downloads GGUF files and llama-server archives over HTTPS with only a minimum-size check. Archive extraction uses `zipfile.extractall`/`tarfile.extractall` without path-traversal filtering. The installed binary is "verified" only by running `--version`. Hugging Face URLs use mutable `resolve/main` branches with no revision or SHA-256 pin.
+- Files: `setup.py:103-193`, `setup.py:308-346`, `setup.py:385`, `setup.py:427`, `setup.py:482`
+- Current mitigation: HTTPS and size thresholds; optional mirror list.
+- Recommendations: Pin commit revisions and publish SHA-256 hashes in the registry, verify before extraction/execution, extract with explicit member path validation, and sign or checksum release archives. Add tests for traversal entries and hash mismatch.
 
-**Cloud consent can be bypassed programmatically (Medium, latent):**
-- Risk: `AiModel._detect_provider()` constructs a `GroqProvider` whenever `cloud_mode=True` and no `cloud_provider` was supplied (`local_llm.py:174-181`). `GroqProvider` has no consent gate (`groq_provider.py:18-52,128-161`), unlike `LiteLLMProvider._assert_consent()` (`litellm_provider.py:142-148`). Any caller using `AiModel(cloud_mode=True)` or `set_cloud_mode(True)` without a consented provider can transmit prompts without consent. UI paths currently pass a consented provider, so this is a latent footgun.
-- Files: `local_llm.py`, `groq_provider.py`, `litellm_provider.py`
-- Recommendations: Remove the silent Groq fallback from `_detect_provider`, or give `GroqProvider` the same `user_consented`/`_assert_consent` contract. Add a test that `AiModel(cloud_mode=True)` cannot perform a network generation without consent.
+**Upload validation permits resource-exhaustion inputs (Medium):**
+- Risk: Validation checks only `%PDF-` magic bytes, a 50 MB size cap, and a 500-page cap. There is no decompression-bomb detection, parse time budget, object-count limit, or encryption check. The same bytes are parsed by Docling and then again by pypdf, and OCR can rasterize up to 500 pages, so a crafted or merely huge PDF can consume CPU/RAM for minutes. `doc_id_for` truncates SHA-256 to 64 bits.
+- Files: `upload_validation.py:15-16`, `upload_validation.py:64-113`, `docling_reader.py:127-130`, `ocr_fallback.py:112-114`, `ocr_fallback.py:390-405`
+- Current mitigation: Size/page caps and a 2048x2048 per-page raster guard.
+- Recommendations: Validate page tree/object counts, enforce a wall-clock ingestion budget with cancellation, skip re-parsing when a successful extraction exists, and use the full digest (or a longer prefix) for stable IDs. Set explicit memory limits for Docling and OCR workers.
 
-**Setup downloads and extracts archives without integrity or path checks (Medium):**
-- Risk: `download_file_with_progress` verifies only minimum size, not a SHA-256 (`setup.py:103-193`); `download_and_extract_archive` calls `zipfile.extractall` / `tarfile.extractall` with no member-path validation (`setup.py:341-346`), enabling Zip Slip if a mirror or TLS endpoint is compromised. Model and llama-server binaries are then executed (`setup.py:427,482`).
-- Files: `setup.py:103-193,308-357,359-493`
-- Current mitigation: HTTPS from Hugging Face/GitHub; size floor.
-- Recommendations: Pin SHA-256 digests per artifact, verify before extraction, use `zipfile` member checks (reject `..`/absolute paths) and `tarfile.extractall(..., filter="data")` on Python ≥3.12, and run the downloaded `llama-server --version` only after verification.
+**Deletion is logical, not physical (Medium):**
+- Risk: SQLite `VACUUM` runs after `purge_all`, but WAL files are not checkpointed/truncated, and deleted rows can remain in free pages or the WAL until checkpoint. LanceDB deletes are logical until compaction; prior table versions remain in `data/lancedb`. `data/lancedb_bench` is not purged.
+- Files: `doc_store.py:619-631`, `hybrid_retriever.py:233-260`, `hybrid_retriever.py:414-432`, `ui/lifecycle_service.py:76-107`
+- Current mitigation: UI confirmation and a physical `VACUUM`.
+- Recommendations: Run `PRAGMA wal_checkpoint(TRUNCATE)` and `VACUUM` after purge, compact/optimize LanceDB and clean old versions, remove benchmark directories, and document that SSD wear-leveling/OS caches may retain bytes.
 
-**Cloud API keys have uneven redaction (Low):**
-- Risk: `LiteLLMProvider._scrub_credentials` redacts keys from errors (`litellm_provider.py:135-140`), but `GroqProvider` errors are surfaced unscrubbed (`groq_provider.py:125-126,160-161`), and `ui/views.py:453-454` displays the raw exception in the browser.
-- Files: `groq_provider.py`, `ui/views.py`
-- Recommendations: Centralize a `redact_secrets()` helper and apply it to every provider exception and `st.error` sink.
+**Credentials and session isolation (Medium):**
+- Risk: API keys are held in plaintext in `st.session_state.cloud_api_keys`. There is no authentication or per-user authorization; every new Streamlit session can read the shared SQLite database and hydrated document list. Provider errors are scrubbed in `LiteLLMProvider` but not in `GroqProvider`.
+- Files: `main.py:60-91`, `main.py:161-188`, `litellm_provider.py:44-88`, `litellm_provider.py:135-140`, `groq_provider.py:99-161`, `ui/views.py:782-792`
+- Current mitigation: Single-user local deployment; keys are cleared when the session resets; `.env` and `data/` are gitignored and dockerignored.
+- Recommendations: Document the single-user trust boundary, avoid persisting keys, scrub all provider exceptions, and add a reverse-proxy/auth layer before exposing Streamlit beyond loopback. Consider encrypting the SQLite store at rest.
 
-**First-run Hugging Face egress and no encryption at rest (Low):**
-- Risk: `LocalEmbedding` instantiates `SentenceTransformer("all-MiniLM-L6-v2")` without `local_files_only` (`local_embedding.py:27-42,70`); on a fresh machine or container this performs network I/O before "local mode" is usable. SQLite and `.cache` store extracted document text unencrypted.
-- Files: `local_embedding.py`, `doc_store.py`, `ui/ingestion_service.py`
-- Recommendations: Set `HF_HUB_OFFLINE=1` after setup, document the first-run download explicitly, and consider SQLCipher or OS-level disk encryption guidance for shared laptops.
+**Runtime does not enforce offline model use (High):**
+- Risk: `LocalEmbedding` constructs `SentenceTransformer("all-MiniLM-L6-v2")` with default settings. If the model is not in the Hugging Face cache, the first ingestion or hydration downloads it. There is no `local_files_only=True`, offline flag, runtime preflight check, or UI warning. Setup has a `precache_embedding_model()` step, but it is optional and not re-verified at runtime.
+- Files: `local_embedding.py:24-68`, `setup.py:196-219`, `ui/hydration.py:46-55`, `ui/ingestion_service.py:267-270`
+- Current mitigation: Documented CPU-only usage and a setup pre-cache command.
+- Recommendations: Bundle or pre-download the embedding model during setup, set `HF_HUB_OFFLINE=1`/`local_files_only=True` at runtime, fail with actionable remediation if missing, and guard model loading with a process-wide lock (see Fragile Areas).
 
----
+**Prompt injection and adversarial content remain heuristic (Medium):**
+- Risk: Document text is wrapped in XML tags and the system prompt instructs the model to treat it as data, but `sanitize_xml_boundary` only escapes `<document_context>` tags. Visual descriptions and OCR text can contain instructions. Defense relies on the model plus substring checks for known phrases.
+- Files: `prompt_budget.py:30-42`, `summarizer.py:193-203`, `summarizer.py:286-289`, `citation_validator.py:69-100`, `visual_analyzer.py:260-290`
+- Current mitigation: System-prompt isolation, citation validation, and a known-directive denylist.
+- Recommendations: Escape all structural delimiters, add an instruction-hierarchy test corpus, and treat injection detection as best-effort telemetry rather than a security guarantee. Do not execute or render model-provided links in local mode.
 
 ## Performance Bottlenecks
 
-**Native FTS index is effectively never created; every query tokenizes the corpus (High):**
-- Problem: `create_fts_index()` is called only in the legacy `merge_insert`-unavailable branch (`hybrid_retriever.py:353-366`). The normal "create new table" path (`hybrid_retriever.py:340-343`) and the `merge_insert` path (`hybrid_retriever.py:346-352`) never call it. After a restart, `_fallback_store` is empty in LanceDB mode (`hybrid_retriever.py:121-133` only loads the JSON when LanceDB is unavailable), so `_bm25_search_fallback` reads up to 10,000 rows from LanceDB and re-tokenizes them on every question (`hybrid_retriever.py:475-535`).
-- Files: `hybrid_retriever.py`
-- Cause: FTS creation omitted from the primary write path; no migration/backfill on open.
-- Improvement path: Call `create_fts_index()` after table creation and after `merge_insert`; on `_init_table`, check for an FTS index and build one if absent. Cache tokenized BM25 stats or use LanceDB's native FTS (`search_fts` already attempts it at `hybrid_retriever.py:550-560`).
+**Every rerun constructs `DocStore` and probes health:**
+- Problem: Streamlit reruns `main.py` top-to-bottom. Each rerun opens SQLite, reads `PRAGMA user_version`, constructs `AiModel`/provider, and performs a health HTTP request. Failed probes repeat the request through a second provider.
+- Files: `main.py:142`, `main.py:148-190`, `local_llm.py:187-207`
+- Cause: Module-level initialization and uncached health checks.
+- Improvement path: Cache `DocStore`, health, and capabilities with `@st.cache_resource`/TTL, and avoid constructing a provider just to check health. Target sub-100 ms reruns when the server is offline.
 
-**Docling converter and RapidOCR engine are rebuilt per document (High):**
-- Problem: `IngestionService` constructs `DoclingReader(...)` per file (`ui/ingestion_service.py:116-121`), and `DoclingReader` builds a fresh `DocumentConverter` with pipeline options on every call (`docling_reader.py:126-132`). `apply_conditional_ocr` builds `OcrEngine()` per call (`ocr_fallback.py:346`), and `OcrEngine.__init__` eagerly instantiates RapidOCR (`ocr_fallback.py:70-76`). Multi-file uploads therefore pay model-loading cost repeatedly.
-- Files: `docling_reader.py`, `ocr_fallback.py`, `ui/ingestion_service.py`
-- Cause: No process-level singleton for heavy extractors (contrast with the embedding model cache in `local_embedding.py:24-42`).
-- Improvement path: Reuse one `DocumentConverter` and one `OcrEngine` per `IngestionService`/process, guarded by a lock; add lazy-init and a bounded LRU if memory is a concern.
+**Synchronous ingestion blocks the only UI thread:**
+- Problem: Docling parsing, pypdf fallback, OCR over up to 500 pages, VLM analysis of six regions, embedding generation, and LanceDB writes all run inside the upload rerun. There is no job queue, progress cancellation, or time budget.
+- Files: `ui/ingestion_service.py:56-329`, `ui/views.py:76-180`, `ocr_fallback.py:390-405`
+- Cause: The ingestion service is called directly from the sidebar render path.
+- Improvement path: Move ingestion to a background worker/queue, persist job state, and let the UI poll. Add a hard per-document timeout and cancellation that cleans up partial rows/vectors.
 
-**Synchronous ingestion blocks the script and can starve the GPU gate (Medium):**
-- Problem: Docling, OCR, embeddings, and up to six VLM calls all run inline in the Streamlit script (`ui/ingestion_service.py:110-275`). `analyze_visual_elements` supports a `progress_callback` (`visual_analyzer.py:209,260-264`) but `IngestionService` never passes one, so the UI shows only "Analyzing N visual elements…". Each VLM call waits up to 60 s on `InferenceGate` (`visual_analyzer.py:277`); a long chat generation in another session can time out every figure.
-- Files: `ui/ingestion_service.py:145-174`, `visual_analyzer.py:272-284`, `local_llm.py:298-311`
-- Improvement path: Pass the progress callback through, reduce `max_regions` for large documents, and run ingestion in a background thread/queue with a job-status surface so the script does not block. Treat gate timeouts as retryable rather than writing failure text.
+**OCR thread pool can exhaust RAM on large scans:**
+- Problem: Up to four worker threads each decode the full PDF and rasterize pages at up to 2048x2048 while holding `pdf_bytes`; OCR models also allocate working memory per thread. A single `OcrEngine` instance is shared across all workers.
+- Files: `ocr_fallback.py:53-160`, `ocr_fallback.py:318-417`
+- Cause: Memory guards are per page, not per concurrent worker, and the same `pdf_bytes` is retained for every task. RapidOCR thread-safety is assumed, not enforced.
+- Improvement path: Limit concurrency by available RAM (one or two workers on 8 GB systems), process pages in a streaming loop, release rasters immediately, and use a per-worker engine or a lock. Add a peak-RSS test with a synthetic large scan.
 
-**OCR thread pool is serialized by a single lock (Medium):**
-- Problem: `apply_conditional_ocr` submits up to 4 page jobs (`ocr_fallback.py:388-408`), but `OcrEngine.ocr_page_image` holds `self._ocr_lock` for the entire recognition call (`ocr_fallback.py:143-154`). Rendering may overlap; recognition does not. ONNX Runtime already manages intra-op threads.
-- Files: `ocr_fallback.py:68,143-154,388-408`
-- Improvement path: Remove the Python-level lock (RapidOCR instances are reusable per thread) or create a small recognizer pool; benchmark before adding concurrency, and keep a per-engine lock only if the backend is not thread-safe.
+**BM25 fallback scans and tokenizes up to 10,000 rows per query:**
+- Problem: When the in-memory fallback store is empty but LanceDB exists, `_bm25_search_fallback` loads up to 10,000 full chunk rows and tokenizes them in Python for every query.
+- Files: `hybrid_retriever.py:489-549`
+- Cause: No persistent inverted index when LanceDB FTS is unavailable, plus a hard row limit.
+- Improvement path: Rely on LanceDB FTS as the primary lexical path, cache a bounded BM25 index per document set, and fail with a clear degraded-mode status instead of scanning 10k rows synchronously.
 
-**Every rerun can double-probe llama-server (Medium):**
-- Problem: `main.py:155,187` calls `check_health()` on every interaction. When unhealthy, `AiModel.check_health` creates a second provider and probes again (`local_llm.py:193-207`). With `httpx.Timeout(connect=2.0)` (`llama_cpp_provider.py:82`) that can add ~4 s to every click while the server is down; in Docker the host lookup can be slower.
-- Files: `main.py:187-189`, `local_llm.py:187-207`, `llama_cpp_provider.py:89-141`
-- Improvement path: Cache health for 3-5 s (like `resource_telemetry.get_gpu_memory_info`), reuse the existing provider for the second probe when its type matches, and use a shorter connect timeout for background probes.
+**FTS index is rebuilt on every ingestion:**
+- Problem: Each `index_chunks` call invokes `create_fts_index(..., replace=True)`, rebuilding the full-text index even for one new document.
+- Files: `hybrid_retriever.py:342-370`, `hybrid_retriever.py:479-487`, `hybrid_retriever.py:256-377`
+- Cause: No incremental FTS update/optimize policy.
+- Improvement path: Create FTS once per table version, use `optimize()` after batches, and batch ingestion writes before rebuilding.
 
-**Document-filtered retrieval filters after candidate generation (Medium):**
-- Problem: `search_hybrid` requests `candidate_pool` from the whole corpus, then drops non-matching docs (`hybrid_retriever.py:592-610`). With many documents and a single-doc filter, the surviving set can be much smaller than `k` even though relevant chunks exist.
-- Files: `hybrid_retriever.py:566-679`
-- Improvement path: Push the `doc_id` predicate into the LanceDB query (`table.search(...).where(...)`, escaping with `_escape_sql_literal`) and into the BM25 candidate selection; if post-filtering is kept, scale the pool by corpus size or retry with a larger pool when fewer than `k` survive.
+**Summarization holds the global gate for minutes:**
+- Problem: `summarize_document` takes `InferenceGate` once and performs many sequential map/reduce calls under it. Chat and visual analysis wait up to 60 seconds and then fail with a busy message; all sessions are affected.
+- Files: `summarizer.py:233-289`, `summarizer.py:378-391`, `local_llm.py:26-90`
+- Cause: A single coarse lock around a multi-call workflow.
+- Improvement path: Reserve the gate per provider call with a fairness queue, expose progress/cancel, and let short chat requests preempt or interleave between summarization calls. If strict serialization is required, document the latency and provide a queued status instead of an error.
 
-**LanceDB score is computed with the wrong metric assumption (Medium):**
-- Problem: `search_dense` calls `table.search(query_vector)` without `.metric("cosine")` and converts `_distance` as if it were cosine distance (`hybrid_retriever.py:438-447`). LanceDB's default is L2; for normalized vectors L2 = sqrt(2-2cos), so displayed scores are not cosine similarities (rank order is preserved, which is why retrieval still works).
-- Files: `hybrid_retriever.py:425-463`
-- Improvement path: Specify `.metric("cosine")` at query time and in table creation, or convert with `score = 1 - (dist**2)/2` for normalized vectors. Add a test asserting cosine-equivalent scores.
+**Per-session retrievers duplicate LanceDB clients and caches:**
+- Problem: Every session creates its own `HybridRetriever`, embedding function, and table handle; FTS rebuilds and merge-inserts are not coordinated.
+- Files: `ui/hydration.py:46-75`, `hybrid_retriever.py:90-160`, `ui/views.py:205-220`
+- Cause: Session-scoped state instead of a process-wide storage service.
+- Improvement path: Share one retriever per database URI, protect writes with a lock, and keep per-session only view state.
 
-**Per-session duplicate vector state (Low-Medium):**
-- Problem: `index_chunks` always appends every chunk/vector to the pure-Python `_fallback_store`, even when LanceDB is active (`hybrid_retriever.py:297-310`). Every Streamlit session creates its own `HybridRetriever` (`ui/hydration.py:47-56`), so RAM grows per open tab and the fallback JSON is only persisted in non-LanceDB mode.
-- Files: `hybrid_retriever.py:113-119,297-310`, `ui/hydration.py`
-- Improvement path: Keep the fallback store empty when `is_persistent()`, or load it lazily only on LanceDB failure; make the retriever a process-level cached resource with per-session query wrappers.
+**Visual region detection scans every page before analysis:**
+- Problem: `detect_visual_regions` iterates all pages, calls `get_images()` and `get_drawings()`, and merges vector drawing rectangles before the 6-region VLM cap is applied. Long documents pay this cost even when no visual elements are analyzed.
+- Files: `visual_analyzer.py:58-143`, `visual_analyzer.py:200-240`
+- Cause: Detection and analysis budgets are decoupled.
+- Improvement path: Add a page-count budget, early-exit when enough regions are found, and cache detection results per document hash.
 
-**Summarizer holds the GPU gate for the whole map-reduce (Medium):**
-- Problem: `Summarizer.summarize_document` acquires `InferenceGate` around all map, consolidation, and reduce calls (`summarizer.py:388-395`). A long document can hold the gate for minutes; concurrent chat requests wait 60 s and then return the "System is busy" message (`local_llm.py:298-301`).
-- Files: `summarizer.py:233-299,388-395`
-- Improvement path: Acquire/release per provider call (map/reduce step) rather than around the whole pipeline, or add a queue with explicit progress and cancellation. Document the expected wait in the UI.
-
-**SQLite lacks an index on `chunks.doc_id` (Medium):**
-- Problem: Only primary keys and the summary indexes are declared (`doc_store.py:17-94`). `get_chunks_for_doc`, `delete_document`, and `purge_all` scan the chunks table by `doc_id` (`doc_store.py:340-362,587-619`); summarization calls `get_chunks_for_doc` for every uncached profile.
-- Files: `doc_store.py`
-- Improvement path: Add `CREATE INDEX idx_chunks_doc_id ON chunks(doc_id)` as schema v4, plus `pages(doc_id)` if needed; keep migrations additive.
-
-**Raw PDF bytes are copied repeatedly (Low):**
-- Problem: `UploadedFile.getvalue()` returns a full bytes copy (`ui/views.py:89`), then `DoclingReader` stores `_raw_bytes` (`docling_reader.py:51-69`), eagerly constructs a `PdfReader` over `io.BytesIO(self._raw_bytes)` (`docling_reader.py:73`), and `PdfReader` hashes the stream again (`pdf_reader.py:32-37`).
-- Files: `ui/views.py`, `docling_reader.py`, `pdf_reader.py`
-- Impact: Peak RSS for a 50 MB PDF can exceed several hundred MB during ingestion.
-- Improvement path: Pass the bytes/hash through the pipeline rather than re-reading/hashing; construct the fallback reader lazily.
-
-**Local llama-server stays resident in cloud mode (Low):**
-- Problem: Switching to cloud only closes the HTTP client (`local_llm.py:164-166`); the `llama-server` process (started by `start.py` or Compose) keeps its VRAM allocated.
-- Files: `local_llm.py:145-166`, `start.py:114-178`, `docker-compose.yml:30-55`
-- Improvement path: Document that cloud mode does not free VRAM, or expose a "stop local engine" action in Settings that terminates the managed process.
-
----
+**Pure-Python fallback vector search is linear:**
+- Problem: `VectorIndex.search` computes distance against every stored vector in Python; with thousands of fallback chunks this becomes O(N) per query and blocks the UI thread.
+- Files: `vector_index.py:92-136`, `hybrid_retriever.py:433-477`
+- Cause: The fallback store is an in-memory list, not an ANN index.
+- Improvement path: Treat LanceDB as required for production, cap fallback size, and surface a degraded-mode indicator instead of silently scanning.
 
 ## Fragile Areas
 
-**`ui/views.py` (829 lines) — view logic and orchestration in one module:**
-- Files: `ui/views.py` (sidebar ingestion loop, chat retrieval/streaming, summary cache, library CRUD, settings/privacy)
-- Why fragile: The upload loop mixes widget state, DB writes, session mutation, reruns, and service construction (`ui/views.py:72-137`); chat mixes query contextualization, retrieval, prompt assembly, streaming, citation validation, and history mutation (`ui/views.py:350-465`). Any new feature touches a long, side-effect-heavy function.
-- Safe modification: Extract upload orchestration into a testable function that takes an explicit file list and returns a result, and move chat turn construction into a `ChatService`. Add Streamlit AppTest coverage before moving code.
-- Test coverage: Only data-shape tests (`tests/test_main_ui.py`); the actual render functions are not exercised.
+**SQLite migrations (`doc_store.py`):**
+- Files: `doc_store.py:17-110`, `doc_store.py:151-164`
+- Why fragile: Each version's DDL is executed statement-by-statement and committed after the version bump, without an explicit enclosing transaction or pre-migration backup. Python's `sqlite3` does not open a transaction for DDL by default, so DDL may autocommit individually; a crash can leave a partially migrated schema with the old `user_version`. There is no downgrade path or cross-process migration lock. Tests only verify a fresh database reaches version 4.
+- Safe modification: Add new migrations as new version entries with `IF NOT EXISTS`; never edit an existing entry. Take a file backup before migrating, wrap DDL and the version bump in one transaction where SQLite permits, and acquire an exclusive lock.
+- Test coverage: `tests/test_doc_store.py:127` asserts `user_version == 4` on a fresh DB only; no v1→v4 upgrade, partial-migration, or concurrent-open test.
 
-**Dedupe ↔ hydration ↔ retriever consistency:**
-- Files: `ui/ingestion_service.py:97-108`, `ui/hydration.py:30-56`, `hybrid_retriever.py:220-229`
-- Why fragile: Three independent notions of "indexed" (SQLite status, SQLite chunk count, LanceDB `count_chunks`/`has_document`) can disagree. There is no reconciliation job.
-- Safe modification: Always gate UI enablement and dedupe on `retriever.has_document(doc_id)` in addition to SQLite; add a repair routine that re-indexes docs present in SQLite but absent from the retriever.
-- Test coverage: None for the mismatch scenario.
+**Schema lacks referential integrity for chunks and pages:**
+- Files: `doc_store.py:30-55`
+- Why fragile: `chunks` and `pages` have no foreign key to `documents`; evidence and summaries do. Deleting a document relies on explicit deletes, and a failed or partial write can leave orphan chunks/pages that are still returned by joins or retrieval.
+- Safe modification: Add foreign keys with `ON DELETE CASCADE` in a v5 migration, backfill/clean orphans first, and keep `PRAGMA foreign_keys=ON` on every connection (already at `doc_store.py:145`).
+- Test coverage: No orphan-cleanup test.
 
-**`InferenceGate` is process-local and timeout-based:**
-- Files: `local_llm.py:26-90`, `visual_analyzer.py:277`, `summarizer.py:389`
-- Why fragile: It protects a single Streamlit server process only; multiple replicas/processes (Compose scaling, `streamlit` workers in the future) each have their own lock and can still collide in VRAM. Timeouts surface as user-visible "busy" messages or indexed error text.
-- Safe modification: Keep the gate, but add a process-wide queue/backpressure signal and treat timeouts as retryable; if multi-process deployment is ever supported, move the lock to a cross-process primitive.
-- Test coverage: Good unit coverage of the gate itself (`tests/test_concurrency_lock.py`), none across processes or with a real GPU.
+**Vector schema and embedding-model/version metadata are absent:**
+- Files: `hybrid_retriever.py:300-340`, `local_embedding.py:27-68`, `models.py:13-30`
+- Why fragile: The LanceDB table assumes 384-dimensional vectors and does not record which embedding model, chunker, or prompt produced each row. Swapping `all-MiniLM-L6-v2` or changing dimensions produces incompatible rows that may fail merges or silently return meaningless similarities. `CONFIG_VERSION` changes cache paths but not the vector table.
+- Safe modification: Add `embedding_model`, `embedding_dim`, and `config_version` columns, reject incompatible writes, and trigger a full reindex on model change. Version the table name or store a metadata table.
+- Test coverage: No model-swap or dimension-mismatch test.
 
-**Streamlit session state as the source of truth:**
-- Files: `main.py:45-89,109-129`, `ui/hydration.py`, `ui/views.py:100-119`
-- Why fragile: Document metadata, retriever handles, cloud credentials, consent, and chat history live in a per-tab dict that is reset on restart; hydration is one-shot and gated by `_startup_hydrated`. A partial reset (`_reset_session_security_state`) can leave stale keys (`selected_chat_doc`, `_queued_prompt`, `settings_cloud_toggle`).
-- Safe modification: Centralize every key in one initializer/`reset` function, and add a test that enumerates keys and asserts the reset result.
-- Test coverage: Partial (`tests/test_ui_smoke.py`, `tests/test_main_ui.py` simulate logic but do not call the helpers that own the state in `main.py`, except `_reset_session_security_state`).
+**Session-state invariants are implicit:**
+- Files: `main.py:60-140`, `ui/views.py:60-180`, `ui/hydration.py:18-27`, `ui/lifecycle_service.py:60-130`
+- Why fragile: The UI depends on `uploader_key`, `doc_ids`, `failed_doc_ids`, `indexed_files`, `document_metadata`, `selected_chat_doc`, `selected_summary_doc`, `_startup_hydrated`, `summary_*`, and `active_cloud_provider` being present and mutually consistent. `_startup_hydrated` is set to `True` before the SQLite query, so a transient failure disables retry for that session. Manual resets update some keys but not all.
+- Safe modification: Introduce a typed session-state schema with an initializer and a reset method, and set `_startup_hydrated` only after successful hydration.
+- Test coverage: `tests/test_ui_smoke.py` initializes keys manually in a fixture; it does not test partial or failed hydration.
 
-**Untrusted-PDF parsing in-process:**
-- Files: `upload_validation.py:64-113`, `docling_reader.py:125-318`, `ocr_fallback.py:84-129`, `visual_analyzer.py:49-200`
-- Why fragile: Caps exist (50 MB, 500 pages, 2048² pixels), but parsing/extraction has no timeout, memory cap, or subprocess isolation. A crafted PDF can still cause long CPU stalls or OOM through decompression or pathological layout.
-- Safe modification: Run extraction in a worker subprocess with a wall-clock/memory limit; keep the existing size/page/pixel caps as the first line of defense.
-- Test coverage: Only happy-path and empty-page cases; no malicious/fuzz corpus.
+**Provider hot-swap and health semantics:**
+- Files: `local_llm.py:145-207`, `main.py:161-187`, `litellm_provider.py:150-173`
+- Why fragile: `set_cloud_mode` closes the active provider before selecting a replacement; a cached `cloud_provider` can point at a closed client if the mode is toggled outside the UI's reset path. Health checks are configuration-only for cloud providers. Capabilities can become stale after a model or key change.
+- Safe modification: Make provider selection return a new object without closing until the swap succeeds, validate cached providers on reuse, and recompute capabilities whenever health/model changes.
+- Test coverage: `tests/test_concurrency_lock.py` covers gate behavior; `tests/test_cloud_privacy.py:132` covers a switching matrix, but not closed-client reuse or stale capabilities.
 
----
+**Inference serialization is in-process only:**
+- Files: `local_llm.py:26-90`
+- Why fragile: `InferenceGate` is a class-level `threading.RLock`. Running Streamlit with multiple processes/workers, or launching a second app instance, bypasses the VRAM guarantee entirely. A generator that is abandoned without `finally` (or a consumer that stops iterating after an exception) can leave the active counter nonzero until garbage collection closes the generator. The gate also treats a 60-second wait failure as a text response rather than a typed error.
+- Safe modification: Use an OS-level lock/file or a single-worker deployment model, enforce `try/finally` around every generator, and make the counter recovery path reset only on process start. Document that Streamlit workers must remain 1.
+- Test coverage: Thread-level tests only (`tests/test_concurrency_lock.py`); no multi-process or abandoned-generator test.
+
+**llama-server lifecycle and Docker context mismatch:**
+- Files: `start.py:119-170`, `start.py:235-263`, `docker-compose.yml:30-63`, `Dockerfile:25-27`
+- Why fragile: `start.py` spawns llama-server with `stdout/stderr=DEVNULL`, no PID file, and terminates it only when `launch_streamlit` returns; a crash or forced kill can orphan the server holding VRAM. The launcher expects a model named `qwen3-...` while setup downloads Qwen2 weights. Docker Compose hardcodes `-c 4096`, while the provider default is 4096 and docs discuss 8192, so context assumptions drift.
+- Safe modification: Write a PID/metadata file, register an `atexit`/signal cleanup, capture logs to a rotating file, and derive model/context flags from one shared configuration.
+- Test coverage: `tests/test_start_launcher.py` mocks subprocess and covers the happy path; no real orphan/kill or Docker test.
+
+**Windows is the primary target but CI is Ubuntu-only:**
+- Files: `.github/workflows/ci.yml:8-45`, `ui/lifecycle_service.py:60-107`
+- Why fragile: CI runs Python 3.11 on Ubuntu; production guidance targets Windows 11. Windows file locking makes `shutil.rmtree(..., ignore_errors=True)` fail silently, OCR/thread and path behavior differ, and `nvidia-smi` resolution is platform-specific.
+- Safe modification: Add a Windows CI matrix (at least lint plus unit tests using temp dirs), replace `ignore_errors=True` with retry/backoff and explicit errors, and test cache deletion on Windows.
+- Test coverage: None on Windows.
+
+**Citation verification measures tag validity, not claim support:**
+- Files: `citation_validator.py:102-220`
+- Why fragile: `precision` is the fraction of `[E#]` tags that fall within the retrieved snippet range. A response can cite `[E1]` after an unsupported claim and still score 100%. `is_abstention` is a substring check, so a mixed answer containing a marker phrase and citations is classified as an invalid abstention. `detect_adversarial_injection` can flag benign text such as "system prompt:" in a legitimate discussion.
+- Safe modification: Rename the UI metric to "citation tag validity", add claim-to-snippet entailment checks for high-stakes answers, make abstention detection require the whole response to abstain, and scope injection detection to instruction-like sentences.
+- Test coverage: `tests/test_citation_validator.py` covers tag ranges and markers, not semantic support or mixed answers.
+
+**Docling accelerator is left on auto:**
+- Files: `docling_reader.py:120-135`
+- Why fragile: The pipeline sets table structure but no explicit CPU device. On a CUDA host, Docling's accelerator auto-selection can allocate GPU memory for layout/table models outside `InferenceGate`, competing with llama-server under the 4 GB ceiling.
+- Safe modification: Set an explicit CPU `AcceleratorOptions`/device in `PdfPipelineOptions` and assert in a test that the configured device is CPU. Document that all preprocessing is CPU-only.
+- Test coverage: No VRAM/device-allocation test.
+
+**Shared embedding-model cache is unsynchronized:**
+- Files: `local_embedding.py:24-46`
+- Why fragile: `_MODEL_CACHE` is a plain dict guarded by no lock. Two Streamlit sessions or hydration threads can both see a cache miss and construct duplicate `SentenceTransformer` instances, doubling RAM and initialization time. `clear_shared_model_cache()` does not coordinate with in-flight loads.
+- Safe modification: Guard cache access with a process-wide `threading.Lock` and double-check after acquisition. Add a concurrency test with a mocked slow constructor.
+- Test coverage: No concurrent model-load test.
+
+**OCR engine sharing across threads:**
+- Files: `ocr_fallback.py:53-160`, `ocr_fallback.py:389-405`
+- Why fragile: A single `OcrEngine`/RapidOCR instance is passed to up to four worker threads. ONNX Runtime sessions may be thread-safe for inference, but lazy initialization inside `ocr_page_image` is not synchronized, and model state is shared.
+- Safe modification: Initialize the recognizer before dispatch or guard initialization with a lock; document the thread-safety assumption and add a stress test with a mocked recognizer.
+- Test coverage: `tests/test_ocr_fallback.py:338` exercises multithreaded batch processing with mocks, not the real ONNX runtime.
 
 ## Scaling Limits
 
-**Vector store:**
-- Current capacity: LanceDB on disk; linear scan fallback in `VectorIndex` (`vector_index.py`); `_bm25_search_fallback` reads at most 10,000 rows (`hybrid_retriever.py:484`).
-- Limit: Fallback mode is O(N) per query and holds all vectors in RAM; native FTS is not built on the primary write path (see above). With no ANN index configuration, LanceDB still scans partitions but is far more scalable than the fallback.
-- Scaling path: Guarantee LanceDB availability, create the FTS index on write, add an ANN index (IVF-PQ/HNSW) once the corpus exceeds ~100k chunks, and remove the per-session Python fallback copy.
+**Single-user, unauthenticated session model:**
+- Current capacity: One Streamlit process, one shared SQLite file, one LanceDB directory, no auth.
+- Limit: Any client that reaches the port can read every hydrated document and create sessions; concurrent sessions contend for SQLite writes and LanceDB FTS.
+- Scaling path: Add authentication and per-user document namespaces, or explicitly deploy behind loopback-only and document that this is not multi-tenant. Replace per-session retrievers with a shared storage service.
 
-**VRAM / context:**
-- Current capacity: One active local model, 4,096-token context (`llama_cpp_provider.py:31,44-54`), 1,024 output tokens (`local_llm.py:308`), VLM at `-ngl 28` with an f16 mmproj (`start.py:127-149`, `docker-compose.yml:45-53`).
-- Limit: A 2B Q4 model plus a 1.33 GB f16 projector plus 4K KV cache is close to the 4 GB ceiling; longer contexts or a second concurrent process will OOM.
-- Scaling path: Quantize the mmproj, reduce `-ngl`/context, keep one server process, and expose the current budget in Settings (telemetry already reports VRAM: `resource_telemetry.py:33-97`).
+**Document size and page count:**
+- Current capacity: 50 MB and 500 pages per PDF; OCR workers capped at four; raster guard 2048x2048 per visual crop.
+- Limit: A 500-page scan can require hundreds of OCR pages, multiple full parses, and six VLM calls; peak RAM depends on PDF complexity and can exceed an 8 GB laptop. No time or memory budget exists beyond per-page raster limits.
+- Scaling path: Add streaming page extraction, cap OCR pages by text coverage, process in a subprocess with an RSS limit, and expose a hard ingestion timeout.
 
-**Ingestion throughput:**
-- Current capacity: Sequential Docling → OCR (conditional) → embeddings (CPU) → up to 6 VLM calls per PDF, all inline.
-- Limit: Large scanned documents (500 pages) can take many minutes and block the UI; multi-file uploads reload models per file.
-- Scaling path: Reuse extractor singletons, batch embeddings, cap pages/regions by config, and move ingestion to a background job with progress/cancel.
+**Context and VRAM:**
+- Current capacity: 4,096-token provider context, 2,500-token fast summary path, 2,000-token map batches, one serialized inference call.
+- Limit: Long documents require many sequential map calls; a 200-page report can hold the gate for minutes and block chat. Image analysis adds vision-encoder and image-token memory on top of the text model.
+- Scaling path: Precompute summaries in the background, cache map outputs per page hash, expose progress, and consider a smaller image resolution/region budget. Do not raise `-ngl` or context without measuring peak VRAM.
 
-**Session scaling:**
-- Current capacity: Each browser session constructs its own `AiModel`, `HybridRetriever`, and `LocalEmbedding` wrapper; the SentenceTransformer weights are shared via `_MODEL_CACHE` (`local_embedding.py:24-42`).
-- Limit: Memory and open LanceDB handles scale with concurrent tabs; `InferenceGate` serializes all inference anyway, so extra sessions add latency, not throughput.
-- Scaling path: Cache the retriever/embedding as process-level resources (`@st.cache_resource`) with per-session query state, and document the single-user assumption.
+**SQLite write contention:**
+- Current capacity: Per-operation connections with a 5-second busy timeout; WAL mode; indexes added in v4.
+- Limit: Concurrent uploads/reindex/delete from multiple sessions can hit `database is locked`; long `VACUUM` after purge blocks writers.
+- Scaling path: Serialize writes through a single worker, use a longer/queued retry policy, and avoid `VACUUM` on the UI thread.
 
----
+**LanceDB multi-session writers:**
+- Current capacity: One table, FTS rebuilt on writes, per-session clients.
+- Limit: Two sessions can call `create_fts_index(..., replace=True)` and merge-insert simultaneously; errors are often swallowed and the fallback store is read-modify-write per process.
+- Scaling path: Serialize mutations through a process-wide lock/queue, share one retriever per URI, and make writes idempotent with explicit failure reporting.
 
 ## Dependencies at Risk
 
-**PyMuPDF (AGPL-3.0 / commercial):**
-- Risk: Copyleft/commercial obligations for network distribution; already disclosed but not resolved.
-- Impact: Distributing the Docker image or hosting the app publicly may require an Artifex commercial license or a permissive renderer.
-- Files: `requirements.txt:15`, `docs/LICENSES.md`, `ocr_fallback.py`, `visual_analyzer.py`
-- Migration plan: Abstract rendering behind an interface and offer `pypdfium2` (Apache/BSD) as an alternative for rasterization/cropping; keep PyMuPDF as an opt-in extra.
+**Unpinned runtime requirements vs. a lockfile that Docker ignores:**
+- Risk: `requirements.txt` uses open ranges for `docling`, `lancedb`, `pymupdf`, `pillow`, `pyarrow`, `litellm`, and `rapidocr`. The Dockerfile copies `requirements-lock.txt` but installs `requirements.txt`.
+- Files: `requirements.txt:10-18`, `Dockerfile:25-27`, `.github/workflows/ci.yml:22-27`
+- Impact: Docker builds are not reproducible and can receive breaking major versions; the host and container may run different Docling/LanceDB/LiteLLM behavior.
+- Migration plan: Install `requirements-lock.txt` in Docker, add hashes (`--require-hashes`), pin all direct dependencies, and test the lock on Windows and Python 3.13 as well as 3.11.
 
-**Unpinned `docling`, `lancedb`, `litellm`, `pymupdf`, `numpy`:**
-- Risk: Breaking API/behavior changes on any fresh install; CI and Docker can diverge.
-- Impact: Ingestion or retrieval APIs (`DoclingReader`, `merge_insert`, `search(query_type="fts")`) are version-sensitive.
-- Files: `requirements.txt`, `requirements-lock.txt`, `Dockerfile`
-- Migration plan: Install from the lockfile everywhere and add a scheduled dependency-update job that runs the test suite.
+**No artifact hashes in the lockfile:**
+- Risk: `requirements-lock.txt` has no `--hash` entries (0 matches) and contains environment-specific markers, so resolution differs by platform/Python.
+- Files: `requirements-lock.txt` (645 lines), `requirements-test.txt`
+- Impact: A compromised or mutated package index can supply different bytes; Linux and Windows can resolve different wheels (notably `rapidocr` vs `rapidocr-onnxruntime`, Torch CUDA variants).
+- Migration plan: Generate a hash-pinned universal lock per supported Python version/platform, verify with `pip install --require-hashes`, and add a CI job that installs from the lock on Windows.
 
-**`torch`/CUDA wheel drift (transitive via sentence-transformers):**
-- Risk: `requirements.txt` does not pin torch; the lockfile pins `torch==2.14.1` with platform-specific CUDA variants. On Linux, default PyPI wheels pull large CUDA libraries; on a 4 GB laptop this is disk/RAM overhead and can conflict with the llama-server CUDA runtime.
-- Files: `requirements.txt:10`, `requirements-lock.txt:541-549`, `Dockerfile`
-- Migration plan: Pin a CPU-only torch wheel (`--index-url https://download.pytorch.org/whl/cpu`) for the embedding path and document the separate llama.cpp CUDA runtime.
+**Fast-moving parsing and vector libraries:**
+- Risk: Docling (`>=2.0.0`), LanceDB (`>=0.17.0`), LiteLLM (`>=1.50.0`), and PyMuPDF (`>=1.24.0`) have frequent API changes. The code depends on specific behaviors: `PdfPipelineOptions`, `merge_insert`, `create_fts_index`, `to_list`, and LiteLLM model routing.
+- Files: `docling_reader.py:25-35`, `hybrid_retriever.py:342-370`, `litellm_provider.py:90-160`
+- Impact: A fresh install can break extraction, vector upserts, or FTS with an exception that is logged and degraded rather than surfaced.
+- Migration plan: Pin exact tested versions in the runtime lock, add contract tests for each external API, and gate upgrades behind a compatibility test job.
 
-**RapidOCR v3 vs. `rapidocr-onnxruntime` v1:**
-- Risk: Two packages with different output shapes (`RapidOCROutput` vs tuple/list) and Python-version-conditional installation (`requirements.txt:13-14`); behavior on 3.13 is untested.
-- Files: `requirements.txt`, `ocr_fallback.py:21-32,154-197`
-- Migration plan: Standardize on one package per Python version, add a 3.13 CI leg, and keep the normalization branch covered by tests (already partly done in `tests/test_ocr_fallback.py:377-425`).
+**Hugging Face assets are mutable and fetched at runtime:**
+- Risk: Model and projector URLs use `resolve/main` with no revision; the embedding model is fetched on first use if setup was skipped.
+- Files: `setup.py:57-77`, `local_embedding.py:37-42`
+- Impact: Upstream file replacement changes behavior silently; a first run without network fails ingestion or violates the zero-egress claim.
+- Migration plan: Pin revisions and SHA-256 in the registry, pre-download both GGUF and SentenceTransformer assets during setup, and set offline flags at runtime.
 
-**`litellm` conditional pin for Python 3.14:**
-- Risk: The lockfile selects different `litellm` versions for `<3.14` and `>=3.14` (`requirements-lock.txt:205-207`), indicating the project is tracking upstream churn; the cloud adapter relies on streaming/`num_retries` semantics.
-- Files: `litellm_provider.py`, `requirements-lock.txt`
-- Migration plan: Pin one tested version per Python minor and add a contract test for streaming and consent failures.
+**Floating container image:**
+- Risk: `docker-compose.yml` uses `ghcr.io/ggml-org/llama.cpp:server-cuda` without a digest.
+- Files: `docker-compose.yml:30-33`
+- Impact: Rebuilding can pull a different llama.cpp/server image with different flags or CUDA requirements; the 4 GB tuning may no longer hold.
+- Migration plan: Pin the image by digest and document the tested CUDA/llama.cpp version.
 
----
+**Torch/NumPy/Transformers compatibility:**
+- Risk: The lock resolves `torch==2.14.1`, `torchvision==0.29.1`, `numpy==2.4.6`, and `transformers==4.57.6`. Sentence-Transformers and Docling both import Torch/Transformers; a platform-specific wheel mismatch can fail at import or produce different numerics.
+- Files: `requirements-lock.txt:240`, `requirements-lock.txt:541`, `requirements-lock.txt:549`, `requirements-lock.txt:567`, `requirements.txt:8`
+- Impact: CPU vs CUDA installs differ, and Docling may unexpectedly use GPU (see Fragile Areas). Python 3.13 has a separate RapidOCR path that CI does not exercise.
+- Migration plan: Pin CPU-only Torch for preprocessing unless CUDA is explicitly enabled, test import on Windows and Linux, and add a Python 3.13 job.
 
 ## Missing Critical Features
 
-**Authentication / multi-user isolation:**
-- Problem: No login or per-user document scoping; all sessions share `data/documents.db` and `data/lancedb/`.
-- Blocks: Safe deployment on any shared machine, LAN, or container host. Also makes the "privacy-respecting" claim conditional on physical access control.
+**Runtime egress enforcement:**
+- Problem: Local-mode privacy depends on the sanitizer, provider defaults, and the absence of explicit network calls. There is no firewall, proxy allowlist, CSP, or startup assertion that outbound sockets are blocked; SentenceTransformer and LiteLLM can make network calls outside the app's control.
+- Blocks: A defensible "zero egress" guarantee and security review sign-off.
 
-**Cache/transcript erasure as part of delete/purge:**
-- Problem: Neither single-document delete nor "Purge All" removes `.cache/` directories or the chat transcript.
-- Blocks: Honest "delete my data" behavior and GDPR-style erasure.
+**Authentication and per-user isolation:**
+- Problem: The app assumes a single trusted user. Any session that reaches port 8501 can hydrate the shared database and read all documents.
+- Blocks: Shared-machine, team, or remote deployment; safe use on a laptop with other local users.
 
-**Background ingestion with progress/cancel:**
-- Problem: All processing is synchronous inside the Streamlit script; there is no job queue, cancel, or resume.
-- Blocks: Large/scanned PDFs, batch uploads, and any responsiveness guarantee.
+**Cloud visual-understanding parity:**
+- Problem: Visual analysis runs only when the active provider reports `is_local` and `supports_vision`. In cloud mode, regions are detected but no descriptions are generated, and no cloud vision request is made. The consent text mentions transmitting visual summaries, but none are produced.
+- Files: `ui/ingestion_service.py:187-205`, `visual_analyzer.py:240-258`, `litellm_provider.py:298-355`
+- Blocks: The stated multimodal/cloud fallback value proposition; users may summarize a diagram-heavy PDF in cloud mode and receive no visual evidence with no warning.
 
-**Per-document re-index / vector repair:**
-- Problem: No UI or service to rebuild vectors for a doc whose SQLite row exists but LanceDB chunks are missing.
-- Blocks: Recovery from a corrupted/deleted LanceDB directory without re-uploading (and dedupe currently blocks the re-upload path).
+**Vector schema/version migration and automatic reindex:**
+- Problem: There is no recorded embedding model/dimension or config version in the vector table, and no automatic reindex when they change. `reindex_document` is manual and does not prune removed chunks.
+- Blocks: Safe model upgrades and reliable retrieval after configuration changes.
 
-**OCR confidence gating:**
-- Problem: `OcrEngine.ocr_page_image` returns an average confidence (`ocr_fallback.py:131-197`), but callers discard it (`_score` at `ocr_fallback.py:230`); low-confidence OCR text is indexed and cited like ground truth.
-- Blocks: Reliable evidence quality on noisy scans; no way to flag or exclude low-confidence pages.
+**Background ingestion with cancellation and budgets:**
+- Problem: Ingestion is synchronous, has no job identity, no cancel button, and no wall-clock/memory budget.
+- Blocks: Usable large-document workflows, responsive UI, and cleanup after abandoned uploads.
 
-**Visual/page preview in citations:**
-- Problem: Citations show page numbers and bbox text but never render the source page or crop; `bbox` is displayed as coordinates in the evidence drawer (`ui/views.py:328-333`).
-- Blocks: Verifiable visual citations for charts/figures, one of the project's stated goals.
+**Artifact integrity and offline bootstrap:**
+- Problem: No checksums/signatures for GGUF, projector, llama-server archives, or embedding weights; no single offline installer that prepares all assets and verifies them.
+- Blocks: Reproducible installs and supply-chain review.
 
-**Cloud-mode VRAM release:**
-- Problem: Switching to cloud does not stop the local llama-server, so VRAM stays allocated.
-- Blocks: Reclaiming the 4 GB envelope when working in cloud mode or running another GPU workload.
+**Cloud data-flow audit log:**
+- Problem: No record of which document pages, prompts, provider, model, or byte counts were sent, or when consent was granted/revoked.
+- Blocks: User auditability and incident response for a privacy-first product.
 
----
+**Cross-platform and end-to-end validation:**
+- Problem: No Windows CI, no browser-level test of egress, no real Docling/RapidOCR run in CI, and no real-model visual/citation quality harness.
+- Blocks: Confidence in the primary Windows target and in the 95% citation/visual-quality claims.
+
+**Stale-summary regeneration UX:**
+- Problem: When a summary's model version does not match, the UI silently shows the old summary instead of offering regeneration; the session cache key does not even detect the mismatch.
+- Blocks: Users cannot tell whether a summary reflects the current model or configuration.
 
 ## Test Coverage Gaps
 
-**Ingestion pipeline end-to-end:**
-- What's not tested: Successful `IngestionService.ingest_pdf` with Docling/OCR/VLM/LanceDB, dedupe behavior, cache writes, atomic failure rollback.
-- Files: `ui/ingestion_service.py`; only `tests/test_main_ui.py:337-365` covers the zero-chunk failure.
-- Risk: The most complex path (and the upload rerun loop) is unverified; model-loading and DB/vector consistency regressions ship silently.
+**UI render layer is untested:**
+- What's not tested: `render_chat_view`, `render_sidebar_documents`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, and the streamed-response path.
+- Files: `ui/views.py` (852 lines), `main.py`; no test imports `ui.views` or `main` (verified by searching `tests/`).
+- Risk: The sanitizer bypass, stale-summary fallback, gate-busy persistence, upload-loop behavior, and settings consent transitions can regress without a failing test. `tests/test_main_ui.py` tests data contracts and services, not rendered UI.
 - Priority: High.
 
-**Upload loop / Streamlit view behavior:**
-- What's not tested: `render_sidebar_documents`, `render_chat_view`, `render_library_view`, `render_settings_view` under a real `AppTest`; widget-key state transitions (uploader retention, consent cancel).
-- Files: `ui/views.py`; `tests/test_main_ui.py` only simulates dictionaries.
-- Risk: Infinite reruns and consent-dialog loops are invisible to the suite.
+**Streaming sanitization and browser egress:**
+- What's not tested: Sanitization of tokens before `st.write_stream`, reference-style Markdown, autolinks, `srcset`, `data:` URLs, and the interaction between cloud consent and historical re-rendering.
+- Files: `tests/test_sanitizer.py`, `tests/test_ui_smoke.py`; only single-pattern examples are covered.
+- Risk: A local-mode document can cause a browser request to an external host.
 - Priority: High.
 
-**Retriever/LanceDB consistency and FTS:**
-- What's not tested: Missing vectors for an `indexed` SQLite doc; `has_document` after restart; FTS index existence/usage; `doc_id` filter starvation; cosine score correctness.
-- Files: `hybrid_retriever.py`, `ui/hydration.py`; only one global-count hydration test (`tests/test_hydration.py:1-58`).
-- Risk: Silent empty retrieval and misleading scores.
+**Schema upgrade and partial-write behavior:**
+- What's not tested: v1→v4 migrations on an existing database, crash mid-migration, concurrent opens, orphan chunks/pages, re-ingestion with a changed chunk set, and rollback after vector failure.
+- Files: `tests/test_doc_store.py:127`, `ui/ingestion_service.py:237-309`
+- Risk: A user upgrading an existing install can end up with missing indexes or stale retrievable chunks.
 - Priority: High.
 
-**Privacy/erasure:**
-- What's not tested: Purge removes `.cache`, chat history, summary keys, and retriever rows; delete removes per-doc cache and summaries.
-- Files: `ui/views.py`, `ui/ingestion_service.py`, `doc_store.py`
-- Risk: Claimed erasure is incomplete; privacy regressions pass CI.
+**Cloud data-flow scope:**
+- What's not tested: Full-document summarization egress, per-document consent, cloud health false positives, `GroqProvider` consent enforcement, and credential scrubbing on Groq errors.
+- Files: `tests/test_cloud_privacy.py`, `tests/test_litellm_provider.py`, `tests/test_groq_provider.py`
+- Risk: Data can leave the device beyond the consent wording, or a provider can be used without an explicit gate.
 - Priority: High.
 
-**CI matrix and coverage:**
-- What's not tested: Python 3.12/3.13 (CI is 3.11 only, `.github/workflows/ci.yml:12-18`); Docker build; a real llama-server/VLM integration; Windows-specific paths.
-- Files: `.github/workflows/ci.yml`, `pyproject.toml`
-- Risk: The advertised 3.13 support and Docker instructions are unsubstantiated; platform bugs reach users.
+**Concurrency and multi-session behavior:**
+- What's not tested: Multiple processes bypassing `InferenceGate`, concurrent LanceDB FTS rebuilds, concurrent SQLite writes/deletes, abandoned generators, and retriever sharing.
+- Files: `tests/test_concurrency_lock.py` (thread-only), `tests/test_hybrid_retriever.py` (single-process)
+- Risk: VRAM exhaustion or corrupted/partial indexes in realistic multi-tab use.
 - Priority: Medium-High.
 
-**Security regression tests:**
-- What's not tested: `.dockerignore` contents; archive extraction path traversal; sanitizer link stripping; cloud consent bypass via `AiModel(cloud_mode=True)`; secret redaction in provider errors.
-- Files: `setup.py`, `ui/sanitizer.py`, `local_llm.py`, `groq_provider.py`, `.dockerignore`
-- Risk: Security fixes can regress without a failing test.
+**Real extraction/OCR/vision paths:**
+- What's not tested: CI runs Docling/RapidOCR only if their dependencies and synthetic corpus are present; the main suite mocks inference, embeddings, and OCR. There is no real VLM quality evaluation or full-document visual test.
+- Files: `tests/conftest.py`, `tests/data/corpus/generate_corpus.py`, `tests/test_docling_reader.py`, `tests/test_ocr_fallback.py`, `tests/test_visual_analyzer.py`, `scripts/benchmark_multimodal.py`
+- Risk: Parser/OCR/VLM regressions and VRAM behavior appear only in manual use; the claimed visual understanding is not measured in CI.
+- Priority: High for release confidence, Medium for unit CI.
+
+**Launcher/installer failure paths:**
+- What's not tested: Real llama-server spawn/orphan cleanup, invalid `LLAMA_SERVER_URL`, archive path traversal, checksum mismatch, partial downloads, and Windows binary resolution.
+- Files: `tests/test_start_launcher.py`, `tests/test_setup_llama.py`; subprocesses and downloads are mocked.
+- Risk: A failed install or orphaned server leaves the user with a broken or VRAM-occupied environment.
 - Priority: Medium.
 
-**Coverage enforcement:**
-- What's not tested: There is no `pytest-cov` dependency, coverage config, or threshold (`requirements-test.txt`, `pyproject.toml`). `~285` tests exist, but untested branches (dedupe, hydration mismatch, VLM failure indexing) are exactly the risky ones.
-- Files: `requirements-test.txt`, `pyproject.toml`, `.github/workflows/ci.yml`
-- Risk: Coverage can silently decay.
+**Dependency and static-analysis gates:**
+- What's not tested: Coverage thresholds, type checking, dependency vulnerability scanning, and warning-free execution. `pyproject.toml` selects only `E,F,W` Ruff rules, ignores `E501`, and `filterwarnings = ["ignore::UserWarning", "ignore::DeprecationWarning"]` suppresses warnings globally. No `pytest-cov`, mypy, or pyright configuration exists.
+- Files: `pyproject.toml:84-112`, `requirements-test.txt`
+- Risk: Dead code, type drift, and deprecated APIs accumulate silently; the suite can pass while large modules have no execution coverage.
 - Priority: Medium.
+
+**Citation and abstention edge cases:**
+- What's not tested: Mixed answers containing abstention phrases and valid citations, claim-level support, benign "system prompt:" text, and citation tags inside code blocks.
+- Files: `tests/test_citation_validator.py`, `citation_validator.py:102-220`
+- Risk: The UI can label an ungrounded answer as verified or reject a legitimate answer.
+- Priority: Medium.
+
+**Test coverage cross-reference:**
+
+| Area | Production files | Closest tests | Gap |
+|------|------------------|---------------|-----|
+| Chat/summary/library/settings rendering | `ui/views.py:180-852` | `tests/test_ui_smoke.py`, `tests/test_main_ui.py` (contracts only) | No render-path execution |
+| App bootstrap | `main.py` | `tests/test_ui_smoke.py:109` (imports one function) | No startup/error-path test |
+| Ingestion transactions | `ui/ingestion_service.py` | `tests/test_main_ui.py:337` (empty chunks), `:528` (upload loop) | No rollback/stale-chunk test |
+| Lifecycle delete/purge/reindex | `ui/lifecycle_service.py` | `tests/test_main_ui.py:368,451` | No failure injection, no reindex test |
+| Migrations | `doc_store.py:151-164` | `tests/test_doc_store.py:127` | Fresh DB only |
+| Cloud egress scope | `summarizer.py`, providers | `tests/test_cloud_privacy.py` | No full-document summarization test |
+| Launcher/installer | `start.py`, `setup.py` | `tests/test_start_launcher.py`, `tests/test_setup_llama.py` | Mocked happy paths only |
+| Real OCR/vision | `ocr_fallback.py`, `visual_analyzer.py`, `docling_reader.py` | unit tests with mocks/corpus | No real-model quality/VRAM run |
+| Sanitizer patterns | `ui/sanitizer.py` | `tests/test_sanitizer.py` | No reference/autolink/srcset/data: cases |
+| Static analysis | `pyproject.toml`, CI | none | No coverage, type, or vulnerability scan |
 
 ---
 
-## Quick Priority Order
-
-1. Fix the post-upload infinite rerun (rotate `uploader_key`, do not count dedupe as new) and the consent-cancel loop.
-2. Make purge/delete erase `.cache/`, chat history, and stale session keys; update the danger-zone copy.
-3. Gate dedupe/hydration on actual retriever presence, and add a vector-repair/re-index path.
-4. Add `.env`, `models/`, `*.gguf` to `.dockerignore`; default Compose to loopback and document auth.
-5. Fix FTS index creation and the LTS/LanceDB score metric; reuse Docling/RapidOCR singletons.
-6. Do not index VLM failure placeholders; pass the original filename for visual evidence.
-7. Add end-to-end ingestion, upload-loop, erasure, and retriever-consistency tests; add Python 3.12/3.13 CI legs.
-
----
-
-*Concerns audit: 2026-10-20*
+*Concerns audit: 2026-10-21*

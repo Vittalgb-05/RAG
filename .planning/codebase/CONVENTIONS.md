@@ -1,168 +1,207 @@
 # Coding Conventions
 
-**Analysis Date:** 2026-10-20
+**Analysis Date:** 2026-10-21
 
 ## Naming Patterns
 
 **Files:**
-- Root-level modules are flat `snake_case.py`, one primary class or cohesive concern per file: `citation_validator.py`, `doc_store.py`, `docling_reader.py`, `hybrid_retriever.py`, `local_llm.py`, `logging_setup.py`, `prompt_budget.py`, `resource_telemetry.py`, `summarizer.py`, `vector_index.py`.
-- Entry points and CLI tooling are short verb/role names at repo root: `main.py` (Streamlit entry), `start.py` (launcher), `setup.py` (installer/packaging), `models.py` (Pydantic schemas).
-- The UI layer is the only package: `ui/__init__.py`, `ui/theme.py`, `ui/components.py`, `ui/views.py`, `ui/ingestion_service.py`, `ui/hydration.py`, `ui/sanitizer.py`. Every module is a role-named `snake_case.py`; no nested subpackages.
-- Scripts live in `scripts/` with intent names: `benchmark_baseline.py`, `benchmark_multimodal.py`, `generate_icons.py`, `profile_resources.py`.
-- Tests are `tests/test_<module>.py`, one file per source module (`tests/test_hybrid_retriever.py` ↔ `hybrid_retriever.py`). Cross-cutting suites add a domain name: `tests/test_cloud_privacy.py`, `tests/test_concurrency_lock.py`, `tests/test_cache_invalidation.py`, `tests/test_main_ui.py`, `tests/test_ui_smoke.py`.
-- Test fixture assets live under `tests/data/corpus/` with a generator named `generate_corpus.py` (not collected by pytest, since collection requires `test_*.py`).
+- Root application modules: flat `snake_case.py` named after the domain noun, no package nesting: `doc_store.py`, `hybrid_retriever.py`, `local_llm.py`, `models.py`, `visual_analyzer.py`, `summarizer.py`, `resource_telemetry.py`, `citation_validator.py`, `prompt_budget.py`.
+- Presentation package: `ui/` with responsibility-suffixed modules: `ui/views.py`, `ui/components.py`, `ui/theme.py`, `ui/sanitizer.py`, `ui/hydration.py`, `ui/ingestion_service.py`, `ui/lifecycle_service.py`.
+- Tests: `tests/test_<module_or_feature>.py` mirroring the production module name (`tests/test_doc_store.py`, `tests/test_hybrid_retriever.py`, `tests/test_ui_smoke.py`).
+- Synthetic fixtures: `tests/data/corpus/generate_corpus.py` with generated `.pdf` files beside it.
 
 **Classes:**
-- `PascalCase`, noun-first, one public class per module: `DocStore` (`doc_store.py:108`), `HybridRetriever` (`hybrid_retriever.py`), `LocalEmbedding` (`local_embedding.py`), `PdfReader` (`pdf_reader.py`), `DoclingReader` (`docling_reader.py`), `AiModel` (`local_llm.py`), `IngestionService` (`ui/ingestion_service.py:38`), `TorchClassesScanLogFilter` (`logging_setup.py:16`).
-- Provider implementations end in `Provider` and subclass `BaseModelProvider`: `GroqProvider` (`groq_provider.py`), `LlamaCppProvider` (`llama_cpp_provider.py`), `LiteLLMProvider` (`litellm_provider.py`).
-- Pydantic schemas are bare domain nouns (`BBox`, `Chunk`, `Page`, `Document`, `RetrievalResult`, `EvidenceSnippet` in `models.py`) and result/verification records end in `Result`: `SummaryResult`, `CitationVerificationResult`, `IngestionResult`.
-- Result containers use `@dataclass`: `IngestionResult` (`ui/ingestion_service.py:23`) and the frozen `ValidatedUpload` record (`upload_validation.py:50-51`).
+- `PascalCase`, noun-first: `DocStore`, `HybridRetriever`, `AiModel`, `InferenceGate`, `IngestionService`, `LifecycleService`, `VisualAnalyzer`, `Summarizer`, `CitationVerificationResult`, `PromptBudget`-style helpers.
+- Service classes end in `Service` when they orchestrate a workflow (`ui/ingestion_service.py`, `ui/lifecycle_service.py`).
+- Exception-free result containers use `...Result` (`IngestionResult` in `ui/ingestion_service.py`, `CitationVerificationResult` in `citation_validator.py`) or Pydantic `...Result`/`...Status` models (`RetrievalResult`, `SummaryResult`, `HealthStatus` in `models.py` / `model_provider.py`).
 
-**Functions and methods:**
-- `snake_case`, verb-first for actions: `ingest_pdf`, `index_chunks`, `search_hybrid`, `compute_rrf`, `validate_citations`, `sanitize_markdown_for_local`, `hydrate_startup_state`, `inject_custom_theme`, `suppress_torch_classes_scan_warning`.
-- UI renderers all start with `render_` and return either `None` (they draw) or `str` (they return markup): `render_sidebar_documents`, `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view` (`ui/views.py:49,184,473,590,684`); `render_status_pill`, `render_citation_chip`, `render_stat_card`, `render_empty_state` (`ui/components.py`).
-- Private helpers and state use a single leading underscore: `_report` (`ui/ingestion_service.py:72`), `_reset_session_security_state` (`main.py:56`), `_connect`, `_apply_migrations` (`doc_store.py:123,141`), `_escape_sql_literal` (`hybrid_retriever.py:35`), `_embed_one` (`local_embedding.py`), `_fallback_store`, `_db`, `_table` (`hybrid_retriever.py`).
-- Test helpers use a leading underscore and are module-local: `_make_unit_vector` (`tests/test_hybrid_retriever.py:14`).
+**Functions:**
+- `snake_case`, verb-first: `ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`, `validate_pdf_bytes`, `assemble_grounded_messages`, `compute_rrf`, `should_ocr_page`.
+- Private helpers use a single leading underscore: `_connect`, `_apply_migrations`, `_escape_sql_literal`, `_report`, `_embed_one`, `_has_lancedb`.
+- UI renderers are `render_<area>_<thing>` and return `None` or an HTML string: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents`, `render_status_pill`, `render_citation_chip`, `render_empty_state`.
+- Getters use `get_` (`get_svg_icon`, `get_capabilities`, `get_gpu_memory_info`); predicates use `is_`/`has_`/`should_` (`is_locked`, `has_document`, `should_ocr_page`).
 
-**Variables and attributes:**
-- `snake_case` locals and attributes; no Hungarian prefixes. UI cache keys are deliberately string-prefixed: `_cached_cloud_model`, `_cached_cloud_key`, `_startup_hydrated` in `st.session_state`.
-- `UPPER_CASE` module constants: `CONFIG_VERSION`, `SCHEMA_V1_DDL`, `SCHEMA_V2_DDL`, `DEFAULT_DB_URI`, `DEFAULT_RRF_K`, `MAX_CHAT_TURNS`, `CITATION_REGEX`, `CANONICAL_ABSTENTION_MARKERS`, `WATCHER_LOGGER_NAME` (`logging_setup.py:13`), theme tokens `COLOR_BG`, `COLOR_PRIMARY`, `THEME_CSS` (`ui/theme.py:6-17`).
-- Newer modules type private caches explicitly, e.g. `_MODEL_CACHE: dict[tuple[str, str], SentenceTransformer]` (`local_embedding.py:24`) and `_ICON_CACHE: dict[str, str]` (`ui/components.py:11`).
+**Variables and constants:**
+- Module-level constants are `UPPER_SNAKE_CASE`: `CONFIG_VERSION`, `DEFAULT_DB_URI`, `DEFAULT_RRF_K`, `MAX_FILE_MB`, `MAX_PAGES`, `MAX_CHAT_TURNS`, `FAST_PATH_TOKEN_LIMIT`, `MAX_BATCH_TOKENS`, `CORPUS_DIR`, `CHART_PDF`.
+- Theme tokens are `COLOR_*` (`ui/theme.py:6-15`).
+- `snake_case` locals; single-letter names only for tight loops (`f`, `p`, `s`, `c`) or math (`k_rrf`).
+- Typed module-level aliases for domain unions: `SummaryProfile = Literal[...]` (`models.py:208`).
 
 **Types:**
-- Pydantic v2 models with `model_config = ConfigDict(frozen=True, extra="forbid")` for value objects (`BBox`, `Chunk`, `ProviderCapabilities`) and `extra="forbid"` alone for mutable records (`Page`, `Document`).
-- `Literal[...]` for closed enums (`status`, provider type) rather than free strings.
-- Field validation belongs on the model (`Field(..., ge=1)`, `model_validator(mode="after")`), not in call sites.
+- Pydantic v2 models in `models.py` are the canonical schema boundary; use `ConfigDict(frozen=True, extra="forbid")` for immutable value objects (see `BBox`, `Chunk`, `EvidenceSnippet`, `RetrievalResult`) and `extra="forbid"` for mutable records (`Page`, `Document`, `SummaryResult`).
+- Cross-field invariants use `@model_validator(mode="after")` returning `"Self"`-style quoted annotations (`models.py:47`, `models.py:135`).
+- Internal (non-boundary) result containers use `@dataclass`: `IngestionResult` (`ui/ingestion_service.py:23`) and `ValidatedUpload` (`upload_validation.py:51`, frozen).
 
 ## Code Style
 
 **Formatting:**
-- Formatter: `ruff format` (CI gate `ruff format --check .` in `.github/workflows/ci.yml`). Current baseline is clean: 65 files already formatted.
-- Config lives in `pyproject.toml:1-17`: `line-length = 120`, `target-version = "py311"`, excludes `.planning`, `.cache`, `data`, `docs`, `*.md`.
-- Style is effectively PEP 8 with 4-space indentation, double-quoted strings, two blank lines between top-level definitions. `ruff format` normalizes quote style; hand-written code already uses double quotes.
-- Long f-strings and inline HTML are allowed to run to 120 columns (e.g. `ui/components.py:59-61`, `ui/theme.py`), and E501 is ignored, so lines may exceed 120 when splitting would hurt readability.
+- Ruff, configured in `pyproject.toml`:
+  - `line-length = 120`
+  - `target-version = "py311"`
+  - `extend-exclude = [".planning", ".cache", "data", "docs", "*.md"]`
+- CI enforces both lint and format: `ruff check .` and `ruff format --check .` (`.github/workflows/ci.yml:33-36`).
+- 4-space indentation, double quotes, trailing commas in multi-line calls, multi-line argument lists with one arg per line when the call is long.
+- Long string concatenation uses implicit adjacent literals inside parentheses rather than `+` (see `ui/components.py:55-62`).
+- No `from __future__ import annotations` in application modules; only `start.py:8` and `setup.py:14` use it. PEP 604 unions (`str | None`) and builtin generics (`list[dict[str, Any]]`) are used directly.
 
 **Linting:**
-- Tool: `ruff` (pinned `>=0.9.0` in `requirements-test.txt:4`; local run verified with 0.15.12).
-- Rule selection: `select = ["E", "F", "W"]`, `ignore = ["E501", "W291", "W293"]` (`pyproject.toml:12-14`). This is pycodestyle + pyflakes only — no `I` import sorting, no `B` bugbear, no `UP` pyupgrade, no `ANN` annotations, no `D` docstring rules.
-- Per-file ignore: `scripts/*` may use `E402` (module-level import not at top) because scripts inject `sys.path` before importing project modules (`pyproject.toml:16-17`, `scripts/benchmark_multimodal.py:10-23`).
-- No mypy/pyright, no pre-commit hooks found.
-- Run gate locally with `ruff check .` and `ruff format --check .`; both pass today.
+- Rule selection is intentionally minimal: `select = ["E", "F", "W"]` with `ignore = ["E501", "W291", "W293"]` (`pyproject.toml:12-14`). E501 is ignored even though `line-length` is 120, so line length is soft and `ruff format` governs wrapping.
+- `scripts/*` is exempted from `E402` (module-level imports after code) via per-file ignores (`pyproject.toml:16-17`).
+- Optional native/SDK imports are guarded and assigned `None` with explicit `# type: ignore[...]` rather than being wrapped in lazy imports:
+  ```python
+  try:
+      import lancedb
+      import pyarrow as pa
+  except ImportError:
+      lancedb = None  # type: ignore[assignment]
+      pa = None  # type: ignore[assignment]
+  ```
+  (`hybrid_retriever.py:22-28`; same pattern in `docling_reader.py:27-32`, `groq_provider.py:14-15`, `litellm_provider.py:25-26`, `ocr_fallback.py:27-32`).
 
 ## Import Organization
 
-**Order (match this exactly):**
-1. Module docstring.
-2. Environment guards that must execute before heavy imports — `os.environ.setdefault("USE_TF", "0")`, `USE_TORCH`, `TF_ENABLE_ONEDNN_OPTS` (`main.py:15-18`, `start.py:31-33`, `local_embedding.py:10-12`).
-3. Standard library: `logging`, `os`, `datetime`, `pathlib`, `typing`/`collections.abc`.
-4. Third-party: `streamlit`, `pydantic`, `numpy`, `httpx`, `dotenv`.
-5. Blank line, then local absolute imports (`from models import ...`, `from ui.views import ...`).
+**Order:**
+1. Standard library (`from collections.abc import Generator`, `from contextlib import contextmanager`, `import json`, `import logging`, `from pathlib import Path`, `import sqlite3`, `from typing import Any`).
+2. Blank line, then third-party (`pydantic`, `streamlit`, `httpx`, `numpy`, `pytest`).
+3. Blank line, then local flat modules (`from doc_store import DocStore`, `from models import Chunk, Document`) and `ui.*` modules.
 
-**Path aliases:**
-- None configured. All imports are absolute top-level module names resolved from the repo root (flat layout) or the `ui` package.
-- `from __future__ import annotations` is used only in the two CLI/packaging entry points `setup.py:14` and `start.py:10`; library and UI modules rely on native `X | Y` syntax (Python 3.11).
-- Optional third-party dependencies are imported at module top in `try/except ImportError` and set to `None`, then guarded at use sites: `lancedb`/`pyarrow` (`hybrid_retriever.py:25-31`), `docling` (`docling_reader.py:27`), `groq` (`groq_provider.py:14`), `litellm` (`litellm_provider.py:25`), RapidOCR (`ocr_fallback.py:23-31`).
-- Deferred imports inside functions are reserved for optional/fallback paths to avoid import cost or cycles: `from pdf_reader import PdfReader` inside the Docling failure branch (`ui/ingestion_service.py:126`), and `from main import _reset_session_security_state` inside a test (`tests/test_ui_smoke.py:109`).
+Within a group, `from X import Y` statements precede plain `import X` statements and each subgroup is alphabetized — visible in `doc_store.py:9-15`, `local_llm.py:8-21`, `hybrid_retriever.py:8-18`. Tests typically do stdlib/third-party first (`from unittest.mock import MagicMock`, `import pytest`) then application imports (`tests/test_hybrid_retriever.py:3-9`).
+
+**Path Aliases:**
+- None. All imports are absolute module names from the repository root (`from ui.sanitizer import sanitize_display_markdown`). There is no `src/` layout and no `sys.path` manipulation in application code; tests rely on pytest's rootdir insertion.
+- `ui/__init__.py` re-exports only the sanitizer: `__all__ = ["sanitize_markdown_for_local"]`.
 
 ## Error Handling
 
 **Patterns:**
-- **Fail fast at boundaries.** Public constructors and validators raise `ValueError` for bad values and `TypeError` for bad types before mutating state: `DocStore.__init__`, `HybridRetriever`, `cache_dir_for` (`models.py:22-23`), `validate_pdf_bytes` (`upload_validation.py`).
-- **Typed, actionable exceptions.** Missing credentials raise `ValueError` with remediation; cloud use without consent raises `PermissionError("Cloud transmission blocked...")` (`litellm_provider.py`, covered in `tests/test_cloud_privacy.py:34`); provider transport failures are wrapped in `RuntimeError` with provider/model context (`tests/test_llama_cpp_provider.py:128`, `tests/test_litellm_provider.py:231`).
-- **Stage-isolated degradation in orchestration.** `IngestionService.ingest_pdf` wraps each stage (validation, extraction, OCR, visual analysis, SQLite write, LanceDB indexing, cache write) in its own `try/except`, logs a `warning`, and either continues with partial results or returns an `IngestionResult(success=False, error=...)` (`ui/ingestion_service.py:79-289`). Never let one optional stage abort the whole ingestion.
-- **Nested fallback chains.** Docling failure falls back to `PdfReader`; LanceDB absence/failure falls back to `VectorIndex` plus a JSON store (`hybrid_retriever.py:126-148`, `tests/test_hybrid_retriever.py:156`). Fallback paths log at `warning`/`info` and remain functional, not silent.
-- **Guard-only `except Exception: pass`** is acceptable solely for teardown/cleanup of optional resources: closing providers or reverting status (`main.py:63-67,77-81`, `ui/ingestion_service.py:252-266`). Do not use bare `except:` anywhere.
-- **Optional dependency guard shape:** `try: import x / except ImportError: x = None  # type: ignore[assignment]`, then raise `ImportError` with an install hint or degrade at the use site (`hybrid_retriever.py:25-31`, `groq_provider.py:14`).
-- **Empty is not an error.** Retrieval returns empty lists/result objects rather than raising on an empty store; `search_hybrid` is covered by `tests/test_hybrid_retriever.py:297`.
-- **Tests assert exception types and message fragments** with `pytest.raises(..., match="...")`; new error paths should expose a stable message substring.
+- **Domain validation raises `ValueError`.** Model validators and input parsers fail loudly with the offending value in the message: `raise ValueError(f"Invalid sha256 digest: {sha256!r}")` (`models.py:29`), `raise ValueError(f"Invalid BBox coordinates: ...")` (`models.py:50`).
+- **Type guards raise `TypeError` with the actual type.** `DocStore` validates every public write: `raise TypeError(f"Expected Document instance, got {type(doc).__name__}")` (`doc_store.py:174`).
+- **Consent violations raise `PermissionError`.** Cloud egress is blocked at the provider boundary: `raise PermissionError(...)` in `litellm_provider.py:145`; tested at `tests/test_cloud_privacy.py:34`.
+- **Provider/transport failures are wrapped in `RuntimeError` with `from exc`.** `llama_cpp_provider.py` raises `RuntimeError("llama-server generation failed ...")`; `litellm_provider.py:239` raises `RuntimeError(f"Cloud provider generation error ({self.model_name}): {scrubbed}") from err`. Secrets are scrubbed before inclusion.
+- **Missing capability raises `NotImplementedError`**, e.g. `GroqProvider.analyze_image` (`groq_provider.py:170`) and text-only cloud vision (`litellm_provider.py:322`).
+- **Concurrency timeout raises `TimeoutError`** from `InferenceGate.hold` (`local_llm.py:84`); callers may instead poll `InferenceGate.acquire(...)` and degrade gracefully.
+- **Orchestration services return result objects instead of raising.** `IngestionService.ingest_pdf` catches per-stage failures and returns `IngestionResult(success=False, error=...)` (`ui/ingestion_service.py:80-91`, `256-266`, `283-309`). UI code checks `result.success`/`result.error`; it does not wrap ingestion in try/except.
+- **Degrade with fallback at integration boundaries.** LanceDB init failure switches to `VectorIndex` (`hybrid_retriever.py:121-130`); Docling failure falls back to `PdfReader` (`docling_reader.py:312-313`); OCR/visual/cache failures are logged and skipped so the rest of the document still indexes (`ui/ingestion_service.py:207-208`, `321-322`).
+- **Cleanup uses `try/finally`.** `DocStore._connect` closes the connection in `finally` (`doc_store.py:146-149`); `InferenceGate.hold` releases in `finally` (`local_llm.py:87-90`); provider `close()` is idempotent.
+- **Deliberate swallow-and-continue only in cleanup/probe paths**, always with `pass` and a narrow scope: closing a retriever in `main.py:64-67`, re-writing failure status in `ui/ingestion_service.py:299-300`, `InferenceGate.release` catching `RuntimeError` (`local_llm.py:62-63`).
+
+**Rules to follow when adding code:**
+- Do not introduce custom exception classes; the codebase uses stdlib exception types plus result objects.
+- Never let a raw traceback reach Streamlit. Catch at the service boundary, log with context, return a typed result or a status pill.
+- Never include API keys or user document text in exception messages or logs. Scrub with the project's `_scrub`-style helper before raising (`litellm_provider.py`).
+- Re-raise with `from err` to preserve the chain.
 
 ## Logging
 
-**Framework:** stdlib `logging`. No third-party logger, no structlog.
+**Framework:** stdlib `logging`, no third-party logger.
 
 **Patterns:**
-- Every service module declares a module-level logger immediately after imports: `logger = logging.getLogger(__name__)` (`citation_validator.py:14`, `hybrid_retriever.py:20`, `local_llm.py:23`, `local_embedding.py:21`, `main.py:38`, `ui/views.py:30`, `ui/ingestion_service.py:20`, `ui/hydration.py:10`, `visual_analyzer.py:16`). The exception is `doc_store.py`, which uses `print` for migration notices only.
-- Use lazy `%s` formatting, never f-strings in log calls: `logger.info("LanceDB persistent retriever connected at %s", self.db_uri)` (`hybrid_retriever.py:126`), `logger.warning("OCR processing warning: %s", ocr_err)` (`ui/ingestion_service.py:156`).
-- Level discipline: `info` for lifecycle/state transitions, `warning` for recoverable degradation and fallbacks, `error` for failed persistence/generation, `debug` for noisy library notices (e.g. LanceDB FTS index creation, `hybrid_retriever.py:471-487`).
-- User-facing feedback uses Streamlit primitives (`st.status`, `st.warning`, `st.error`, `st.success`, `st.info`) or the `progress_callback` passed into `IngestionService`; never `print()` from UI/library code. `print()` is confined to human-run CLIs (`setup.py`, `start.py`, `scripts/*`, `tests/data/corpus/generate_corpus.py`) and two legacy spots: `pdf_reader.py:131` and `doc_store.py:154`.
-- `logging_setup.py` demonstrates the preferred targeted suppression: a `logging.Filter` subclass (`TorchClassesScanLogFilter`, `logging_setup.py:16-28`) installed idempotently by a named installer (`suppress_torch_classes_scan_warning`, `logging_setup.py:31-47`) instead of raising global logger levels. Filters are used because Streamlit's `get_logger` resets levels on import. Reuse this shape for any "quiet one benign third-party message" need.
-- Scripts that own the process configure logging once at entry: `logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")` (`scripts/benchmark_multimodal.py:29`, `scripts/profile_resources.py`).
+- Every module that logs declares `logger = logging.getLogger(__name__)` immediately after imports (`local_llm.py:23`, `hybrid_retriever.py:20`, `ui/ingestion_service.py:20`, `ui/views.py:31`, `main.py:38`).
+- Lazy `%s` formatting, never f-strings in log calls: `logger.warning("Failed to initialize LanceDB at %s: %s. Using in-memory fallback.", self.db_uri, err)` (`hybrid_retriever.py:128`).
+- Level usage:
+  - `logger.info` for lifecycle milestones (loaded chunks, connected index, migration applied).
+  - `logger.warning` for recoverable degradation (fallback to in-memory, cache write failure, visual analysis warning).
+  - `logger.error` for persistence/indexing failures that abort a stage (`ui/ingestion_service.py:257`, `hybrid_retriever.py:372`).
+  - `logger.debug` for third-party index notices (`hybrid_retriever.py:347`, `370`).
+- CLI entry points (`start.py`, `setup.py`, `scripts/*`) use `print()` with emoji status markers and write errors to `sys.stderr`; do not copy this into library modules.
+- Streamlit watcher noise is filtered centrally by `logging_setup.suppress_torch_classes_scan_warning()` (`logging_setup.py:31-47`), called once from `main.py:41`. Add new suppression filters there, not at call sites.
+- `logging_setup.TorchClassesScanLogFilter` is the model for targeted filters: subclass `logging.Filter`, match on `record.getMessage()`, keep it idempotent.
 
-## Docstrings and Comments
+## Comments
 
-**Module docstrings:**
-- Required on every module. They state purpose plus the invariants/requirement IDs the module enforces: capability tags such as `(RETR-01, RETR-02)`, `(QUAL-01)`, `(INF-03)`, `(UI-04)`, `(P0-Audit)` appear in `hybrid_retriever.py:1-6`, `local_llm.py`, `citation_validator.py:1-7`, `ui/sanitizer.py:1-5`, `main.py:1-9`, `ui/ingestion_service.py:1`.
-- Older test modules use a `# ---` banner block instead of a docstring (`tests/conftest.py:1-4`, `tests/test_models.py:1-5`); newer test modules use a one-line docstring (all `tests/test_*.py` touched recently, e.g. `tests/test_main_ui.py:1`). Prefer the docstring form for new files.
+**When to Comment:**
+- Module docstrings state purpose plus the invariants/requirements enforced, with requirement IDs in parentheses: `"(RETR-01, RETR-02)"` (`hybrid_retriever.py:5`), `"(INF-03)"` (`ui/sanitizer.py:4`), `"(QUAL-01)"` (`local_llm.py:29`). Preserve this convention — it links code to plan requirements.
+- Non-obvious tradeoffs are justified inline: why a filter is used instead of `setLevel` (`logging_setup.py:20-22`), why per-operation SQLite connections exist (`doc_store.py:132-140`), why mixed columns are parsed defensively (`docling_reader.py`).
+- Orchestration functions use numbered step comments (`# 1. Validation`, `# 2. Deduplication check`, ...) (`ui/ingestion_service.py:78-311`, `summarizer.py:248-397`, `local_llm.py:174-183`).
+- `ui/views.py` and `main.py` use banner comments to delimit sections:
+  ```python
+  # =====================================================================
+  # 1. SIDEBAR DOCUMENT MANAGER & INGESTION
+  # =====================================================================
+  ```
+  (`ui/views.py:45-47`, repeated at lines 180, 469, 586, 697).
+- Test files use either a module docstring or a banner block:
+  ```python
+  # ------------------------------------------------------------------
+  # Unit Tests for DocStore (doc_store.py)
+  # Verifies SQLite persistence, WAL mode, migrations, ...
+  # ------------------------------------------------------------------
+  ```
+  (`tests/test_doc_store.py:1-5`; also `tests/conftest.py:1-4`, `tests/data/corpus/generate_corpus.py:1-4`).
 
-**Function/method docstrings:**
-- Public APIs use Google-style `Args:` / `Returns:` blocks: `compute_rrf` (`hybrid_retriever.py:38-59`), `TorchClassesScanLogFilter` installer (`logging_setup.py:34-43`), `IngestionService.ingest_pdf` (`ui/ingestion_service.py:60-70`), `sanitize_markdown_for_local` (`ui/sanitizer.py:19-29`), `get_svg_icon` (`ui/components.py:14-24`).
-- Trivial one-liners may use a single imperative sentence: `"""Render an evidence citation chip with page reference."""` (`ui/components.py:114`), `"""Reset session security state, in-memory models, and cleanse credentials (WR-02)."""` (`main.py:57`).
-- Private helpers get a terse docstring only when non-obvious: `_escape_sql_literal` (`hybrid_retriever.py:35`).
+**JSDoc/TSDoc:** Not applicable (Python).
 
-**Comments:**
-- Comments explain *why*, not *what*: the `InferenceGate` VRAM rationale (`local_llm.py:29-33`), the filter-vs-setLevel rationale (`logging_setup.py:18-22`), the `torch.classes` watcher workaround (`main.py:40`), the stage numbering in `ingest_pdf` (`# 1. Validation` … `# 9. Disk cache write`, `ui/ingestion_service.py:77-277`).
-- Reference audit IDs in comments/docstrings when a guard exists for a specific defect: `(P0-1)`, `(P0-2)`, `(P1-5)`, `(WR-01)`, `(CR-01)`, `(CONCERNS P1 audit)` (`ui/ingestion_service.py:176`, `tests/test_ui_smoke.py:108-122`).
-- Section banners are the agreed visual separator. In `ui/views.py` and `main.py` use the 69-character `# ====` / `# ----` banner with a numbered title and surrounding blank lines (`ui/views.py:44-46,179-181,468-470,585-587,679-681`; `main.py:91-93,105-107`).
-- Keep the commented-out usage examples at the bottom of pure-logic modules (`pdf_reader.py:166-167`) — update them when the API changes.
-
-## Type Hints
-
-**Patterns:**
-- Modern PEP 604/PEP 585 syntax only: `str | None`, `list[Chunk]`, `dict[str, Any]`, `tuple[str, ...]`, no `Optional`/`List`/`Dict`.
-- Public methods on core services annotate all parameters and returns, including `-> None`: `DocStore` methods (`doc_store.py:156-638`), `HybridRetriever` methods, `compute_rrf(...) -> list[tuple[str, float, int, int | None, int | None]]` (`hybrid_retriever.py:42-48`).
-- Callable and generator types come from `collections.abc`: `Callable[[str], None]` (`ui/ingestion_service.py:58`), `Generator[...]` (`doc_store.py:123`, `local_llm.py:8`), never `typing.Callable`.
-- UI renderers may omit hints on `st`-driven helpers, but `ui/ingestion_service.py`, `ui/hydration.py`, `ui/components.py` and `ui/sanitizer.py` are fully annotated. New code in `ui/` must annotate parameters and returns.
-- Tests are inconsistent by file: newer suites annotate `def test_...(tmp_path, monkeypatch) -> None` (`tests/test_sanitizer.py`, `tests/test_cloud_privacy.py`); older suites omit the return annotation (`tests/test_models.py`, `tests/test_hybrid_retriever.py`). Match the file you are editing; annotate `-> None` for new test files.
-- `# type: ignore[...]` is used narrowly and always names the code (`# type: ignore[assignment]` in `hybrid_retriever.py:29`, `# type: ignore[method-assign]` in `tests/test_logging_setup.py:59`).
-
-## UI Package Conventions (chatbot-first refactor)
-
-**Layering:** `ui/theme.py` → `ui/components.py` → `ui/views.py`; services (`ui/ingestion_service.py`, `ui/hydration.py`) do not import Streamlit rendering, only `st.session_state` where hydration demands it. `main.py` is the only module that calls `st.set_page_config`.
-
-- **Theme:** design tokens are module constants (`COLOR_*`), CSS is one `THEME_CSS` f-string with doubled braces, and the single entry point is `inject_custom_theme()` (`ui/theme.py:186-188`). Never hardcode a new hex color in a view — add a token or reuse an existing one. Color values also appear in `ui/components.py` SVG calls (`#B9A3FF`, `#70D9C2`, `#FF7B72`); reuse those exact values.
-- **Components:** pure functions that return HTML strings; caller decides where to render. All interpolated user/document text must pass through `html.escape` (`ui/components.py:72,76-77,91,98-99,116`). SVG icons are local files loaded from `assets/icons/` and cached in `_ICON_CACHE`; never reference a CDN (enforced by `tests/test_ui_smoke.py:38-61`).
-- **Streamlit version compatibility:** optional APIs are feature-detected with `hasattr(st, "html")` and fall back to `st.markdown(..., unsafe_allow_html=True)` (`ui/components.py:63-66,80-83,107-110`). Follow this pattern for any newer Streamlit API.
-- **Views:** each view is one `render_<view>_view(...)` function with a numbered section banner; it receives services (`DocStore`, `AiModel`, cache dir) as parameters rather than constructing them internally. Session-scoped objects are passed as `st.session_state.get("hybrid_retriever")` into `IngestionService` and written back after ingestion (`ui/views.py:84-118`).
-- **Services:** `IngestionService` is constructor-injected (`doc_store`, optional `hybrid_retriever`, `local_embedding`, `cache_dir`) with lazy defaults; it returns a dataclass result instead of raising for expected failures, and accepts `progress_callback: Callable[[str], None]` for UI progress. Follow this shape for new orchestration services.
-- **HTML sanitization:** all model-authored or document-authored Markdown displayed in local mode goes through `sanitize_display_markdown` / `sanitize_markdown_for_local` (`ui/sanitizer.py`); external images/scripts are replaced, not escaped. Preserve the `allow_external` flag semantics (only `True` after cloud consent).
-- **Hydration:** `hydrate_startup_state` is idempotent via `st.session_state._startup_hydrated` and swallows/records non-fatal failures with `logger.warning` (`ui/hydration.py:19-28,47-58`). Add new startup state behind the same one-shot guard rather than in an ad-hoc `main.py` block.
-
-## Config and Secret Conventions
-
-- Precedence is explicit: Streamlit secrets first (`st.secrets["GROQ_API_KEY"]` guarded by `safe_has_secret`, `main.py:46-53`), then environment / `.env` loaded via `load_dotenv()`. Missing keys raise `ValueError` naming both locations.
-- `.env` is gitignored (`.gitignore:1`); `data/`, `models/`, `tools/`, `.cache/`, `.planning/` are gitignored. Never commit model weights, LanceDB data, or vendored binaries.
-- Cloud mode requires an explicit boolean consent (`user_consented`) and raises `PermissionError` otherwise; privacy invariants are regression-tested (`tests/test_cloud_privacy.py`, `tests/test_litellm_provider.py:30-36`). Any new network-capable path must carry the same gate.
-
-## Vendored Runtime: `tools/llama-server`
-
-- `tools/llama-server/` contains prebuilt Windows x64 `llama.cpp` binaries and CUDA 12 DLLs (`llama-server.exe`, `llama-cli.exe`, `ggml-cuda.dll`, `cublas64_12.dll`, etc.).
-- It is not source code and is entirely gitignored via `tools/` (`.gitignore` last line). Do not edit, format, or lint these files, and do not write Python that imports from this directory.
-- Launch/integration belongs in `llama_cpp_provider.py` (HTTP client) and `start.py` / `setup.py` (process acquisition and health verification), with the server URL configured rather than hardcoded into views.
+**Docstrings:**
+- Every public module, class, and function has a docstring. Module docstrings are one-paragraph summaries; class docstrings state responsibility.
+- Public methods with parameters use Google style `Args:` / `Returns:` / `Raises:` / `Yields:` with no type repetition: `cache_dir_for` (`models.py:17-30`), `compute_rrf` (`hybrid_retriever.py:45-58`), `assemble_grounded_messages` (`prompt_budget.py:65-78`), `BaseModelProvider.stream_text` (`model_provider.py:107-119`).
+- Tiny UI/helper functions get a one-line imperative docstring (`ui/components.py:14`, `52`, `86`; `ui/sanitizer.py:33`).
+- Abstract interface methods in `model_provider.py` document contracts, not implementations.
 
 ## Function Design
 
-**Size:** Small single-purpose functions; view renderers are the deliberate exception and should stay as sequential layout blocks (`render_chat_view` and `render_library_view` in `ui/views.py` run 100–200 lines of streamed layout calls).
+**Size:** No hard limit. Orchestration functions are long (80–200 lines) but are structured as numbered stages with early returns; keep each stage independently skippable. Small pure helpers live at module level (`_escape_sql_literal`, `compute_rrf`, `extract_page_references`, `estimate_tokens`, `sanitize_xml_boundary`).
 
 **Parameters:**
-- Keyword-friendly with sane defaults: `max_tokens: int = 1024`, `temperature: float = 0.2`, `k: int = 10`, `k_rrf: int = DEFAULT_RRF_K`, `allow_external: bool = False`.
-- Dependency injection over global lookups for testability: pass `transport=` to `LlamaCppProvider`, `provider=` to `AiModel`, `embedding_fn=` to `HybridRetriever`, `doc_store=` to `IngestionService`.
+- Keyword-friendly signatures with defaults; booleans default to the safe/local behavior (`cloud_mode: bool = False` in `local_llm.py:107`; `allow_external: bool = False` in `ui/sanitizer.py:33`).
+- Dependency injection for testability: services and analyzers accept optional collaborators in `__init__` (`IngestionService.__init__` takes `doc_store`, `hybrid_retriever`, `local_embedding`, `cache_dir`; `VisualAnalyzer` takes `region_detector` and `cropper`; `HybridRetriever` takes `embedding_fn`). Add new external dependencies this way instead of importing globals inside functions.
+- Callback parameters end in `_callback` and are optional (`progress_callback: Callable[[str], None] | None = None` in `ui/ingestion_service.py:59`).
+- Providers receive explicit `transport` for tests (`LlamaCppProvider(transport=transport)` in `tests/test_llama_cpp_provider.py`).
 
-**Return values:**
-- Data methods return plain containers or Pydantic models: `list[Chunk]`, `list[tuple[dict, float]]`, `RetrievalResult`, `IngestionResult`.
-- Generators for streaming: `stream_text` and `ask_a_question_from_pdf_stream` `yield` string fragments; never return a fully buffered string.
-- No `None`-on-error sentinel for failures that callers must handle — raise with context, or return an explicit result object with `success: bool, error: str | None`.
+**Return Values:**
+- Single typed return on every public function, including `-> None` on renderers and mutators.
+- Generators are annotated with `Generator[T, None, None]` from `collections.abc` (`doc_store.py:133`, `local_llm.py:73`, `model_provider.py:106`).
+- Binary success/failure returns `bool` (`InferenceGate.acquire`); rich outcomes return a dataclass/Pydantic result (`IngestionResult`, `RetrievalResult`, `HealthStatus`).
 
 ## Module Design
 
-- **Exports:** `ui/__init__.py` re-exports exactly one function (`sanitize_markdown_for_local`) with `__all__` (`ui/__init__.py:3-5`). Root modules export their class implicitly; do not add barrel re-exports at the repo root.
-- **Singletons:** process-level caches are module-private dicts with explicit get/clear functions (`_MODEL_CACHE` / `get_shared_sentence_transformer` / `clear_shared_model_cache`, `local_embedding.py:24-45`; `_ICON_CACHE`, `ui/components.py:11`). Tests must call the clear function in `finally` (`tests/test_hybrid_retriever.py:22-35`).
-- **Context managers:** resource-owning classes implement `__enter__`/`__exit__` plus `close()` (`HybridRetriever`); SQLite uses a `@contextmanager` connection factory (`doc_store.py:122-140`).
+**Exports:**
+- Flat modules, no explicit `__all__` except `ui/__init__.py`. Consumers import specific names: `from models import Chunk, Document`.
+- Canonical schemas are centralized in `models.py`; do not define ad-hoc dicts for chunks/documents/pages. Convert legacy dicts with `Chunk.model_validate(...)` at the boundary (`ui/ingestion_service.py:254`).
+- Provider implementations subclass `BaseModelProvider` (`model_provider.py:64`) and implement all abstract methods: `generate_text`, `stream_text`, `analyze_image`, `check_health`, `get_capabilities`.
 
-## Documented Test/Lint Gates
+**Barrel Files:** Not used. `ui/__init__.py` only re-exports the sanitizer for convenience.
 
-- `.github/workflows/ci.yml` is the canonical gate: Python 3.11, `uv pip install -r requirements-lock.txt -r requirements-test.txt`, `ruff check .`, `ruff format --check .`, `python tests/data/corpus/generate_corpus.py`, `pytest tests/ -v`.
-- README documents the same commands but its test count (248) is stale; the live suite collects 289 tests. Do not copy counts into docs without re-running collection.
+## Project-Specific Conventions
+
+**GPU concurrency (`InferenceGate`):**
+- Every LLM/VLM/summarization call must be wrapped in `with InferenceGate.hold(timeout=60.0):` (`local_llm.py:72-90`). This is a hard architectural rule (4 GB VRAM ceiling).
+- Preprocessing (Docling, RapidOCR, embeddings) stays on CPU and must not acquire the gate.
+
+**Transactional state mutation:**
+- UI components never write database or vector state directly. All ingestion goes through `IngestionService` (`ui/ingestion_service.py`); all deletion/purge/re-index goes through `LifecycleService` (`ui/lifecycle_service.py`).
+- Session-state mutation is centralized in `main.py` (`_reset_session_security_state`) and `ui/views.py` (`append_chat_turn`). Any destructive reset must rotate `st.session_state.uploader_key` (`main.py:70`) to avoid Streamlit re-processing cached uploads.
+
+**Privacy boundary:**
+- Any Markdown/HTML rendered from documents or model output must pass through `sanitize_display_markdown(...)` (`ui/sanitizer.py:81`). In local mode (`allow_external=False`) external images/links and `<script>`/`<iframe>`/`<object>`/`<embed>`/`<style>` are neutralized.
+- Escaped user text rendered into custom HTML uses `html.escape` (`ui/components.py:72`, `91`, `98`).
+- Cloud providers require explicit `user_consented=True`; default constructor behavior is local-only (`local_llm.py:104-123`).
+
+**Streamlit rendering:**
+- Prefer `st.html(markup)` with a `st.markdown(..., unsafe_allow_html=True)` fallback behind `hasattr(...)` (`ui/components.py:63-66`, `80-83`, `107-110`).
+- Theme colors come from `ui/theme.py` tokens; do not hardcode new hex values in views. Existing components do inline styles with the token values (acceptable pattern in `ui/components.py`), while page-level CSS belongs in `THEME_CSS`.
+- Zero emojis and local SVG icons only (`assets/icons/`), loaded by `get_svg_icon`.
+
+## Adding New Code
+
+**New inference provider:**
+1. Implement `BaseModelProvider` in a new root module `<name>_provider.py` (see `llama_cpp_provider.py`, `groq_provider.py`).
+2. Return `ProviderCapabilities` and `HealthStatus`; never raise from `check_health` — map failures to `status="unreachable" | "loading" | "error"`.
+3. Accept an injectable transport/client for offline tests.
+4. Assign it in `AiModel.set_cloud_mode` / `_detect_provider` (`local_llm.py`) rather than in UI code.
+
+**New UI workspace:**
+1. Add `render_<name>_view(...)` to `ui/views.py` in its own banner-delimited section.
+2. Reuse `ui/components.py` primitives and `ui/theme.py` tokens.
+3. Route from `main.py`; store all cross-rerun state in `st.session_state`.
+4. Sanitize any document/model-derived Markdown.
+
+**New persistence field:**
+1. Add the field to the Pydantic model in `models.py`.
+2. Add a new numbered `SCHEMA_V<n>_DDL` list and register it in `MIGRATIONS` (`doc_store.py:105-110`); never edit an existing migration.
+3. Update the `DocStore` read/write mapping and add a round-trip test in `tests/test_doc_store.py`.
+
+**New tests:** See `TESTING.md`; place them in `tests/test_<module>.py` and reuse `tests/conftest.py` fixtures.
 
 ---
 
-*Convention analysis: 2026-10-20*
+*Convention analysis: 2026-10-21*
