@@ -84,7 +84,10 @@ def _reset_session_security_state() -> None:
     st.session_state._cached_cloud_key = None
     st.session_state.cloud_mode = False
     st.session_state.cloud_mode_toggle = False
+    st.session_state.settings_cloud_toggle = False
     st.session_state.user_consented = False
+    st.session_state.selected_chat_doc = None
+    st.session_state.selected_summary_doc = None
     st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
 
 
@@ -221,6 +224,7 @@ def _render_consent_dialog_content() -> None:
             st.session_state.user_consented = False
             st.session_state.cloud_mode = False
             st.session_state.cloud_mode_toggle = False
+            st.session_state.settings_cloud_toggle = False
             st.session_state._show_consent_dialog = False
             st.rerun()
 
@@ -347,6 +351,7 @@ elif active_page in ("Document Library", "Library"):
     render_library_view(
         doc_store=doc_store,
         hybrid_retriever=st.session_state.hybrid_retriever,
+        cache_dir=CACHE_DIR,
     )
 elif active_page == "Settings":
     render_settings_view(

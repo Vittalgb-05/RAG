@@ -93,10 +93,20 @@ SCHEMA_V3_DDL = [
     """,
 ]
 
+SCHEMA_V4_DDL = [
+    """
+    CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_pages_doc_id ON pages(doc_id);
+    """,
+]
+
 MIGRATIONS: dict[int, list[str]] = {
     1: SCHEMA_V1_DDL,
     2: SCHEMA_V2_DDL,
     3: SCHEMA_V3_DDL,
+    4: SCHEMA_V4_DDL,
 }
 
 
@@ -617,6 +627,7 @@ class DocStore:
             conn.execute("DELETE FROM document_summaries;")
             conn.execute("DELETE FROM documents;")
             conn.commit()
+            conn.execute("VACUUM;")
 
     def count_documents(self) -> int:
         """Count total persisted documents in SQLite.

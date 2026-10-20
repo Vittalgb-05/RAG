@@ -24,6 +24,7 @@ from ui.components import (
     render_status_pill,
 )
 from ui.ingestion_service import IngestionService
+from ui.lifecycle_service import LifecycleService
 from ui.sanitizer import sanitize_display_markdown
 from upload_validation import MAX_FILE_MB
 
@@ -112,11 +113,15 @@ def render_sidebar_documents(
                         "pages": res.num_pages,
                         "chunks": res.num_chunks,
                     }
-                    new_docs_indexed += 1
+                    if not getattr(res, "already_indexed", False):
+                        new_docs_indexed += 1
                 else:
                     failures.append(f"{f.name}: {res.error}")
                     if res.doc_id:
                         st.session_state.failed_doc_ids.add(res.doc_id)
+
+            # Rotate uploader_key to clear uploaded files from widget and prevent infinite rerun loop
+            st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
 
             if failures:
                 status_widget.update(
@@ -161,17 +166,13 @@ def render_sidebar_documents(
                 )
             with col_del:
                 if st.button("×", key=f"del_sidebar_{doc_id}", help=f"Remove {fname}"):
-                    doc_store.delete_document(doc_id)
-                    retriever = st.session_state.get("hybrid_retriever")
-                    if retriever is not None:
-                        try:
-                            retriever.delete_document(doc_id)
-                        except Exception:
-                            pass
-                    st.session_state.doc_ids.discard(doc_id)
-                    st.session_state.indexed_files.discard(fname)
-                    st.session_state.document_metadata.pop(doc_id, None)
-                    st.session_state.failed_doc_ids.discard(doc_id)
+                    lifecycle = LifecycleService(
+                        doc_store=doc_store,
+                        hybrid_retriever=st.session_state.get("hybrid_retriever"),
+                        local_embedding=st.session_state.get("local_embedding"),
+                        cache_dir=cache_dir,
+                    )
+                    lifecycle.delete_document(doc_id, session_state=st.session_state)
                     st.toast(f"Removed {fname}")
                     st.rerun()
 
@@ -590,8 +591,10 @@ def render_summarizer_view(
 def render_library_view(
     doc_store: DocStore,
     hybrid_retriever: HybridRetriever | None,
+    cache_dir: Path | None = None,
 ) -> None:
     """Render document lifecycle manager: search, inspect, retry, re-index, and delete."""
+    cache_dir = cache_dir or (Path(__file__).resolve().parent.parent / ".cache")
     st.markdown("## Document Library")
     st.caption("Inspect stored documents, verify chunk counts, or delete files from local storage.")
 
@@ -633,24 +636,41 @@ def render_library_view(
                 st.markdown(card_html, unsafe_allow_html=True)
 
         with c_action:
-            col_open, col_del = st.columns(2)
+            col_open, col_reidx, col_del = st.columns([1, 1, 1])
             with col_open:
                 if st.button("Chat", key=f"lib_open_{doc.doc_id}", use_container_width=True):
                     st.session_state.selected_chat_doc = doc.doc_id
-                    st.session_state.active_workspace = "Ask Documents"
+                    st.session_state.active_workspace = "Chat"
+                    st.rerun()
+            with col_reidx:
+                if st.button(
+                    "Re-index",
+                    key=f"lib_reidx_{doc.doc_id}",
+                    help="Rebuild vector embeddings in LanceDB",
+                    use_container_width=True,
+                ):
+                    lifecycle = LifecycleService(
+                        doc_store=doc_store,
+                        hybrid_retriever=hybrid_retriever,
+                        local_embedding=st.session_state.get("local_embedding"),
+                        cache_dir=cache_dir,
+                    )
+                    if lifecycle.reindex_document(doc.doc_id):
+                        if doc.doc_id in st.session_state.document_metadata:
+                            st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = False
+                        st.toast(f"Reindexed {doc.filename}")
+                    else:
+                        st.error(f"Could not reindex {doc.filename}")
                     st.rerun()
             with col_del:
                 if st.button("Delete", key=f"lib_del_{doc.doc_id}", type="secondary", use_container_width=True):
-                    doc_store.delete_document(doc.doc_id)
-                    if hybrid_retriever is not None:
-                        try:
-                            hybrid_retriever.delete_document(doc.doc_id)
-                        except Exception as err:
-                            logger.warning("Failed to delete from retriever: %s", err)
-                    st.session_state.doc_ids.discard(doc.doc_id)
-                    st.session_state.indexed_files.discard(doc.filename)
-                    st.session_state.document_metadata.pop(doc.doc_id, None)
-                    st.session_state.failed_doc_ids.discard(doc.doc_id)
+                    lifecycle = LifecycleService(
+                        doc_store=doc_store,
+                        hybrid_retriever=hybrid_retriever,
+                        local_embedding=st.session_state.get("local_embedding"),
+                        cache_dir=cache_dir,
+                    )
+                    lifecycle.delete_document(doc.doc_id, session_state=st.session_state)
                     st.toast(f"Deleted {doc.filename}")
                     st.rerun()
 
@@ -658,21 +678,19 @@ def render_library_view(
     st.markdown("### Danger Zone")
     with st.expander("Delete All Stored Data", expanded=False):
         st.warning(
-            "This will permanently delete all indexed documents, SQLite rows, LanceDB vector tables, and disk caches. "
+            "This will permanently delete all indexed documents, SQLite rows, LanceDB vector tables, disk caches, and chat transcript. "
             "This operation cannot be undone."
         )
         confirm_purge = st.checkbox("I understand that this will erase all stored documents and vectors.")
         if st.button("Purge All Data Now", type="primary", disabled=not confirm_purge):
-            doc_store.purge_all()
-            if hybrid_retriever is not None:
-                hybrid_retriever.purge_all()
-            st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
-            st.session_state.doc_ids = set()
-            st.session_state.failed_doc_ids = set()
-            st.session_state.indexed_files = set()
-            st.session_state.document_metadata = {}
-            st.session_state._startup_hydrated = False
-            st.toast("Purged all local database records and index tables.")
+            lifecycle = LifecycleService(
+                doc_store=doc_store,
+                hybrid_retriever=hybrid_retriever,
+                local_embedding=st.session_state.get("local_embedding"),
+                cache_dir=cache_dir,
+            )
+            lifecycle.purge_all(session_state=st.session_state)
+            st.toast("Purged all local database records, vector tables, and cache files.")
             st.rerun()
 
 
@@ -693,6 +711,11 @@ def render_settings_view(
     st.caption("Telemetry, model configurations, and local privacy guarantees.")
 
     st.markdown("### Privacy & Inference Mode")
+
+    # Synchronize widget toggle state with actual consented cloud_mode
+    if not st.session_state.cloud_mode and not st.session_state.get("_show_consent_dialog", False):
+        if st.session_state.get("settings_cloud_toggle", False):
+            st.session_state.settings_cloud_toggle = False
 
     col_toggle, col_status = st.columns([2, 1])
     with col_toggle:

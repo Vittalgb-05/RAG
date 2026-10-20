@@ -16,6 +16,14 @@ unused
 tools
 data/
 .cache/
+models/
+*.gguf
+*.onnx
+.env
+.env.*
+.planning/
+tests/
+application_screenshots/
 *.tmp
 *.zip
 *.log

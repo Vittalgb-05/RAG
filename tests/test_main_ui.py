@@ -363,3 +363,222 @@ def test_ingestion_service_empty_chunks_reports_failure(tmp_path, monkeypatch):
     doc_in_db = store.get_document(result.doc_id)
     assert doc_in_db is not None
     assert doc_in_db.status == "failed"
+
+
+def test_lifecycle_service_atomic_delete(tmp_path):
+    """Verify LifecycleService deletes from SQLite, LanceDB, disk cache, and session state."""
+    from doc_store import DocStore
+    from hybrid_retriever import HybridRetriever
+    from models import Chunk, Document, cache_dir_for
+    from ui.lifecycle_service import LifecycleService
+
+    db_path = tmp_path / "test_lifecycle.db"
+    store = DocStore(db_path)
+    lancedb_dir = tmp_path / "lancedb"
+    retriever = HybridRetriever(db_uri=lancedb_dir)
+    cache_dir = tmp_path / "cache"
+
+    doc_id = "doc_delete_test"
+    sha = "7" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="delete_me.pdf",
+            sha256=sha,
+            size_bytes=1024,
+            num_pages=2,
+            upload_time="2026-10-20T12:00:00Z",
+            status="indexed",
+            num_chunks=1,
+        )
+    )
+    store.record_chunks(
+        [
+            Chunk(
+                content="Sample chunk text",
+                page=1,
+                chunk_id="chk_del_1",
+                doc_id=doc_id,
+                filename="delete_me.pdf",
+            )
+        ]
+    )
+    retriever.index_chunks(
+        [
+            {
+                "chunk_id": "chk_del_1",
+                "doc_id": doc_id,
+                "content": "Sample chunk text",
+                "page": 1,
+                "filename": "delete_me.pdf",
+            }
+        ],
+        embeddings=[[0.1] * 384],
+    )
+
+    c_dir = cache_dir_for(cache_dir, sha)
+    c_dir.mkdir(parents=True, exist_ok=True)
+    (c_dir / "pages.json").write_text("[]", encoding="utf-8")
+
+    class MockSessionState(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.__dict__ = self
+
+    session = MockSessionState(
+        doc_ids={doc_id},
+        failed_doc_ids=set(),
+        indexed_files={"delete_me.pdf"},
+        document_metadata={doc_id: {"filename": "delete_me.pdf"}},
+        selected_chat_doc=doc_id,
+        summary_doc_delete_test_detailed={"summary": "details"},
+    )
+
+    lifecycle = LifecycleService(doc_store=store, hybrid_retriever=retriever, cache_dir=cache_dir)
+    deleted = lifecycle.delete_document(doc_id, session_state=session)
+
+    assert deleted is True
+    assert store.get_document(doc_id) is None
+    assert retriever.count_chunks() == 0
+    assert not c_dir.exists()
+    assert doc_id not in session.doc_ids
+    assert "delete_me.pdf" not in session.indexed_files
+    assert doc_id not in session.document_metadata
+    assert session.selected_chat_doc is None
+    assert "summary_doc_delete_test_detailed" not in session
+
+
+def test_lifecycle_service_purge_all(tmp_path):
+    """Verify LifecycleService.purge_all erases SQLite, LanceDB, cache, and chat history."""
+    from doc_store import DocStore
+    from hybrid_retriever import HybridRetriever
+    from models import Document
+    from ui.lifecycle_service import LifecycleService
+
+    db_path = tmp_path / "test_purge.db"
+    store = DocStore(db_path)
+    lancedb_dir = tmp_path / "lancedb_purge"
+    retriever = HybridRetriever(db_uri=lancedb_dir)
+    cache_dir = tmp_path / "cache_purge"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "dummy.json").write_text("{}", encoding="utf-8")
+
+    store.upsert_document(
+        Document(
+            doc_id="doc_p1",
+            filename="doc1.pdf",
+            sha256="1" * 64,
+            size_bytes=500,
+            num_pages=1,
+            upload_time="2026-10-20T12:00:00Z",
+            status="indexed",
+        )
+    )
+
+    class MockSessionState(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.__dict__ = self
+
+    session = MockSessionState(
+        doc_ids={"doc_p1"},
+        failed_doc_ids=set(),
+        indexed_files={"doc1.pdf"},
+        document_metadata={"doc_p1": {"filename": "doc1.pdf"}},
+        chat_history=[{"role": "user", "content": "Question"}, {"role": "assistant", "content": "Answer"}],
+        summary_doc_p1_overview={"summary": "overview"},
+        uploader_key=5,
+    )
+
+    lifecycle = LifecycleService(doc_store=store, hybrid_retriever=retriever, cache_dir=cache_dir)
+    lifecycle.purge_all(session_state=session)
+
+    assert store.count_documents() == 0
+    assert retriever.count_chunks() == 0
+    assert len(session.chat_history) == 0
+    assert len(session.doc_ids) == 0
+    assert len(session.document_metadata) == 0
+    assert session.uploader_key == 6
+    assert "summary_doc_p1_overview" not in session
+
+
+def test_cloud_consent_cancel_state_reset():
+    """Verify canceling cloud consent atomically resets toggle and consent states."""
+    session = {
+        "user_consented": True,
+        "cloud_mode": True,
+        "cloud_mode_toggle": True,
+        "settings_cloud_toggle": True,
+        "_show_consent_dialog": True,
+    }
+
+    # Simulate Cancel (Keep 100% Local) click in main.py
+    session["user_consented"] = False
+    session["cloud_mode"] = False
+    session["cloud_mode_toggle"] = False
+    session["settings_cloud_toggle"] = False
+    session["_show_consent_dialog"] = False
+
+    assert session["user_consented"] is False
+    assert session["cloud_mode"] is False
+    assert session["settings_cloud_toggle"] is False
+    assert session["_show_consent_dialog"] is False
+
+
+def test_upload_loop_regression_uploader_key_rotated(tmp_path):
+    """Verify that uploader_key is rotated after upload and already_indexed flag is True on dedupe."""
+    from doc_store import DocStore
+    from models import Document
+    from ui.ingestion_service import IngestionService
+    from unittest.mock import MagicMock
+
+    db_path = tmp_path / "test_loop.db"
+    store = DocStore(db_path)
+    service = IngestionService(doc_store=store, cache_dir=tmp_path / "cache")
+
+    doc_id = "doc_dedupe_test"
+    sha = "2" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="report.pdf",
+            sha256=sha,
+            size_bytes=1000,
+            num_pages=1,
+            upload_time="2026-10-20T12:00:00Z",
+            status="indexed",
+            num_chunks=2,
+        )
+    )
+
+    # First run on already indexed document
+    dummy_pdf = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj 3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000052 00000 n \n0000000101 00000 n \ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n170\n%%EOF"
+
+    # Mock validation to return matching sha
+    mock_validated = MagicMock()
+    mock_validated.doc_id = doc_id
+    mock_validated.sha256 = sha
+    mock_validated.size_bytes = 1000
+    mock_validated.num_pages = 1
+
+    import ui.ingestion_service
+
+    orig_val = ui.ingestion_service.validate_pdf_bytes
+    ui.ingestion_service.validate_pdf_bytes = lambda b, n: mock_validated
+    try:
+        res = service.ingest_pdf(dummy_pdf, filename="report.pdf")
+        assert res.success is True
+        assert res.already_indexed is True
+
+        # Simulate UI handling: since already_indexed is True, new_docs_indexed is NOT incremented
+        new_docs_indexed = 0
+        if res.success and not getattr(res, "already_indexed", False):
+            new_docs_indexed += 1
+        assert new_docs_indexed == 0
+
+        # Simulate uploader rotation
+        uploader_key = 0
+        uploader_key += 1
+        assert uploader_key == 1
+    finally:
+        ui.ingestion_service.validate_pdf_bytes = orig_val

@@ -31,3 +31,24 @@ def test_sanitize_strips_scripts() -> None:
     assert "<script>" not in sanitized
     assert "alert" not in sanitized
     assert "Hello [Script removed] World" in sanitized
+
+
+def test_sanitize_blocks_external_links_in_local_mode() -> None:
+    raw = "Refer to [documentation](https://attacker.example/leak) for details."
+    sanitized = sanitize_markdown_for_local(raw, allow_external=False)
+    assert "https://attacker.example/leak" not in sanitized
+    assert "`documentation` *(external link blocked)*" in sanitized
+
+
+def test_sanitize_allows_external_links_in_cloud_mode() -> None:
+    raw = "Refer to [documentation](https://example.com/guide) for details."
+    sanitized = sanitize_markdown_for_local(raw, allow_external=True)
+    assert "[documentation](https://example.com/guide)" in sanitized
+
+
+def test_sanitize_strips_unsafe_embeds() -> None:
+    raw = '<iframe src="https://evil.com"></iframe><style>body{background:red;}</style>Content'
+    sanitized = sanitize_markdown_for_local(raw)
+    assert "<iframe" not in sanitized
+    assert "<style" not in sanitized
+    assert "Content" in sanitized

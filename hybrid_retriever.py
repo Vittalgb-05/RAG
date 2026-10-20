@@ -341,6 +341,10 @@ class HybridRetriever:
                     # Create new table
                     self._table = self._db.create_table("chunks", data=records, mode="create")
                     logger.info("Created new LanceDB 'chunks' table with %d records.", len(records))
+                    try:
+                        self.create_fts_index()
+                    except Exception as fts_err:
+                        logger.debug("Initial FTS index creation notice: %s", fts_err)
                 else:
                     # Upsert using merge_insert if supported, or deduplicated append
                     if hasattr(self._table, "merge_insert"):
@@ -360,10 +364,10 @@ class HybridRetriever:
                             except Exception:
                                 pass
                         self._table.add(records)
-                        try:
-                            self.create_fts_index()
-                        except Exception:
-                            pass
+                    try:
+                        self.create_fts_index()
+                    except Exception as fts_err:
+                        logger.debug("FTS index refresh notice: %s", fts_err)
             except Exception as err:
                 logger.error("Failed to persist chunks to LanceDB: %s. Chunks stored in fallback.", err)
         else:
@@ -374,6 +378,7 @@ class HybridRetriever:
     def index_evidence_elements(
         self,
         elements: list[EvidenceElement],
+        filename: str | None = None,
         embeddings: list[list[float]] | None = None,
     ) -> int:
         """Convert and index visual evidence elements (figures, tables, charts) as searchable chunks."""
@@ -383,10 +388,13 @@ class HybridRetriever:
         for idx, el in enumerate(elements):
             if not el.content or not el.content.strip():
                 continue
+            # Never index failed or placeholder analyses as factual evidence
+            if el.content.startswith("[Visual element:"):
+                continue
             chunk_dict = {
                 "chunk_id": el.element_id or f"{el.doc_id}_fig_{el.page}_{idx:02d}",
                 "doc_id": el.doc_id,
-                "filename": el.doc_id,
+                "filename": filename or el.doc_id,
                 "page": el.page,
                 "content": f"[{el.kind.title()} on page {el.page}]: {el.content.strip()}",
                 "char_start": 0,
@@ -437,7 +445,13 @@ class HybridRetriever:
 
         if self._has_lancedb and self._table is not None:
             try:
-                results = self._table.search(query_vector).limit(k).to_list()
+                query_builder = self._table.search(query_vector)
+                if hasattr(query_builder, "metric"):
+                    try:
+                        query_builder = query_builder.metric("cosine")
+                    except Exception:
+                        pass
+                results = query_builder.limit(k).to_list()
                 formatted_results: list[dict[str, Any]] = []
                 for row in results:
                     r = dict(row)

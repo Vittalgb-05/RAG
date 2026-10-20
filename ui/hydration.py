@@ -27,6 +27,10 @@ def hydrate_startup_state(doc_store: DocStore) -> None:
         logger.warning("Could not query documents for hydration: %s", e)
         return
 
+    failed_docs = [d for d in docs if d.status == "failed"]
+    for d in failed_docs:
+        st.session_state.failed_doc_ids.add(d.doc_id)
+
     indexed_docs = [d for d in docs if d.status == "indexed"]
     if not indexed_docs:
         return
@@ -41,18 +45,30 @@ def hydrate_startup_state(doc_store: DocStore) -> None:
             "upload_time": doc.upload_time,
             "pages": doc.num_pages,
             "chunks": doc.num_chunks,
+            "needs_reindex": False,
         }
 
-    # Hydrate hybrid retriever if chunks exist on disk
-    if st.session_state.hybrid_retriever is None:
-        try:
+    # Hydrate and verify hybrid retriever state against SQLite records
+    try:
+        if st.session_state.hybrid_retriever is None:
             retriever = HybridRetriever()
-            if retriever.count_chunks() > 0:
-                if st.session_state.local_embedding is None:
-                    st.session_state.local_embedding = LocalEmbedding()
-                retriever.embedding_fn = st.session_state.local_embedding._embed_one
-                st.session_state.hybrid_retriever = retriever
-            else:
-                retriever.close()
-        except Exception as err:
-            logger.warning("Retriever auto-hydration on startup failed: %s", err)
+            if st.session_state.local_embedding is None:
+                st.session_state.local_embedding = LocalEmbedding()
+            retriever.embedding_fn = st.session_state.local_embedding._embed_one
+            st.session_state.hybrid_retriever = retriever
+        else:
+            retriever = st.session_state.hybrid_retriever
+
+        # Verify each document's presence in the vector store and repair if missing
+        for doc in indexed_docs:
+            if not retriever.has_document(doc.doc_id):
+                chunks = doc_store.get_chunks_for_doc(doc.doc_id)
+                if chunks:
+                    logger.info("Auto-repairing missing vector index for %s (%s)", doc.filename, doc.doc_id)
+                    embs = st.session_state.local_embedding.get_embeddings([c.content for c in chunks])
+                    retriever.index_chunks([c.model_dump() for c in chunks], embeddings=embs.tolist())
+                    st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = False
+                else:
+                    st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = True
+    except Exception as err:
+        logger.warning("Retriever auto-hydration on startup failed: %s", err)

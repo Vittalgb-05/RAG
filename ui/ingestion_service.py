@@ -30,6 +30,7 @@ class IngestionResult:
     sha256: str
     num_pages: int
     num_chunks: int
+    already_indexed: bool = False
     fallback_used: bool = False
     error: str | None = None
     upload_time: str = ""
@@ -93,19 +94,47 @@ class IngestionService:
         sha256 = validated.sha256
         sha12 = sha256[:12]
 
-        # 2. Deduplication check
+        # 2. Deduplication check with vector verification and repair (CR-01)
         existing_doc = self.doc_store.get_by_sha(sha256)
         if existing_doc and existing_doc.status == "indexed" and existing_doc.num_chunks > 0:
-            _report(f"Document already indexed as {doc_id}.")
-            return IngestionResult(
-                success=True,
-                doc_id=doc_id,
-                filename=existing_doc.filename or filename,
-                sha256=sha256,
-                num_pages=existing_doc.num_pages,
-                num_chunks=existing_doc.num_chunks,
-                upload_time=existing_doc.upload_time,
-            )
+            has_vectors = self.retriever.has_document(existing_doc.doc_id) if self.retriever else True
+            if has_vectors:
+                _report(f"Document already indexed as {doc_id}.")
+                return IngestionResult(
+                    success=True,
+                    doc_id=doc_id,
+                    filename=existing_doc.filename or filename,
+                    sha256=sha256,
+                    num_pages=existing_doc.num_pages,
+                    num_chunks=existing_doc.num_chunks,
+                    already_indexed=True,
+                    upload_time=existing_doc.upload_time,
+                )
+            else:
+                # Missing vectors in LanceDB: attempt fast repair from persisted SQLite chunks
+                persisted_chunks = self.doc_store.get_chunks_for_doc(existing_doc.doc_id)
+                if persisted_chunks and self.retriever:
+                    _report(f"Restoring vector index for {filename} from stored SQLite chunks…")
+                    try:
+                        if self.embedding is None:
+                            self.embedding = LocalEmbedding()
+                        embs = self.embedding.get_embeddings([c.content for c in persisted_chunks])
+                        chunk_dicts = [c.model_dump() for c in persisted_chunks]
+                        self.retriever.index_chunks(chunk_dicts, embeddings=embs.tolist())
+                        return IngestionResult(
+                            success=True,
+                            doc_id=doc_id,
+                            filename=existing_doc.filename or filename,
+                            sha256=sha256,
+                            num_pages=existing_doc.num_pages,
+                            num_chunks=len(persisted_chunks),
+                            already_indexed=True,
+                            upload_time=existing_doc.upload_time,
+                        )
+                    except Exception as repair_err:
+                        logger.warning(
+                            "Vector repair notice for %s (%s); proceeding to full extraction.", doc_id, repair_err
+                        )
 
         # 3. Extraction (Docling with automatic pypdf fallback)
         _report("Extracting text and document structure…")
@@ -164,11 +193,16 @@ class IngestionService:
                 caps = vlm_provider.get_capabilities()
                 if caps.is_local and caps.supports_vision:
                     _report(f"Analyzing {min(len(regions), 6)} visual elements with local VLM…")
+
+                    def _vlm_prog(cur: int, tot: int, lbl: str) -> None:
+                        _report(f"Visual element {cur}/{tot}: {lbl}")
+
                     evidence_elements = analyzer.analyze_visual_elements(
                         pdf_bytes=raw_bytes,
                         doc_id=doc_id,
                         provider=vlm_provider,
                         max_regions=6,
+                        progress_callback=_vlm_prog,
                     )
         except Exception as vis_err:
             logger.warning("Visual analysis warning for %s: %s", filename, vis_err)
@@ -243,9 +277,9 @@ class IngestionService:
             embeddings = self.embedding.get_embeddings([p["content"] for p in paragraphs])
             self.retriever.index_chunks(paragraphs, embeddings=embeddings.tolist())
 
-            # Index visual evidence elements so questions about figures/tables retrieve them
+            # Index visual evidence elements with real filename attribution
             if evidence_elements and hasattr(self.retriever, "index_evidence_elements"):
-                self.retriever.index_evidence_elements(evidence_elements)
+                self.retriever.index_evidence_elements(evidence_elements, filename=filename)
         except Exception as idx_err:
             logger.error("LanceDB vector indexing error for %s: %s", doc_id, idx_err)
             # Revert document status to partial/failed

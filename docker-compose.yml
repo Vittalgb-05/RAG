@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: rag-assistant-app
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     volumes:
       # Mount data, models, and cache for persistence on host
       - ./data:/app/data
@@ -31,7 +31,7 @@ services:
     container_name: rag-llama-server
     profiles: ["gpu"]
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./models:/models:ro
     command: >

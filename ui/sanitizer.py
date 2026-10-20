@@ -12,8 +12,22 @@ _MD_IMAGE_PATTERN = re.compile(r"!\[(.*?)\]\((https?://[^\)]+|\/\/[^\)]+)\)", re
 # Regex matching HTML img tags: <img ... src="..." ...>
 _HTML_IMG_PATTERN = re.compile(r"<img\s+[^>]*src=[\"']?(https?:)?//[^\"'>]+[\"']?[^>]*>", re.IGNORECASE)
 
+# Regex matching Markdown links: [text](url)
+_MD_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\((https?://[^\)]+|\/\/[^\)]+)\)", re.IGNORECASE)
+
+# Regex matching HTML anchor tags: <a ... href="..." ...>text</a>
+_HTML_A_PATTERN = re.compile(
+    r"<a\s+[^>]*href=[\"']?(?:https?:)?//[^\"'>]+[\"']?[^>]*>(.*?)<\/a>", re.IGNORECASE | re.DOTALL
+)
+
 # Regex matching raw script tags
 _HTML_SCRIPT_PATTERN = re.compile(r"<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>", re.IGNORECASE)
+
+# Regex matching unsafe embedded HTML tags (iframe, object, embed, style, link)
+_HTML_UNSAFE_EMBEDS = re.compile(
+    r"<(?:iframe|object|embed|style|link)\b[^<]*(?:(?!<\/(?:iframe|object|embed|style|link)>)<[^<]*)*<\/(?:iframe|object|embed|style|link)>|<(?:iframe|object|embed|style|link)\b[^>]*\/?>",
+    re.IGNORECASE,
+)
 
 
 def sanitize_markdown_for_local(text: str, allow_external: bool = False) -> str:
@@ -21,8 +35,8 @@ def sanitize_markdown_for_local(text: str, allow_external: bool = False) -> str:
 
     Args:
         text: Raw Markdown or generated LLM text.
-        allow_external: If True, external images are preserved (cloud mode).
-                        If False (default), external images are replaced with text placeholders.
+        allow_external: If True, external links and images are preserved (cloud mode).
+                        If False (default), external links and images are neutralized.
 
     Returns:
         Sanitized Markdown text safe for browser rendering in local mode.
@@ -32,8 +46,9 @@ def sanitize_markdown_for_local(text: str, allow_external: bool = False) -> str:
 
     sanitized = text
 
-    # Strip dangerous executable HTML elements
+    # Strip dangerous executable and embeddable HTML elements
     sanitized = _HTML_SCRIPT_PATTERN.sub("[Script removed]", sanitized)
+    sanitized = _HTML_UNSAFE_EMBEDS.sub("[Embedded element removed]", sanitized)
 
     if not allow_external:
         # Replace external Markdown images with a clean text placeholder
@@ -45,6 +60,20 @@ def sanitize_markdown_for_local(text: str, allow_external: bool = False) -> str:
 
         # Replace HTML images with a text placeholder
         sanitized = _HTML_IMG_PATTERN.sub("`[Blocked external image]`", sanitized)
+
+        # Neutralize external Markdown links to eliminate outbound tracking
+        def _replace_md_link(match: re.Match[str]) -> str:
+            label = match.group(1).strip()
+            return f"`{label}` *(external link blocked)*"
+
+        sanitized = _MD_LINK_PATTERN.sub(_replace_md_link, sanitized)
+
+        # Neutralize HTML anchor tags
+        def _replace_html_a(match: re.Match[str]) -> str:
+            label = match.group(1).strip()
+            return f"`{label}` *(external link blocked)*"
+
+        sanitized = _HTML_A_PATTERN.sub(_replace_html_a, sanitized)
 
     return sanitized
 

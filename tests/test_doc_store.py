@@ -125,14 +125,22 @@ def test_two_instance_interleave_R1(tmp_path):
 
 
 def test_user_version_set(tmp_path):
-    """Verify schema migrations apply and PRAGMA user_version is 3."""
+    """Verify schema migrations apply and PRAGMA user_version is 4 with doc_id indexes."""
     db_file = tmp_path / "version_check.db"
     store = DocStore(db_file)
 
     with store._connect() as conn:
         cursor = conn.execute("PRAGMA user_version;")
         version = cursor.fetchone()[0]
-        assert version == 3
+        assert version == 4
+
+        # Verify v4 indexes exist
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name IN ('idx_chunks_doc_id', 'idx_pages_doc_id');"
+        )
+        indexes = {row[0] for row in cursor.fetchall()}
+        assert "idx_chunks_doc_id" in indexes
+        assert "idx_pages_doc_id" in indexes
 
 
 def test_chunk_json_columns_nullable(tmp_path):

@@ -470,14 +470,29 @@ def test_index_evidence_elements(tmp_path):
         )
     ]
 
+    failed_elem = EvidenceElement(
+        element_id="elem_failed_1",
+        doc_id="doc_vlm_test",
+        page=4,
+        kind="chart",
+        content="[Visual element: analysis failed: InferenceGate timeout]",
+        bbox=BBox(x0=0.0, y0=0.0, x1=100.0, y1=100.0),
+    )
+
     retriever.set_embedding_fn(lambda q: _make_unit_vector(99))
-    indexed_count = retriever.index_evidence_elements(elements)
+    # Pass both valid and failed elements, with filename="chart_report.pdf"
+    indexed_count = retriever.index_evidence_elements([elements[0], failed_elem], filename="chart_report.pdf")
+    # Only the valid element should be indexed
     assert indexed_count == 1
     assert retriever.count_chunks() == 1
 
-    # Verify BM25 / FTS keyword search retrieves the figure description
+    # Verify BM25 / FTS keyword search retrieves the figure description with attributed filename
     fts_results = retriever.search_fts("GPU utilization clusters", k=1)
     assert len(fts_results) == 1
     assert fts_results[0]["chunk_id"] == "elem_fig_1"
+    assert fts_results[0]["filename"] == "chart_report.pdf"
     assert fts_results[0]["extraction"] == "vlm"
     assert fts_results[0]["page"] == 3
+
+    # Verify failed analysis was never indexed
+    assert retriever.search_fts("InferenceGate timeout", k=1) == []
