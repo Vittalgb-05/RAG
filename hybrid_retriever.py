@@ -14,7 +14,7 @@ import re
 from typing import Any
 import warnings
 
-from models import BBox, Chunk, EvidenceSnippet, RetrievalResult
+from models import BBox, Chunk, EvidenceElement, EvidenceSnippet, RetrievalResult
 from vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
@@ -360,12 +360,44 @@ class HybridRetriever:
                             except Exception:
                                 pass
                         self._table.add(records)
+                        try:
+                            self.create_fts_index()
+                        except Exception:
+                            pass
             except Exception as err:
                 logger.error("Failed to persist chunks to LanceDB: %s. Chunks stored in fallback.", err)
         else:
             self._save_fallback_store()
 
         return len(raw_chunks)
+
+    def index_evidence_elements(
+        self,
+        elements: list[EvidenceElement],
+        embeddings: list[list[float]] | None = None,
+    ) -> int:
+        """Convert and index visual evidence elements (figures, tables, charts) as searchable chunks."""
+        if not elements:
+            return 0
+        chunks: list[dict[str, Any]] = []
+        for idx, el in enumerate(elements):
+            if not el.content or not el.content.strip():
+                continue
+            chunk_dict = {
+                "chunk_id": el.element_id or f"{el.doc_id}_fig_{el.page}_{idx:02d}",
+                "doc_id": el.doc_id,
+                "filename": el.doc_id,
+                "page": el.page,
+                "content": f"[{el.kind.title()} on page {el.page}]: {el.content.strip()}",
+                "char_start": 0,
+                "char_end": len(el.content.strip()),
+                "extraction": "vlm",
+                "bbox": el.bbox.model_dump() if el.bbox else None,
+            }
+            chunks.append(chunk_dict)
+        if chunks:
+            return self.index_chunks(chunks, embeddings=embeddings)
+        return 0
 
     def add_vector(self, vector: list[float], document: dict[str, Any]) -> None:
         """Compatibility method matching VectorIndex.add_vector interface."""
@@ -536,6 +568,7 @@ class HybridRetriever:
         query: str,
         k: int = 5,
         k_rrf: int = DEFAULT_RRF_K,
+        doc_id: str | list[str] | None = None,
     ) -> RetrievalResult:
         """Execute hybrid search combining dense semantic and BM25 full-text search with RRF.
 
@@ -543,6 +576,7 @@ class HybridRetriever:
             query: Natural language query or question.
             k: Number of top evidence snippets to return.
             k_rrf: Reciprocal rank fusion smoothing parameter (default: 60).
+            doc_id: Optional document ID or list of document IDs to restrict retrieval to.
 
         Returns:
             Canonical immutable RetrievalResult containing ranked EvidenceSnippet items (RETR-03, RETR-04).
@@ -555,7 +589,7 @@ class HybridRetriever:
                 search_mode="hybrid",
             )
 
-        candidate_pool = max(k * 2, 10)
+        candidate_pool = max(k * 4 if doc_id else k * 2, 10)
 
         # 1. Dense vector search
         dense_matches: list[dict[str, Any]] = []
@@ -568,6 +602,12 @@ class HybridRetriever:
 
         # 2. Full-text search
         fts_matches = self.search_fts(query, k=candidate_pool)
+
+        # 3. Filter by doc_id if specified
+        if doc_id:
+            allowed_docs = {doc_id} if isinstance(doc_id, str) else set(doc_id)
+            dense_matches = [d for d in dense_matches if d.get("doc_id") in allowed_docs]
+            fts_matches = [d for d in fts_matches if d.get("doc_id") in allowed_docs]
 
         # Build chunks lookup
         chunks_map: dict[str, dict[str, Any]] = {}

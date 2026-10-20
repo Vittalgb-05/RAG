@@ -6,7 +6,7 @@ import numpy as np
 
 from hybrid_retriever import DEFAULT_DB_URI, HybridRetriever, compute_rrf
 from local_embedding import LocalEmbedding
-from models import Chunk, RetrievalResult
+from models import BBox, Chunk, EvidenceElement, RetrievalResult
 
 
 def _make_unit_vector(seed: int, dim: int = 384) -> list[float]:
@@ -410,3 +410,74 @@ def test_hybrid_retriever_purge_all(tmp_path):
     assert retriever.count_chunks() == 0
     assert not retriever.has_document("d1")
     assert not retriever.has_document("d2")
+
+
+def test_search_hybrid_doc_id_filter(tmp_path):
+    """Verify search_hybrid accepts doc_id keyword argument and restricts results."""
+    db_dir = tmp_path / "filter_lancedb"
+    retriever = HybridRetriever(db_uri=db_dir)
+
+    v1 = _make_unit_vector(11)
+    v2 = _make_unit_vector(22)
+    chunks = [
+        Chunk(
+            content="Alpha deep learning architectures",
+            filename="doc_a.pdf",
+            page=1,
+            chunk_id="c_a1",
+            doc_id="doc_alpha",
+        ),
+        Chunk(
+            content="Beta distributed systems consensus",
+            filename="doc_b.pdf",
+            page=1,
+            chunk_id="c_b1",
+            doc_id="doc_beta",
+        ),
+    ]
+    retriever.index_chunks(chunks, embeddings=[v1, v2])
+
+    retriever.set_embedding_fn(lambda q: v1)
+
+    # Search with no filter returns results
+    res_all = retriever.search_hybrid("deep learning", k=5)
+    assert isinstance(res_all, RetrievalResult)
+    assert len(res_all.snippets) > 0
+
+    # Search with doc_id filter restricts to doc_alpha
+    res_alpha = retriever.search_hybrid("deep learning", k=5, doc_id="doc_alpha")
+    assert all(s.doc_id == "doc_alpha" for s in res_alpha.snippets)
+    assert any(s.chunk_id == "c_a1" for s in res_alpha.snippets)
+
+    # Search with doc_id filter for doc_beta
+    res_beta = retriever.search_hybrid("deep learning", k=5, doc_id="doc_beta")
+    assert all(s.doc_id == "doc_beta" for s in res_beta.snippets)
+
+
+def test_index_evidence_elements(tmp_path):
+    """Verify evidence elements from visual analysis are indexed and retrievable."""
+    db_dir = tmp_path / "evidence_lancedb"
+    retriever = HybridRetriever(db_uri=db_dir)
+
+    elements = [
+        EvidenceElement(
+            element_id="elem_fig_1",
+            doc_id="doc_vlm_test",
+            page=3,
+            kind="chart",
+            content="Bar chart showing quarterly GPU utilization across 4 clusters.",
+            bbox=BBox(x0=50.0, y0=100.0, x1=400.0, y1=300.0),
+        )
+    ]
+
+    retriever.set_embedding_fn(lambda q: _make_unit_vector(99))
+    indexed_count = retriever.index_evidence_elements(elements)
+    assert indexed_count == 1
+    assert retriever.count_chunks() == 1
+
+    # Verify BM25 / FTS keyword search retrieves the figure description
+    fts_results = retriever.search_fts("GPU utilization clusters", k=1)
+    assert len(fts_results) == 1
+    assert fts_results[0]["chunk_id"] == "elem_fig_1"
+    assert fts_results[0]["extraction"] == "vlm"
+    assert fts_results[0]["page"] == 3

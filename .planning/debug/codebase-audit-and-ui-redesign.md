@@ -61,11 +61,20 @@ updated: 2026-10-19
   - Refactored `main.py` from 973 lines to ~300 lines.
   - Modularized components into `ui/theme.py`, `ui/components.py`, `ui/views.py`, `ui/hydration.py`, `ui/sanitizer.py`.
 
+### 4. Code Leak Resolution & Chatbot-First Refactor (Current Session)
+- **Leaking HTML/Code in Sidebar:** Streamlit treats 4+ space-indented lines inside `st.markdown(unsafe_allow_html=True)` as Markdown `<pre><code>` code blocks, leaking raw `<div>` tags into the UI.
+  - *Fix:* Replaced `st.markdown` with `st.html()` / `st.sidebar.html()` in `ui/components.py` and `main.py`, and escaped interpolated labels and filenames using `html.escape()`.
+- **Chatbot-First Interface:** Default landing page is now conversational Chat, with documents uploaded and managed directly in the sidebar or via prompt dropzone, suggestion chips ("Summarize thesis", "Extract key tables", "Analyze methodology", "Risks & limitations"), and grounded verifiable citations.
+- **`search_hybrid` `TypeError` Resolved:** Added `doc_id: str | list[str] | None = None` to `HybridRetriever.search_hybrid()` and `LocalEmbedding.search_hybrid()`, allowing seamless document filtering during chat retrieval.
+- **Visual & Table Evidence Indexed:** Implemented `HybridRetriever.index_evidence_elements()`, converting VLM visual and table descriptions into searchable chunks with `extraction="vlm"` and bbox metadata.
+- **Service Layer Extraction:** Extracted `IngestionService` into `ui/ingestion_service.py` with fault isolation, atomic SQLite/LanceDB transactions, and honest failure reporting (no fake "indexed 0 documents" success for empty/unscannable files).
+- **Summary Cache Version Key Reconciled:** Replaced plain `ai_model.model_name` with `f"{ai_model.model_name}:{CONFIG_VERSION}"` in `ui/views.py` so cached summaries are properly retrieved from SQLite.
+- **Failed Document Retry:** Deleting a failed document now discards its ID from `st.session_state.failed_doc_ids`, enabling clean retries.
+- **Streamlit CORS Warning:** Updated `.streamlit/config.toml` to `enableCORS = true` alongside `enableXsrfProtection = true`.
+
 ## Verification & Test Results
-- `pytest tests/test_ui_smoke.py -v`: 9 passed
-- `pytest tests/test_hydration.py -v`: 1 passed
-- `pytest tests/test_sanitizer.py -v`: 4 passed
-- `pytest tests/test_llama_cpp_provider.py -v`: 17 passed
-- `pytest tests/test_main_ui.py -v`: 8 passed
-- Full repository test suite: `pytest -q`: **283 passed in 38.26s**
-- Linting: `ruff check .` -> clean (0 issues), `ruff format --check .` -> clean (64 files formatted).
+- `pytest tests/test_hybrid_retriever.py -v`: 17 passed
+- `pytest tests/test_main_ui.py -v`: 12 passed
+- Full repository test suite: `pytest -q`: **289 passed in 39.11s**
+- Linting: `ruff check .` -> clean (0 issues), `ruff format --check .` -> clean (65 files formatted).
+

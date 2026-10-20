@@ -9,9 +9,9 @@ import os
 from pathlib import Path
 import warnings
 
-os.environ.setdefault("USE_TF", "0")
-os.environ.setdefault("USE_TORCH", "1")
-os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ["USE_TF"] = "0"
+os.environ["USE_TORCH"] = "1"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 from sentence_transformers import SentenceTransformer
 
@@ -110,14 +110,23 @@ class LocalEmbedding:
         """
         return self.store.search(question, k=k)
 
-    def search_hybrid(self, question: str, k: int = 5) -> RetrievalResult:
+    def search_hybrid(
+        self,
+        question: str,
+        k: int = 5,
+        doc_id: str | list[str] | None = None,
+    ) -> RetrievalResult:
         """Execute dense search returning canonical RetrievalResult container (RETR-03, RETR-04)."""
         warnings.warn(
             "LocalEmbedding.search_hybrid() is deprecated; use HybridRetriever.search_hybrid() instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        results = self.search(question, k=k)
+        pool = k * 3 if doc_id else k
+        results = self.search(question, k=pool)
+        if doc_id:
+            allowed = {doc_id} if isinstance(doc_id, str) else set(doc_id)
+            results = [(d, s) for d, s in results if d.get("doc_id") in allowed][:k]
 
         snippets = []
         for rank, (doc, score) in enumerate(results, start=1):

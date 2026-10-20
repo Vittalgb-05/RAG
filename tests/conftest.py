@@ -3,6 +3,13 @@
 # Allows 100% offline unit testing without GPU allocation or API calls
 # ------------------------------------------------------------------
 
+import os
+
+# Enforce PyTorch backend and suppress Keras 3 / TensorFlow integrations in tests
+os.environ["USE_TF"] = "0"
+os.environ["USE_TORCH"] = "1"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 from pathlib import Path
 from unittest.mock import MagicMock
 import numpy as np

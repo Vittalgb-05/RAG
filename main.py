@@ -1,12 +1,11 @@
 """
 Streamlit front-end for the AMOLED local-first document workspace.
 
-Provides 5 dedicated workspaces:
-1. Workspace: Dropzone, collection metrics, model status, and recent documents.
-2. Ask Documents: Focused evidence-grounded chat with page citations and snippet context.
-3. Summarizer: Multi-profile analytical summaries with page references and markdown export.
-4. Document Library: Complete document lifecycle management (search, retry, re-index, delete).
-5. Settings: Hardware telemetry (VRAM/RAM), model health, local/cloud privacy controls.
+Provides a unified chatbot-first document workspace:
+1. Chat: Evidence-grounded conversational search with citations, table understanding, and visual OCR.
+2. Summarizer: Multi-profile analytical summaries with page references and markdown export.
+3. Document Library: Complete document lifecycle management (search, inspect, delete, purge).
+4. Settings: Hardware telemetry (VRAM/RAM), model health, local/cloud privacy controls.
 """
 
 import logging
@@ -32,8 +31,8 @@ from ui.views import (
     render_chat_view,
     render_library_view,
     render_settings_view,
+    render_sidebar_documents,
     render_summarizer_view,
-    render_workspace_view,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,7 +121,7 @@ for key, default in [
     ("cloud_model", "groq/llama-3.3-70b-versatile"),
     ("cloud_api_keys", {"groq": "", "openai": "", "anthropic": ""}),
     ("uploader_key", 0),
-    ("active_workspace", "Workspace"),
+    ("active_workspace", "Chat"),
     ("_startup_hydrated", False),
     ("_show_consent_dialog", False),
 ]:
@@ -242,25 +241,61 @@ if st.session_state.get("_show_consent_dialog", False):
 
 
 # ------------------------------------------------------------------
-# Sidebar Navigation & Telemetry
+# Sidebar: Brand, Engine Status, Documents & Navigation
 # ------------------------------------------------------------------
 
 with st.sidebar:
     render_brand_header()
-    st.markdown("<div style='height: 0.75rem;'></div>", unsafe_allow_html=True)
 
-    # Workspace selector
+    # Engine Status Pill (rendered via st.sidebar.html)
+    if is_healthy:
+        if caps.is_local:
+            status_html = render_status_pill(f"Local: {caps.model_name}", variant="local")
+        else:
+            status_html = render_status_pill(f"Cloud: {caps.model_name}", variant="cloud")
+    elif health.status == "loading":
+        status_html = render_status_pill(f"Loading: {caps.model_name}", variant="warning")
+    else:
+        status_html = render_status_pill("Inference Offline", variant="error")
+
+    status_block = (
+        f'<div style="margin-top: 0.25rem; margin-bottom: 0.75rem;">'
+        f'<div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; '
+        f'color: #9693A6; margin-bottom: 0.35rem; font-weight: 700;">Engine Status</div>'
+        f"{status_html}</div>"
+    )
+    if hasattr(st.sidebar, "html"):
+        st.sidebar.html(status_block)
+    else:
+        st.sidebar.markdown(status_block, unsafe_allow_html=True)
+
+    if not is_healthy and health.message:
+        st.caption(health.message)
+
+    st.divider()
+
+    # Document Uploader and Active Documents
+    render_sidebar_documents(
+        doc_store=doc_store,
+        ai_model=ai_model,
+        cache_dir=CACHE_DIR,
+    )
+
+    st.divider()
+
+    # Workspace Navigation
     WORKSPACES = [
-        "Workspace",
-        "Ask Documents",
+        "Chat",
         "Summarizer",
         "Document Library",
         "Settings",
     ]
 
-    current_ws_idx = (
-        WORKSPACES.index(st.session_state.active_workspace) if st.session_state.active_workspace in WORKSPACES else 0
-    )
+    current_ws = st.session_state.active_workspace
+    if current_ws in ("Workspace", "Ask Documents"):
+        current_ws = "Chat"
+
+    current_ws_idx = WORKSPACES.index(current_ws) if current_ws in WORKSPACES else 0
 
     selected_workspace = st.radio(
         "Navigation",
@@ -274,64 +309,33 @@ with st.sidebar:
 
     st.divider()
 
-    # Model & Engine Status Pill
-    if is_healthy:
-        if caps.is_local:
-            status_html = render_status_pill(f"Local: {caps.model_name}", variant="local")
-        else:
-            status_html = render_status_pill(f"Cloud: {caps.model_name}", variant="cloud")
-    elif health.status == "loading":
-        status_html = render_status_pill(f"Loading: {caps.model_name}", variant="warning")
-    else:
-        status_html = render_status_pill("Inference Offline", variant="error")
-
-    st.markdown(
-        f"""
-        <div style="margin-bottom: 0.75rem;">
-            <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #9693A6; margin-bottom: 0.35rem; font-weight: 600;">Engine Status</div>
-            {status_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if not is_healthy and health.message:
-        st.caption(health.message)
-
-    st.divider()
-
-    # Session quick action
+    # Quick session reset
     if st.button("Clear Session", use_container_width=True, help="Clear in-memory chat and reset upload buffer"):
         _reset_session_security_state()
         st.rerun()
 
-    st.markdown(
-        "<div style='font-size: 0.75rem; color: #9693A6; margin-top: 1rem; text-align: center;'>"
-        "100% Offline Local Pipeline<br>Qwen3-VL + LanceDB + MiniLM"
-        "</div>",
-        unsafe_allow_html=True,
+    footer_html = (
+        "<div style='font-size: 0.72rem; color: #9693A6; margin-top: 0.75rem; text-align: center; line-height: 1.4;'>"
+        "100% Offline Local Pipeline<br>Qwen3-VL · LanceDB · MiniLM</div>"
     )
+    if hasattr(st.sidebar, "html"):
+        st.sidebar.html(footer_html)
+    else:
+        st.sidebar.markdown(footer_html, unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------------
-# Main Workspace Content Routing
+# Main Content View Routing
 # ------------------------------------------------------------------
 
 active_page = st.session_state.active_workspace
 
-if active_page == "Workspace":
-    render_workspace_view(
-        doc_store=doc_store,
-        ai_model=ai_model,
-        health=health,
-        caps=caps,
-        cache_dir=CACHE_DIR,
-    )
-elif active_page == "Ask Documents":
+if active_page in ("Chat", "Ask Documents", "Workspace"):
     render_chat_view(
         ai_model=ai_model,
         health=health,
         caps=caps,
+        doc_store=doc_store,
     )
 elif active_page == "Summarizer":
     render_summarizer_view(
@@ -339,7 +343,7 @@ elif active_page == "Summarizer":
         ai_model=ai_model,
         is_healthy=is_healthy,
     )
-elif active_page == "Document Library":
+elif active_page in ("Document Library", "Library"):
     render_library_view(
         doc_store=doc_store,
         hybrid_retriever=st.session_state.hybrid_retriever,

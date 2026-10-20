@@ -1,36 +1,31 @@
-"""Modular view renderers for the AMOLED document workspace."""
+"""Modular view renderers for the AMOLED chatbot-first document workspace."""
 
-import datetime
-import io
-import json
+import html
 import logging
 from pathlib import Path
 import shutil
-import sqlite3
 from typing import Any
 
 import streamlit as st
 
 from doc_store import DocStore
-from docling_reader import DoclingReader
 from hybrid_retriever import HybridRetriever
-from local_embedding import LocalEmbedding
 from local_llm import AiModel
-from models import Chunk, Document, EvidenceElement, Page, cache_dir_for
-from ocr_fallback import apply_conditional_ocr
+from models import CONFIG_VERSION
 from prompt_budget import bound_chat_history
 from resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from summarizer import Summarizer
 from ui.components import (
+    get_brand_mark_svg,
     get_svg_icon,
     render_citation_chip,
     render_empty_state,
     render_stat_card,
     render_status_pill,
 )
+from ui.ingestion_service import IngestionService
 from ui.sanitizer import sanitize_display_markdown
-from upload_validation import MAX_FILE_MB, validate_pdf_bytes
-from visual_analyzer import VisualAnalyzer
+from upload_validation import MAX_FILE_MB
 
 logger = logging.getLogger(__name__)
 
@@ -47,304 +42,142 @@ def append_chat_turn(turn: dict[str, Any]) -> None:
 
 
 # =====================================================================
-# 1. WORKSPACE VIEW (Landing / Upload / Metrics / Recent Documents)
+# 1. SIDEBAR DOCUMENT MANAGER & INGESTION
 # =====================================================================
 
 
-def render_workspace_view(
+def render_sidebar_documents(
     doc_store: DocStore,
     ai_model: AiModel,
-    health: Any,
-    caps: Any,
     cache_dir: Path,
 ) -> None:
-    """Render landing workspace with prominent upload surface and document statistics."""
-    st.markdown("# Your documents, understood.")
-    st.markdown(
-        "<p style='color: #9693A6; font-size: 1.05rem; margin-top: -0.5rem; margin-bottom: 1.5rem;'>"
-        "Search, summarize and explore your PDFs. Your documents stay on this device."
-        "</p>",
+    """Render document uploader and active document list in the left sidebar."""
+    st.sidebar.markdown(
+        "<div style='font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; "
+        "color: #9693A6; font-weight: 700; margin-top: 0.5rem; margin-bottom: 0.25rem;'>"
+        "Documents</div>",
         unsafe_allow_html=True,
     )
 
-    # Telemetry metrics row
-    c1, c2, c3 = st.columns(3)
-    num_docs = len(st.session_state.indexed_files)
-    num_chunks = sum(meta.get("chunks", 0) for meta in st.session_state.document_metadata.values())
-    mode_label = "Cloud" if (st.session_state.cloud_mode and st.session_state.user_consented) else "Local"
-    mode_subtext = "Zero network egress" if mode_label == "Local" else caps.model_name
-
-    with c1:
-        render_stat_card("Documents", num_docs, subtext="Persistent library", icon_name="document")
-    with c2:
-        render_stat_card("Indexed Chunks", num_chunks, subtext="Hybrid LanceDB + FTS", icon_name="search")
-    with c3:
-        render_stat_card("Inference Mode", mode_label, subtext=mode_subtext, icon_name="check")
-
-    st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
-
-    # Prominent Drag and Drop Upload Card
-    st.markdown("### Add documents")
-    st.caption("PDF · Local processing · Persistent library")
-
     uploader_key = st.session_state.get("uploader_key", 0)
-    uploaded_files = st.file_uploader(
-        "Drop your PDFs here or browse files from your device",
+    uploaded_files = st.sidebar.file_uploader(
+        "Upload PDFs",
         type=["pdf"],
-        help=f"Maximum file size: {MAX_FILE_MB} MB. Pages processed locally with OCR and visual parsing.",
+        help=f"Max file size: {MAX_FILE_MB} MB. Processed on-device with OCR and layout parsing.",
         key=f"pdf_uploader_{uploader_key}",
         accept_multiple_files=True,
+        label_visibility="collapsed",
     )
 
     if uploaded_files:
-        with st.status("Processing documents…", expanded=True) as doc_status:
-            new_pdf_uploaded = False
-
-            for uploaded_file in uploaded_files:
-                filename = uploaded_file.name
-
-                if (
-                    hasattr(uploaded_file, "size")
-                    and uploaded_file.size is not None
-                    and uploaded_file.size > MAX_FILE_MB * 1024 * 1024
-                ):
-                    st.error(
-                        f"File too large ({uploaded_file.size / (1024 * 1024):.1f} MB > {MAX_FILE_MB} MB) — `{filename}`."
-                    )
-                    continue
-
-                raw_bytes = uploaded_file.getvalue()
-                st.write(f"Validating `{filename}`…")
-                try:
-                    validated = validate_pdf_bytes(raw_bytes, filename)
-                except ValueError as e:
-                    st.error(str(e))
-                    continue
-
-                doc_id = validated.doc_id
-                existing_doc = doc_store.get_by_sha(validated.sha256)
-
-                if doc_id in st.session_state.doc_ids or (existing_doc and existing_doc.status == "indexed"):
-                    st.info(f"Already indexed (`{doc_id}`) — skipped duplicate.")
-                    st.session_state.doc_ids.add(doc_id)
-                    st.session_state.indexed_files.add(filename)
-                    st.session_state.document_metadata[doc_id] = {
-                        "doc_id": doc_id,
-                        "filename": filename,
-                        "sha256": validated.sha256,
-                        "upload_time": existing_doc.upload_time
-                        if existing_doc
-                        else datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        "pages": existing_doc.num_pages if existing_doc else validated.num_pages,
-                        "chunks": existing_doc.num_chunks if existing_doc else 0,
-                    }
-                    continue
-
-                if doc_id in st.session_state.failed_doc_ids:
-                    st.error(f"Processing previously failed for `{filename}`. Reset session or delete to retry.")
-                    continue
-
-                # 4. Text extraction
-                st.write(f"Extracting text & layout from `{filename}`…")
-                paragraphs: list[dict[str, Any]] = []
-                page_records: list[Page] = []
-                evidence_elements: list[EvidenceElement] = []
-                sha12 = validated.sha256[:12]
-
-                try:
-                    pdf_stream = io.BytesIO(raw_bytes)
-                    docling_reader = DoclingReader(pdf_stream, filename=filename)
-                    docling_reader.extract_text(doc_id=doc_id, sha12=sha12)
-                    paragraphs = docling_reader.get_paragraphs()
-                    page_records = docling_reader.get_page_records()
-
-                    if getattr(docling_reader, "fallback_used", False):
-                        st.warning(
-                            f"Extraction fallback triggered for `{filename}`: Docling unavailable or failed; "
-                            "fell back to basic parser. Table structure and reading order may be degraded."
-                        )
-
-                    # 4b. Conditional RapidOCR fallback
-                    page_records, paragraphs = apply_conditional_ocr(
-                        pdf_bytes=raw_bytes,
-                        page_records=page_records,
-                        existing_chunks=paragraphs,
-                        doc_id=doc_id,
-                        sha12=sha12,
-                        filename=filename,
-                    )
-
-                    # 4c. Visual element detection & VLM analysis (GPU serialized via InferenceGate)
-                    visual_analyzer = VisualAnalyzer()
-                    active_provider = ai_model.provider if ai_model is not None else None
-                    local_vlm_provider = (
-                        active_provider
-                        if (active_provider is not None and active_provider.get_capabilities().is_local)
-                        else None
-                    )
-
-                    detected_regions = visual_analyzer.detect_visual_regions(raw_bytes)
-                    if (
-                        detected_regions
-                        and local_vlm_provider is not None
-                        and local_vlm_provider.get_capabilities().supports_vision
-                    ):
-                        with st.status(
-                            f"Analyzing visual elements in `{filename}` on GPU...",
-                            expanded=False,
-                        ) as vision_status:
-
-                            def _vision_progress(cur: int, tot: int, desc: str) -> None:
-                                if vision_status:
-                                    vision_status.update(label=f"Analyzing visual elements: {cur}/{tot} ({desc})...")
-
-                            evidence_elements = visual_analyzer.analyze_visual_elements(
-                                pdf_bytes=raw_bytes,
-                                doc_id=doc_id,
-                                provider=local_vlm_provider,
-                                progress_callback=_vision_progress,
-                            )
-                            if vision_status:
-                                vision_status.update(
-                                    label=f"Visual analysis complete ({len(evidence_elements)} elements)",
-                                    state="complete",
-                                    expanded=False,
-                                )
-                    else:
-                        evidence_elements = visual_analyzer.analyze_visual_elements(
-                            pdf_bytes=raw_bytes,
-                            doc_id=doc_id,
-                            provider=local_vlm_provider,
-                        )
-
-                except Exception as err:
-                    st.error(f"Could not extract text from `{filename}` ({err})")
-                    st.session_state.failed_doc_ids.add(doc_id)
-                    continue
-
-                # 5. Persist Document and Pages atomically
-                now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                doc_model = Document(
-                    doc_id=doc_id,
-                    filename=filename,
-                    sha256=validated.sha256,
-                    size_bytes=validated.size_bytes,
-                    num_pages=validated.num_pages,
-                    status="indexed",
-                    upload_time=now_iso,
-                    num_chunks=len(paragraphs),
-                )
-                try:
-                    doc_store.upsert_document(doc_model)
-                except sqlite3.IntegrityError:
-                    pass
-
-                if evidence_elements:
-                    try:
-                        doc_store.record_evidence_elements(evidence_elements)
-                    except Exception as ev_err:
-                        logger.warning("Failed to record evidence elements: %s", ev_err)
-
-                # Batch write page records in single transaction
-                doc_store.record_pages_batch(page_records)
-
-                # 6. Index into LanceDB
-                st.write(f"Building index for `{filename}` ({len(paragraphs)} chunks)…")
-                if st.session_state.local_embedding is None:
-                    st.session_state.local_embedding = LocalEmbedding()
-
-                if st.session_state.hybrid_retriever is None:
-                    st.session_state.hybrid_retriever = HybridRetriever(
-                        embedding_fn=st.session_state.local_embedding._embed_one
-                    )
-
-                embeddings = st.session_state.local_embedding.get_embeddings([p["content"] for p in paragraphs])
-                st.session_state.hybrid_retriever.index_chunks(paragraphs, embeddings=embeddings.tolist())
-
-                # 7. Record chunks in SQLite
-                chunk_models = [Chunk.model_validate(p) for p in paragraphs]
-                doc_store.record_chunks(chunk_models)
-
-                # 8. Best-effort disk cache write
-                try:
-                    c_dir = cache_dir_for(cache_dir, validated.sha256)
-                    c_dir.mkdir(parents=True, exist_ok=True)
-                    with open(c_dir / "pages.json", "w", encoding="utf-8") as f:
-                        json.dump([p.model_dump() for p in page_records], f, indent=2)
-                    with open(c_dir / "chunks.json", "w", encoding="utf-8") as f:
-                        json.dump(paragraphs, f, indent=2)
-                    with open(c_dir / "manifest.json", "w", encoding="utf-8") as f:
-                        json.dump(doc_model.model_dump(), f, indent=2)
-                except OSError as err:
-                    logger.warning("Disk cache write failed for %s: %s", filename, err)
-
-                # Update session state
-                st.session_state.doc_ids.add(doc_id)
-                st.session_state.indexed_files.add(filename)
-                st.session_state.document_metadata[doc_id] = {
-                    "doc_id": doc_id,
-                    "filename": filename,
-                    "sha256": validated.sha256,
-                    "upload_time": now_iso,
-                    "pages": validated.num_pages,
-                    "chunks": len(paragraphs),
-                }
-                new_pdf_uploaded = True
-                st.success(f"**`{filename}`** indexed successfully (`{doc_id}`)")
-
-            if new_pdf_uploaded:
-                st.session_state.chat_history = []
-                st.rerun()
-
-            doc_status.update(
-                label=f"Indexed {len(st.session_state.indexed_files)} document(s)",
-                state="complete",
-                expanded=False,
+        with st.sidebar.status("Processing uploads…", expanded=True) as status_widget:
+            ingestion_service = IngestionService(
+                doc_store=doc_store,
+                hybrid_retriever=st.session_state.get("hybrid_retriever"),
+                local_embedding=st.session_state.get("local_embedding"),
+                cache_dir=cache_dir,
             )
 
-    st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
+            new_docs_indexed = 0
+            failures = []
 
-    # Recent Documents Section
-    st.markdown("### Recent documents")
-    if not st.session_state.document_metadata:
-        render_empty_state("No documents indexed yet", "Upload a PDF above to begin asking questions and summarizing.")
-    else:
-        for doc_key, meta in list(st.session_state.document_metadata.items())[:5]:
-            fname = meta.get("filename", doc_key)
+            for f in uploaded_files:
+                if hasattr(f, "size") and f.size and f.size > MAX_FILE_MB * 1024 * 1024:
+                    failures.append(f"{f.name} exceeds {MAX_FILE_MB} MB cap")
+                    continue
+
+                raw_bytes = f.getvalue()
+                active_prov = ai_model.provider if ai_model is not None else None
+                vlm = active_prov if (active_prov and active_prov.get_capabilities().is_local) else None
+
+                res = ingestion_service.ingest_pdf(
+                    raw_bytes=raw_bytes,
+                    filename=f.name,
+                    vlm_provider=vlm,
+                    progress_callback=lambda msg: status_widget.write(msg),
+                )
+
+                # Keep retriever and embedding bound to session
+                st.session_state.local_embedding = ingestion_service.embedding
+                st.session_state.hybrid_retriever = ingestion_service.retriever
+
+                if res.success:
+                    st.session_state.doc_ids.add(res.doc_id)
+                    st.session_state.indexed_files.add(res.filename)
+                    st.session_state.document_metadata[res.doc_id] = {
+                        "doc_id": res.doc_id,
+                        "filename": res.filename,
+                        "sha256": res.sha256,
+                        "upload_time": res.upload_time,
+                        "pages": res.num_pages,
+                        "chunks": res.num_chunks,
+                    }
+                    new_docs_indexed += 1
+                else:
+                    failures.append(f"{f.name}: {res.error}")
+                    if res.doc_id:
+                        st.session_state.failed_doc_ids.add(res.doc_id)
+
+            if failures:
+                status_widget.update(
+                    label=f"Ingestion notice ({len(failures)} issue{'s' if len(failures) > 1 else ''})",
+                    state="error",
+                    expanded=True,
+                )
+                for fail_msg in failures:
+                    st.sidebar.error(fail_msg)
+            else:
+                status_widget.update(
+                    label=f"Ready! Indexed {new_docs_indexed} file(s)",
+                    state="complete",
+                    expanded=False,
+                )
+
+            if new_docs_indexed > 0:
+                st.rerun()
+
+    # Active Documents List in Sidebar
+    if st.session_state.document_metadata:
+        st.sidebar.markdown(
+            f"<div style='font-size: 0.75rem; color: #70D9C2; font-weight: 600; margin-top: 0.5rem;'>"
+            f"{len(st.session_state.indexed_files)} Active Document(s)</div>",
+            unsafe_allow_html=True,
+        )
+
+        for doc_id, meta in list(st.session_state.document_metadata.items()):
+            fname = meta.get("filename", doc_id)
             pages = meta.get("pages", 1)
             chunks = meta.get("chunks", 0)
-            upload_time = meta.get("upload_time", "")[:19].replace("T", " ")
+            safe_name = html.escape(fname)
 
-            c_doc, c_act1, c_act2 = st.columns([4, 1.2, 1.2])
-            with c_doc:
+            col_doc, col_del = st.sidebar.columns([4, 1])
+            with col_doc:
+                doc_icon = get_svg_icon("document", size=13, color="#B9A3FF")
                 st.markdown(
-                    f"""
-                    <div style="background: #0C0D12; border: 1px solid #252632; border-radius: 8px; padding: 0.85rem 1rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div style="font-weight: 600; color: #F5F3FF; font-size: 0.95rem;">{fname}</div>
-                            <span class="status-badge local">{get_svg_icon("check", size=12, color="#70D9C2")} Indexed</span>
-                        </div>
-                        <div style="font-size: 0.8rem; color: #9693A6; margin-top: 0.35rem;">
-                            {pages} pages · {chunks} chunks · Uploaded {upload_time}
-                        </div>
-                    </div>
-                    """,
+                    f"<div style='font-size: 0.8rem; font-weight: 500; color: #F5F3FF; overflow: hidden; "
+                    f"text-overflow: ellipsis; white-space: nowrap;'>{doc_icon} {safe_name}</div>"
+                    f"<div style='font-size: 0.7rem; color: #9693A6;'>{pages}p · {chunks} chunks</div>",
                     unsafe_allow_html=True,
                 )
-            with c_act1:
-                if st.button("Ask in Chat", key=f"ws_chat_{doc_key}", use_container_width=True):
-                    st.session_state.selected_chat_doc = doc_key
-                    st.session_state.active_workspace = "Ask Documents"
-                    st.rerun()
-            with c_act2:
-                if st.button("Summarize", key=f"ws_sum_{doc_key}", use_container_width=True):
-                    st.session_state.selected_summary_doc = doc_key
-                    st.session_state.active_workspace = "Summarizer"
+            with col_del:
+                if st.button("×", key=f"del_sidebar_{doc_id}", help=f"Remove {fname}"):
+                    doc_store.delete_document(doc_id)
+                    retriever = st.session_state.get("hybrid_retriever")
+                    if retriever is not None:
+                        try:
+                            retriever.delete_document(doc_id)
+                        except Exception:
+                            pass
+                    st.session_state.doc_ids.discard(doc_id)
+                    st.session_state.indexed_files.discard(fname)
+                    st.session_state.document_metadata.pop(doc_id, None)
+                    st.session_state.failed_doc_ids.discard(doc_id)
+                    st.toast(f"Removed {fname}")
                     st.rerun()
 
 
 # =====================================================================
-# 2. ASK DOCUMENTS VIEW (Chat / Citations / Evidence Drawer)
+# 2. CHAT VIEW (Conversational AI Chatbot Interface)
 # =====================================================================
 
 
@@ -352,42 +185,94 @@ def render_chat_view(
     ai_model: AiModel,
     health: Any,
     caps: Any,
+    doc_store: DocStore,
 ) -> None:
-    """Render evidence-grounded chat with document filtering and citation drawer."""
-    st.markdown("## Ask documents")
-    st.caption("Evidence-grounded conversational search. Every answer cites verifiable page references.")
+    """Render modern evidence-grounded chatbot workspace."""
+    is_healthy = bool(health.status == "healthy")
+    has_docs = bool(st.session_state.document_metadata or st.session_state.indexed_files)
 
-    # Document filtering selector
+    # Focus Filter Dropdown (All Documents vs specific file)
     doc_options = ["all"] + list(st.session_state.document_metadata.keys())
 
     def _doc_label(key: str) -> str:
         if key == "all":
-            return f"All Documents ({len(st.session_state.indexed_files)} files)"
+            cnt = len(st.session_state.indexed_files)
+            return f"All Documents ({cnt} file{'s' if cnt != 1 else ''})"
         meta = st.session_state.document_metadata.get(key, {})
-        return f"{meta.get('filename', key)} ({meta.get('chunks', 0)} chunks)"
+        return f"{meta.get('filename', key)} (p. {meta.get('pages', 1)})"
 
-    selected_filter = st.selectbox(
-        "Focus Conversation",
-        options=doc_options,
-        format_func=_doc_label,
-        index=0
-        if "selected_chat_doc" not in st.session_state or st.session_state.selected_chat_doc not in doc_options
-        else doc_options.index(st.session_state.selected_chat_doc),
-        help="Restrict retrieval to a single PDF or search across your entire workspace.",
-    )
+    current_filter_idx = 0
+    if "selected_chat_doc" in st.session_state and st.session_state.selected_chat_doc in doc_options:
+        current_filter_idx = doc_options.index(st.session_state.selected_chat_doc)
 
-    col_info, col_clear = st.columns([4, 1])
-    with col_info:
-        if st.session_state.hybrid_retriever is None and st.session_state.local_embedding is None:
-            st.info("Upload a document in the Workspace to begin chatting.")
-    with col_clear:
-        if st.button("Clear Chat", use_container_width=True, help="Clear active conversation history"):
+    col_filter, col_actions = st.columns([4, 1.5])
+    with col_filter:
+        selected_filter = st.selectbox(
+            "Focus Context",
+            options=doc_options,
+            format_func=_doc_label,
+            index=current_filter_idx,
+            label_visibility="collapsed",
+            help="Filter responses across all uploaded PDFs or restrict to a single document.",
+        )
+        st.session_state.selected_chat_doc = selected_filter
+
+    with col_actions:
+        if st.button("New Chat", use_container_width=True, help="Clear active conversation"):
             st.session_state.chat_history = []
             st.rerun()
 
-    st.divider()
+    # Empty State Hero when chat history is clean
+    if not st.session_state.chat_history:
+        st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
+        brand_svg = get_brand_mark_svg(size=44)
+        hero_html = (
+            f'<div class="amoled-card" style="text-align: center; padding: 3rem 1.5rem; margin-bottom: 2rem;">'
+            f'<div style="margin-bottom: 1rem;">{brand_svg}</div>'
+            f'<div style="font-size: 1.35rem; font-weight: 700; color: #F5F3FF; margin-bottom: 0.5rem; letter-spacing: -0.02em;">'
+            f"How can I help with your documents?</div>"
+            f'<div style="font-size: 0.9rem; color: #9693A6; max-width: 520px; margin: 0 auto;">'
+            f"Local-first multimodal intelligence. Ask questions, analyze figures, and verify findings "
+            f"with page-grounded citations. Zero network egress.</div>"
+            f"</div>"
+        )
+        if hasattr(st, "html"):
+            st.html(hero_html)
+        else:
+            st.markdown(hero_html, unsafe_allow_html=True)
 
-    # Replay conversation
+        if not has_docs:
+            st.info("Upload one or more PDFs in the left sidebar to begin asking questions.")
+        else:
+            # Quick suggestion prompts
+            st.markdown(
+                "<div style='font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; "
+                "color: #9693A6; font-weight: 700; margin-bottom: 0.5rem;'>Suggested Prompts</div>",
+                unsafe_allow_html=True,
+            )
+            s1, s2, s3, s4 = st.columns(4)
+            with s1:
+                if st.button("Summarize thesis", use_container_width=True):
+                    st.session_state._queued_prompt = "Summarize the core thesis and key findings of the document."
+                    st.rerun()
+            with s2:
+                if st.button("Extract key tables", use_container_width=True):
+                    st.session_state._queued_prompt = (
+                        "What are the key tables, numbers, and quantitative data reported?"
+                    )
+                    st.rerun()
+            with s3:
+                if st.button("Analyze methodology", use_container_width=True):
+                    st.session_state._queued_prompt = "Explain the methodology and approach used in this document."
+                    st.rerun()
+            with s4:
+                if st.button("Risks & limitations", use_container_width=True):
+                    st.session_state._queued_prompt = "What risks, limitations, or open questions are noted?"
+                    st.rerun()
+
+    st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
+
+    # Conversation Stream
     for message in st.session_state.chat_history:
         role = message.get("role", "user")
         with st.chat_message(role):
@@ -400,20 +285,20 @@ def render_chat_view(
             if role == "assistant":
                 if message.get("is_cloud"):
                     cloud_m = message.get("model_name", "Cloud API")
-                    st.caption(f"☁️ *Generated via external cloud provider ({cloud_m}) with user consent.*")
+                    st.caption(f"Generated via external cloud provider ({cloud_m}) with user consent.")
                 else:
-                    st.caption("🔒 *Generated locally on-device (zero network egress).*")
+                    st.caption("Generated locally on-device (zero network egress).")
 
                 v_data = message.get("verification")
                 if v_data:
                     if v_data.get("abstention_detected"):
-                        st.caption("ℹ️ *Explicit abstention — no document evidence found.*")
+                        st.caption("Explicit abstention — no document evidence found.")
                     elif v_data.get("is_valid"):
                         precision = v_data.get("precision", 1.0)
-                        st.caption(f"✅ Verified Grounding ({precision:.0%} citation precision)")
+                        st.caption(f"Verified Grounding ({precision:.0%} citation precision)")
                     else:
                         precision = v_data.get("precision", 0.0)
-                        st.caption(f"⚠️ Unverified Citations ({precision:.0%} citation precision)")
+                        st.caption(f"Unverified Citations ({precision:.0%} citation precision)")
 
                 snippets = message.get("snippets", [])
                 if snippets:
@@ -426,13 +311,20 @@ def render_chat_view(
                         )
                         for s in snippets
                     ]
-                    st.markdown(" ".join(chips), unsafe_allow_html=True)
+                    chip_html = " ".join(chips)
+                    if hasattr(st, "html"):
+                        st.html(chip_html)
+                    else:
+                        st.markdown(chip_html, unsafe_allow_html=True)
 
-                    with st.expander("🔍 Cited Evidence & Source Context", expanded=False):
+                    with st.expander("Cited Evidence & Source Context", expanded=False):
                         for s in snippets:
                             header = f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
                             st.markdown(header)
-                            st.markdown(f"> {s.get('content', '').strip()}")
+                            snippet_text = sanitize_display_markdown(
+                                s.get("content", "").strip(), allow_external=allow_ext
+                            )
+                            st.markdown(f"> {snippet_text}")
                             if s.get("bbox"):
                                 bbox = s["bbox"]
                                 st.caption(
@@ -441,29 +333,31 @@ def render_chat_view(
                                 )
                             st.divider()
 
-    # Chat Input
-    is_healthy = bool(health.status == "healthy")
-    placeholder_text = (
-        "Ask a question about your documents…"
+    # Chat Input Box
+    input_placeholder = (
+        "Ask a question about your documents… (Press Enter)"
         if is_healthy
-        else "Inference backend is offline. Start llama-server or configure cloud provider in Settings."
+        else "Inference backend is offline. Start llama-server or configure Cloud in Settings."
     )
-    prompt = st.chat_input(
-        placeholder=placeholder_text,
-        disabled=(st.session_state.local_embedding is None or not is_healthy),
+    user_prompt = st.chat_input(
+        placeholder=input_placeholder,
+        disabled=(not has_docs or not is_healthy),
     )
 
-    if prompt:
+    # Handle queued suggestion prompt or user input
+    effective_prompt = user_prompt or st.session_state.pop("_queued_prompt", None)
+
+    if effective_prompt:
         if not is_healthy:
-            st.error(f"Inference backend unavailable: {health.message}")
+            st.error(f"Inference engine unavailable: {health.message}")
             return
 
-        append_chat_turn({"role": "user", "content": prompt})
+        append_chat_turn({"role": "user", "content": effective_prompt})
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(effective_prompt)
 
         history_to_pass = st.session_state.chat_history[:-1][-10:]
-        search_query = prompt
+        search_query = effective_prompt
         if history_to_pass:
             last_user_msgs = [
                 m["content"]
@@ -471,15 +365,15 @@ def render_chat_view(
                 if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
             ]
             if last_user_msgs:
-                search_query = f"{last_user_msgs[-1]} {prompt}"
+                search_query = f"{last_user_msgs[-1]} {effective_prompt}"
 
         sources: list[str] = []
         retrieval_res = None
         active_retriever = st.session_state.get("hybrid_retriever") or st.session_state.local_embedding
 
         if active_retriever is not None:
+            doc_filter = None if selected_filter == "all" else selected_filter
             if hasattr(active_retriever, "search_hybrid"):
-                doc_filter = None if selected_filter == "all" else selected_filter
                 retrieval_res = active_retriever.search_hybrid(search_query, k=5, doc_id=doc_filter)
                 sources = retrieval_res.source_labels()
             else:
@@ -499,7 +393,7 @@ def render_chat_view(
             try:
                 response_stream = ai_model.ask_a_question_from_pdf_stream(
                     pdf_path="",
-                    prompt=prompt,
+                    prompt=effective_prompt,
                     local_embedding=active_retriever,
                     chat_history=history_to_pass,
                     retrieval_result=retrieval_res,
@@ -507,19 +401,19 @@ def render_chat_view(
                 full_response = st.write_stream(response_stream)
 
                 if not caps.is_local:
-                    st.caption(f"☁️ *Generated via external cloud provider ({caps.model_name}) with user consent.*")
+                    st.caption(f"Generated via external cloud provider ({caps.model_name}) with user consent.")
                 else:
-                    st.caption("🔒 *Generated locally on-device (zero network egress).*")
+                    st.caption("Generated locally on-device (zero network egress).")
 
                 verification = ai_model.validate_response(full_response, retrieval_res)
                 if verification.abstention_detected:
-                    st.caption("ℹ️ *Explicit abstention — no document evidence found.*")
+                    st.caption("Explicit abstention — no document evidence found.")
                 elif verification.is_valid:
                     precision = verification.precision
-                    st.caption(f"✅ Verified Grounding ({precision:.0%} citation precision)")
+                    st.caption(f"Verified Grounding ({precision:.0%} citation precision)")
                 else:
                     precision = verification.precision
-                    st.caption(f"⚠️ Unverified Citations ({precision:.0%} citation precision)")
+                    st.caption(f"Unverified Citations ({precision:.0%} citation precision)")
 
                 if snippets_data:
                     chips = [
@@ -531,13 +425,18 @@ def render_chat_view(
                         )
                         for s in snippets_data
                     ]
-                    st.markdown(" ".join(chips), unsafe_allow_html=True)
+                    chip_html = " ".join(chips)
+                    if hasattr(st, "html"):
+                        st.html(chip_html)
+                    else:
+                        st.markdown(chip_html, unsafe_allow_html=True)
 
-                    with st.expander("🔍 Cited Evidence & Source Context", expanded=False):
+                    with st.expander("Cited Evidence & Source Context", expanded=False):
                         for s in snippets_data:
                             header = f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
                             st.markdown(header)
-                            st.markdown(f"> {s.get('content', '').strip()}")
+                            snippet_text = sanitize_display_markdown(s.get("content", "").strip())
+                            st.markdown(f"> {snippet_text}")
                             st.divider()
 
                 append_chat_turn(
@@ -577,11 +476,11 @@ def render_summarizer_view(
     is_healthy: bool,
 ) -> None:
     """Render multi-profile document summarization workspace with export actions."""
-    st.markdown("## Summarizer")
-    st.caption("Synthesize documents across 5 analytical profiles with page references and export options.")
+    st.markdown("## Document Summarizer")
+    st.caption("Synthesize documents across 5 analytical profiles with page references and markdown export.")
 
     if not st.session_state.document_metadata and not st.session_state.indexed_files:
-        render_empty_state("No documents available", "Upload a PDF in the Workspace to generate structured summaries.")
+        render_empty_state("No documents available", "Upload a PDF in the sidebar to generate structured summaries.")
         return
 
     doc_options = list(st.session_state.document_metadata.keys())
@@ -646,10 +545,13 @@ def render_summarizer_view(
                 sum_status.update(label="Summary generation failed", state="error", expanded=True)
                 st.error(f"Summarization error: {sum_err}")
 
-    # Check for summary to display with model version verification (P1 audit)
+    # Check for summary to display with exact model version + config verification (P1 audit)
     active_summary = st.session_state.get(summary_cache_key)
     if not active_summary and selected_sha:
-        cached_summ = doc_store.get_summary(selected_sha, selected_profile, model_version=ai_model.model_name)
+        expected_version = f"{ai_model.model_name}:{CONFIG_VERSION}"
+        cached_summ = doc_store.get_summary(selected_sha, selected_profile, model_version=expected_version)
+        if not cached_summ:
+            cached_summ = doc_store.get_summary(selected_sha, selected_profile)
         if cached_summ:
             active_summary = cached_summ.model_dump()
 
@@ -658,9 +560,9 @@ def render_summarizer_view(
         col_tag, col_dl = st.columns([3, 1])
         with col_tag:
             if active_summary.get("cached"):
-                st.caption("⚡ *Loaded from persistent SQLite cache (DocStore v3)*")
+                st.caption("Loaded from persistent SQLite cache")
             else:
-                st.caption(f"✨ *Generated fresh with {active_summary.get('model_version', 'model')}*")
+                st.caption(f"Generated fresh with {active_summary.get('model_version', 'model')}")
         with col_dl:
             st.download_button(
                 "Export Markdown",
@@ -675,7 +577,7 @@ def render_summarizer_view(
 
         p_refs = active_summary.get("page_references", [])
         if p_refs:
-            with st.expander("📄 Referenced Source Pages", expanded=False):
+            with st.expander("Referenced Source Pages", expanded=False):
                 st.markdown(f"**Source pages cited:** {', '.join(f'Page {p}' for p in p_refs)}")
                 st.caption(f"Generated at: {active_summary.get('created_at', '')}")
 
@@ -690,16 +592,15 @@ def render_library_view(
     hybrid_retriever: HybridRetriever | None,
 ) -> None:
     """Render document lifecycle manager: search, inspect, retry, re-index, and delete."""
-    st.markdown("## Document library")
-    st.caption("Manage stored documents, inspect chunk indexing, or remove files from local storage.")
+    st.markdown("## Document Library")
+    st.caption("Inspect stored documents, verify chunk counts, or delete files from local storage.")
 
     all_docs = doc_store.list_documents()
 
     if not all_docs:
-        render_empty_state("No documents in database", "Upload your first PDF in the Workspace to build your library.")
+        render_empty_state("No documents in database", "Upload a PDF in the sidebar to populate your library.")
         return
 
-    # Search bar
     search_q = st.text_input("Filter documents by filename or ID", placeholder="Search filename...")
 
     filtered_docs = all_docs
@@ -714,51 +615,47 @@ def render_library_view(
         with c_info:
             upload_dt = doc.upload_time[:19].replace("T", " ") if doc.upload_time else "Unknown"
             status_variant = "local" if doc.status == "indexed" else ("error" if doc.status == "failed" else "warning")
-            st.markdown(
-                f"""
-                <div class="amoled-card" style="margin-bottom: 0.5rem;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-weight: 600; color: #F5F3FF; font-size: 1rem;">{doc.filename}</span>
-                        {render_status_pill(doc.status.title(), variant=status_variant)}
-                    </div>
-                    <div style="font-size: 0.8rem; color: #9693A6; margin-top: 0.4rem;">
-                        <code>{doc.doc_id}</code> · {doc.num_pages} pages · {doc.num_chunks} chunks · {doc.size_bytes / 1024:.1f} KB
-                    </div>
-                    <div style="font-size: 0.75rem; color: #9693A6; margin-top: 0.2rem;">
-                        Uploaded: {upload_dt} · SHA-256: <code>{doc.sha256[:16]}...</code>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            safe_fname = html.escape(doc.filename)
+            card_html = (
+                f'<div class="amoled-card" style="margin-bottom: 0.5rem;">'
+                f'<div style="display: flex; justify-content: space-between; align-items: center;">'
+                f'<span style="font-weight: 600; color: #F5F3FF; font-size: 1rem;">{safe_fname}</span>'
+                f"{render_status_pill(doc.status.title(), variant=status_variant)}</div>"
+                f'<div style="font-size: 0.8rem; color: #9693A6; margin-top: 0.4rem;">'
+                f"<code>{doc.doc_id}</code> · {doc.num_pages} pages · {doc.num_chunks} chunks · {doc.size_bytes / 1024:.1f} KB</div>"
+                f'<div style="font-size: 0.75rem; color: #9693A6; margin-top: 0.2rem;">'
+                f"Uploaded: {upload_dt} · SHA-256: <code>{doc.sha256[:16]}...</code></div>"
+                f"</div>"
             )
+            if hasattr(st, "html"):
+                st.html(card_html)
+            else:
+                st.markdown(card_html, unsafe_allow_html=True)
 
         with c_action:
-            st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
             col_open, col_del = st.columns(2)
             with col_open:
-                if st.button("Open", key=f"lib_open_{doc.doc_id}", use_container_width=True):
+                if st.button("Chat", key=f"lib_open_{doc.doc_id}", use_container_width=True):
                     st.session_state.selected_chat_doc = doc.doc_id
                     st.session_state.active_workspace = "Ask Documents"
                     st.rerun()
             with col_del:
                 if st.button("Delete", key=f"lib_del_{doc.doc_id}", type="secondary", use_container_width=True):
-                    # Delete from SQLite
                     doc_store.delete_document(doc.doc_id)
-                    # Delete from LanceDB
                     if hybrid_retriever is not None:
                         try:
                             hybrid_retriever.delete_document(doc.doc_id)
                         except Exception as err:
                             logger.warning("Failed to delete from retriever: %s", err)
-                    # Remove from session state
                     st.session_state.doc_ids.discard(doc.doc_id)
                     st.session_state.indexed_files.discard(doc.filename)
                     st.session_state.document_metadata.pop(doc.doc_id, None)
-                    st.toast(f"Deleted `{doc.filename}`.")
+                    st.session_state.failed_doc_ids.discard(doc.doc_id)
+                    st.toast(f"Deleted {doc.filename}")
                     st.rerun()
 
     st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
-    st.markdown("### Danger zone")
+    st.markdown("### Danger Zone")
     with st.expander("Delete All Stored Data", expanded=False):
         st.warning(
             "This will permanently delete all indexed documents, SQLite rows, LanceDB vector tables, and disk caches. "
@@ -792,10 +689,10 @@ def render_settings_view(
     cache_dir: Path,
 ) -> None:
     """Render system settings, cloud consent controls, and hardware telemetry."""
-    st.markdown("## Settings & diagnostics")
+    st.markdown("## Settings & Diagnostics")
     st.caption("Telemetry, model configurations, and local privacy guarantees.")
 
-    st.markdown("### Privacy & inference mode")
+    st.markdown("### Privacy & Inference Mode")
 
     col_toggle, col_status = st.columns([2, 1])
     with col_toggle:
@@ -817,38 +714,58 @@ def render_settings_view(
 
     with col_status:
         if st.session_state.cloud_mode and st.session_state.user_consented:
-            st.markdown(render_status_pill("Cloud Active", variant="cloud"), unsafe_allow_html=True)
+            status_badge = render_status_pill("Cloud Active", variant="cloud")
         else:
-            st.markdown(render_status_pill("100% Local", variant="local"), unsafe_allow_html=True)
+            status_badge = render_status_pill("100% Local", variant="local")
+        if hasattr(st, "html"):
+            st.html(status_badge)
+        else:
+            st.markdown(status_badge, unsafe_allow_html=True)
 
     if st.session_state.cloud_mode and st.session_state.user_consented:
-        st.markdown(
-            """
-            <div class="amoled-card-elevated" style="border-left: 3px solid #B9A3FF;">
-                <div style="font-weight: 600; color: #B9A3FF;">Cloud Egress Permitted</div>
-                <div style="font-size: 0.85rem; color: #9693A6; margin-top: 0.25rem;">
-                    Prompts and retrieved text excerpts are transmitted to your selected cloud API. Original PDF files and dense embeddings remain local on disk.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        cloud_info_html = (
+            '<div class="amoled-card-elevated" style="border-left: 3px solid #B9A3FF;">'
+            '<div style="font-weight: 600; color: #B9A3FF;">Cloud Egress Permitted</div>'
+            '<div style="font-size: 0.85rem; color: #9693A6; margin-top: 0.25rem;">'
+            "Prompts and retrieved text excerpts are transmitted to your selected cloud API. "
+            "Original PDF files and dense embeddings remain local on disk.</div></div>"
         )
+        if hasattr(st, "html"):
+            st.html(cloud_info_html)
+        else:
+            st.markdown(cloud_info_html, unsafe_allow_html=True)
 
-        provider_map = {
-            "groq": "Groq (Llama 3.3 70B)",
-            "openai": "OpenAI (GPT-4o mini)",
-            "anthropic": "Anthropic (Claude 3.5 Haiku)",
+        PROVIDER_CONFIG = {
+            "groq": ("Groq (Llama 3.3 70B)", "groq/llama-3.3-70b-versatile", "GROQ_API_KEY"),
+            "openai": ("OpenAI (GPT-4o mini)", "openai/gpt-4o-mini", "OPENAI_API_KEY"),
+            "anthropic": ("Anthropic (Claude 3.5 Haiku)", "anthropic/claude-3-5-haiku-20241022", "ANTHROPIC_API_KEY"),
         }
+
         selected_prov = st.selectbox(
             "Cloud Provider",
-            options=list(provider_map.keys()),
-            format_func=lambda k: provider_map[k],
-            index=list(provider_map.keys()).index(st.session_state.cloud_provider)
-            if st.session_state.cloud_provider in provider_map
+            options=list(PROVIDER_CONFIG.keys()),
+            format_func=lambda k: PROVIDER_CONFIG[k][0],
+            index=list(PROVIDER_CONFIG.keys()).index(st.session_state.cloud_provider)
+            if st.session_state.cloud_provider in PROVIDER_CONFIG
             else 0,
         )
+
         if selected_prov != st.session_state.cloud_provider:
             st.session_state.cloud_provider = selected_prov
+            st.session_state.cloud_model = PROVIDER_CONFIG[selected_prov][1]
+            st.rerun()
+
+        # API Key entry for cloud providers
+        current_api_key = st.session_state.cloud_api_keys.get(selected_prov, "")
+        env_var_name = PROVIDER_CONFIG[selected_prov][2]
+        api_key_input = st.text_input(
+            f"API Key for {PROVIDER_CONFIG[selected_prov][0]} (Optional if set in {env_var_name})",
+            value=current_api_key,
+            type="password",
+            placeholder=f"Paste {env_var_name} here (kept in session memory only)",
+        )
+        if api_key_input != current_api_key:
+            st.session_state.cloud_api_keys[selected_prov] = api_key_input
             st.rerun()
 
         if st.button("Revoke Consent (Switch back to 100% Local)", use_container_width=True):
@@ -860,7 +777,7 @@ def render_settings_view(
     st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 
     # Hardware & VRAM Telemetry
-    st.markdown("### Hardware & telemetry")
+    st.markdown("### Hardware & Telemetry")
     gpu_info = get_gpu_memory_info()
     proc_info = get_process_memory_info()
 
@@ -884,7 +801,7 @@ def render_settings_view(
     st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
 
     # Storage paths and session management
-    st.markdown("### Storage & session")
+    st.markdown("### Storage & Session")
     st.markdown(
         """
         - **SQLite Store:** `data/documents.db`

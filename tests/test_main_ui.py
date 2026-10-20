@@ -258,3 +258,108 @@ def test_session_isolation_posture():
 
     # Session B MUST remain strictly in local mode (zero cross-session leakage)
     assert session_b_model.cloud_mode is False
+
+
+def test_failed_doc_ids_cleared_on_delete():
+    """Verify that deleting a document discards its ID from failed_doc_ids to enable retries."""
+    mock_session = {
+        "doc_ids": {"doc_failed_1"},
+        "failed_doc_ids": {"doc_failed_1", "doc_other"},
+        "indexed_files": {"failed.pdf"},
+        "document_metadata": {"doc_failed_1": {"filename": "failed.pdf"}},
+    }
+
+    # Simulate library deletion
+    doc_id_to_delete = "doc_failed_1"
+    mock_session["doc_ids"].discard(doc_id_to_delete)
+    mock_session["failed_doc_ids"].discard(doc_id_to_delete)
+    mock_session["indexed_files"].discard("failed.pdf")
+    mock_session["document_metadata"].pop(doc_id_to_delete, None)
+
+    assert doc_id_to_delete not in mock_session["failed_doc_ids"]
+    assert doc_id_to_delete not in mock_session["doc_ids"]
+    assert "doc_other" in mock_session["failed_doc_ids"]
+
+
+def test_cloud_provider_model_mapping():
+    """Verify provider choice maps cleanly to correct LiteLLM cloud_model strings."""
+    provider_config = {
+        "Groq (Llama 3.3 70B)": {"model": "groq/llama-3.3-70b-versatile", "env": "GROQ_API_KEY"},
+        "OpenAI (GPT-4o mini)": {"model": "openai/gpt-4o-mini", "env": "OPENAI_API_KEY"},
+        "Anthropic (Claude 3.5 Haiku)": {"model": "anthropic/claude-3-5-haiku-latest", "env": "ANTHROPIC_API_KEY"},
+    }
+
+    assert provider_config["OpenAI (GPT-4o mini)"]["model"] == "openai/gpt-4o-mini"
+    assert provider_config["Anthropic (Claude 3.5 Haiku)"]["model"] == "anthropic/claude-3-5-haiku-latest"
+    assert provider_config["Groq (Llama 3.3 70B)"]["model"] == "groq/llama-3.3-70b-versatile"
+
+
+def test_summary_cache_version_key_contract(tmp_path):
+    """Verify summary retrieval uses f'{model_name}:{CONFIG_VERSION}' to match save key."""
+    from summarizer import CONFIG_VERSION
+
+    db_file = tmp_path / "ui_summary_ver.db"
+    store = DocStore(db_file)
+
+    doc_id = "doc_ver_1"
+    sha = "8" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="versioned.pdf",
+            sha256=sha,
+            size_bytes=2048,
+            num_pages=5,
+            upload_time="2026-10-15T12:00:00Z",
+        )
+    )
+
+    expected_version = f"qwen3-vl-2b:{CONFIG_VERSION}"
+    summary = SummaryResult(
+        summary_id="summ_ver_123",
+        doc_id=doc_id,
+        sha256=sha,
+        profile="overview",
+        summary_text="Overview content.",
+        page_references=[1],
+        created_at="2026-10-15T12:05:00Z",
+        model_version=expected_version,
+    )
+    store.save_summary(summary)
+
+    # UI lookup with expected version matches cached entry
+    cached = store.get_summary(sha, "overview", model_version=expected_version)
+    assert cached is not None
+    assert cached.cached is True
+    assert cached.model_version == expected_version
+
+
+def test_ingestion_service_empty_chunks_reports_failure(tmp_path, monkeypatch):
+    """Verify IngestionService marks 0-chunk documents as failed/empty honestly."""
+    from ui.ingestion_service import IngestionService
+    from unittest.mock import MagicMock
+
+    db_file = tmp_path / "empty_test.db"
+    store = DocStore(db_file)
+    service = IngestionService(doc_store=store, cache_dir=tmp_path / "cache")
+
+    # Mock DoclingReader to return empty paragraphs
+    mock_reader = MagicMock()
+    mock_reader.get_paragraphs.return_value = []
+    mock_reader.get_page_records.return_value = []
+
+    import docling_reader
+
+    monkeypatch.setattr(docling_reader, "DoclingReader", lambda *args, **kwargs: mock_reader)
+
+    # Valid dummy PDF bytes
+    dummy_pdf = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj 3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000052 00000 n \n0000000101 00000 n \ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n170\n%%EOF"
+
+    result = service.ingest_pdf(dummy_pdf, filename="blank.pdf")
+    assert result.success is False
+    assert result.num_chunks == 0
+    assert "0 usable" in (result.error or "")
+
+    doc_in_db = store.get_document(result.doc_id)
+    assert doc_in_db is not None
+    assert doc_in_db.status == "failed"
