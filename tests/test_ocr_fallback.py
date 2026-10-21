@@ -3,8 +3,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from models import Chunk, Page
-from ocr_fallback import OcrEngine, apply_conditional_ocr, should_ocr_page
+from core.models import Chunk, Page
+from ingestion.ocr_fallback import OcrEngine, apply_conditional_ocr, should_ocr_page
 
 
 CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"
@@ -16,7 +16,7 @@ def test_ocr_fallback_uses_modern_pymupdf_import():
     """Regression: use `import pymupdf` rather than the deprecated `fitz` alias (no startup warning)."""
     import pymupdf
 
-    import ocr_fallback
+    from ingestion import ocr_fallback
 
     assert ocr_fallback.fitz is pymupdf
 

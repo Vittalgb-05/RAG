@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from doc_store import DocStore
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
-from models import BBox, Chunk, Document, EvidenceElement
-from visual_analyzer import DEFAULT_VISION_PROMPT, VisualAnalyzer
+from core.doc_store import DocStore
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from core.models import BBox, Chunk, Document, EvidenceElement
+from ingestion.visual_analyzer import DEFAULT_VISION_PROMPT, VisualAnalyzer
 
 
 CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"
@@ -329,7 +329,7 @@ def test_crop_visual_element_out_of_bounds_and_inverted_coords(monkeypatch):
         def open(stream=None, filetype=None):
             return FakeDoc()
 
-    monkeypatch.setattr("visual_analyzer.fitz", FakeFitz)
+    monkeypatch.setattr("ingestion.visual_analyzer.fitz", FakeFitz)
 
     # Non-intersecting bounding box (completely outside page boundaries)
     out_of_bounds_bbox = BBox(x0=5000.0, y0=5000.0, x1=6000.0, y1=6000.0)
@@ -387,6 +387,6 @@ def test_visual_analyzer_uses_modern_pymupdf_import():
     """Regression: use `import pymupdf` rather than the deprecated `fitz` alias (no startup warning)."""
     import pymupdf
 
-    import visual_analyzer
+    from ingestion import visual_analyzer
 
     assert visual_analyzer.fitz is pymupdf

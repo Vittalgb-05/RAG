@@ -5,7 +5,7 @@ import pypdf
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from models import Chunk, Page
+from core.models import Chunk, Page
 
 
 class PdfReader:

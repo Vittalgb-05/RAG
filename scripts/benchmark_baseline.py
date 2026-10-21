@@ -16,8 +16,8 @@ import psutil
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from pdf_reader import PdfReader
-from vector_index import VectorIndex
+from ingestion.pdf_reader import PdfReader
+from retrieval.vector_index import VectorIndex
 
 
 def get_current_rss_mb() -> float:

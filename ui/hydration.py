@@ -3,9 +3,9 @@
 import logging
 import streamlit as st
 
-from doc_store import DocStore
-from hybrid_retriever import HybridRetriever
-from local_embedding import LocalEmbedding
+from core.doc_store import DocStore
+from retrieval.hybrid_retriever import HybridRetriever
+from retrieval.local_embedding import LocalEmbedding
 
 logger = logging.getLogger(__name__)
 

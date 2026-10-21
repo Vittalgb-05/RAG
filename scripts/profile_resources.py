@@ -18,21 +18,21 @@ import time
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from doc_store import DocStore
-from hybrid_retriever import HybridRetriever
-from local_embedding import LocalEmbedding
-from local_llm import InferenceGate
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
-from models import Document, Page
-from pdf_reader import PdfReader
-from resource_telemetry import (
+from core.doc_store import DocStore
+from retrieval.hybrid_retriever import HybridRetriever
+from retrieval.local_embedding import LocalEmbedding
+from core.local_llm import InferenceGate
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from core.models import Document, Page
+from ingestion.pdf_reader import PdfReader
+from core.resource_telemetry import (
     get_compute_apps_gpu_memory,
     get_gpu_memory_info,
     get_process_memory_info,
     get_resident_model_gpu_memory,
     LatencyTracker,
 )
-from summarizer import Summarizer
+from core.summarizer import Summarizer
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("resource_profiler")

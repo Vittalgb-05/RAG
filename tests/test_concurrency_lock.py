@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from local_llm import AiModel, InferenceGate
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from core.local_llm import AiModel, InferenceGate
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
 
 class DummyProvider(BaseModelProvider):
@@ -200,8 +200,8 @@ def test_ai_model_streaming_busy_yields_warning(monkeypatch: pytest.MonkeyPatch)
 
 def test_summarizer_guarded_by_inference_gate() -> None:
     """Test Summarizer.summarize_document executes with InferenceGate locked."""
-    from models import Page
-    from summarizer import Summarizer
+    from core.models import Page
+    from core.summarizer import Summarizer
 
     provider = DummyProvider()
     summarizer = Summarizer(provider=provider)

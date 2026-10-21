@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 
-from docling_reader import DoclingReader
+from ingestion.docling_reader import DoclingReader
 
 
 CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"

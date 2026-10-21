@@ -8,14 +8,14 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
-from doc_store import DocStore
-from docling_reader import DoclingReader
-from hybrid_retriever import HybridRetriever
-from local_embedding import LocalEmbedding
-from models import Chunk, Document, EvidenceElement, Page, cache_dir_for
-from ocr_fallback import apply_conditional_ocr
-from upload_validation import validate_pdf_bytes
-from visual_analyzer import VisualAnalyzer
+from core.doc_store import DocStore
+from ingestion.docling_reader import DoclingReader
+from retrieval.hybrid_retriever import HybridRetriever
+from retrieval.local_embedding import LocalEmbedding
+from core.models import Chunk, Document, EvidenceElement, Page, cache_dir_for
+from ingestion.ocr_fallback import apply_conditional_ocr
+from ingestion.upload_validation import validate_pdf_bytes
+from ingestion.visual_analyzer import VisualAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ class IngestionService:
         except Exception as ext_err:
             logger.warning("Docling extraction error (%s); trying fallback extractor.", ext_err)
             try:
-                from pdf_reader import PdfReader
+                from ingestion.pdf_reader import PdfReader
 
                 fallback_reader = PdfReader(io.BytesIO(raw_bytes), filename=filename)
                 fallback_reader.extract_text(doc_id=doc_id, sha12=sha12)

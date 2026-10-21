@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 
-from doc_store import DocStore
-from hybrid_retriever import HybridRetriever
-from models import Document, SummaryResult
-from prompt_budget import bound_chat_history
-from resource_telemetry import get_gpu_memory_info, get_process_memory_info
+from core.doc_store import DocStore
+from retrieval.hybrid_retriever import HybridRetriever
+from core.models import Document, SummaryResult
+from core.prompt_budget import bound_chat_history
+from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
 
 MAX_CHAT_TURNS = 50
 

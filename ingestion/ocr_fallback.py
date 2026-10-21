@@ -14,7 +14,7 @@ from typing import Any
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from models import Chunk, Page
+from core.models import Chunk, Page
 
 logger = logging.getLogger(__name__)
 

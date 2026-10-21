@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate
-from pdf_reader import PdfReader
+from ingestion.pdf_reader import PdfReader
 
 
 CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"

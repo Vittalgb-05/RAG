@@ -5,10 +5,10 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from doc_store import DocStore
-from hybrid_retriever import HybridRetriever
-from local_embedding import LocalEmbedding
-from models import cache_dir_for
+from core.doc_store import DocStore
+from retrieval.hybrid_retriever import HybridRetriever
+from retrieval.local_embedding import LocalEmbedding
+from core.models import cache_dir_for
 
 logger = logging.getLogger(__name__)
 

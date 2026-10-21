@@ -2,7 +2,7 @@
 
 import logging
 
-from logging_setup import (
+from core.logging_setup import (
     WATCHER_LOGGER_NAME,
     TorchClassesScanLogFilter,
     suppress_torch_classes_scan_warning,

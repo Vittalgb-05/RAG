@@ -10,8 +10,8 @@ import hashlib
 import logging
 from typing import Any
 
-from model_provider import BaseModelProvider
-from models import BBox, EvidenceElement
+from providers.model_provider import BaseModelProvider
+from core.models import BBox, EvidenceElement
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +272,7 @@ class VisualAnalyzer:
             if supports_vision and provider is not None and crop_bytes:
                 try:
                     # Concurrency gate: serialize visual inference with GPU chat & summarization
-                    from local_llm import InferenceGate
+                    from core.local_llm import InferenceGate
 
                     with InferenceGate.hold(timeout=60.0):
                         description = provider.analyze_image(

@@ -15,8 +15,8 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 from sentence_transformers import SentenceTransformer
 
-from models import EvidenceSnippet, RetrievalResult
-from vector_index import VectorIndex
+from core.models import EvidenceSnippet, RetrievalResult
+from retrieval.vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
 

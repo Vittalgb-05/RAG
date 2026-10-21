@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 import sqlite3
 from typing import Any
-from models import BBox, Chunk, Document, EvidenceElement, Page, SummaryResult
+from core.models import BBox, Chunk, Document, EvidenceElement, Page, SummaryResult
 
 SCHEMA_V1_DDL = [
     """

@@ -4,7 +4,7 @@
 # ------------------------------------------------------------------
 
 import pytest
-from vector_index import VectorIndex
+from retrieval.vector_index import VectorIndex
 
 
 def test_vector_index_initialization():

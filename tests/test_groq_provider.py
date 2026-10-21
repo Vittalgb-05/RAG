@@ -3,8 +3,8 @@
 from unittest.mock import MagicMock, patch
 import pytest
 
-from groq_provider import GroqProvider
-from model_provider import HealthStatus, ProviderCapabilities
+from providers.groq_provider import GroqProvider
+from providers.model_provider import HealthStatus, ProviderCapabilities
 
 
 def test_groq_capabilities():
@@ -33,7 +33,7 @@ def test_groq_health_without_key():
 def test_groq_health_with_key():
     """Verify healthy status when API key and mock client are initialized."""
     mock_client = MagicMock()
-    with patch("groq_provider.Groq", return_value=mock_client):
+    with patch("providers.groq_provider.Groq", return_value=mock_client):
         provider = GroqProvider(api_key="gsk_test_mock")
         health = provider.check_health()
         assert health.status == "healthy"
@@ -47,7 +47,7 @@ def test_groq_generate_text_success():
     mock_choice.message.content = "Groq generated answer."
     mock_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
 
-    with patch("groq_provider.Groq", return_value=mock_client):
+    with patch("providers.groq_provider.Groq", return_value=mock_client):
         provider = GroqProvider(api_key="gsk_test_mock")
         res = provider.generate_text("Explain quantum computing.", system_prompt="You are a physicist.")
 
@@ -66,7 +66,7 @@ def test_groq_stream_text_success():
     chunk2 = MagicMock(choices=[MagicMock(delta=MagicMock(content="world!"))])
     mock_client.chat.completions.create.return_value = iter([chunk1, chunk2])
 
-    with patch("groq_provider.Groq", return_value=mock_client):
+    with patch("providers.groq_provider.Groq", return_value=mock_client):
         provider = GroqProvider(api_key="gsk_test_mock")
         tokens = list(provider.stream_text("Say hello"))
 

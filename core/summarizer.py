@@ -13,10 +13,10 @@ import re
 from typing import Any
 import uuid
 
-from local_llm import InferenceGate
-from model_provider import BaseModelProvider
-from models import CONFIG_VERSION, Page, SummaryResult, VALID_SUMMARY_PROFILES
-from prompt_budget import estimate_tokens, sanitize_xml_boundary
+from core.local_llm import InferenceGate
+from providers.model_provider import BaseModelProvider
+from core.models import CONFIG_VERSION, Page, SummaryResult, VALID_SUMMARY_PROFILES
+from core.prompt_budget import estimate_tokens, sanitize_xml_boundary
 
 logger = logging.getLogger(__name__)
 

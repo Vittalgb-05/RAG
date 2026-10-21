@@ -4,7 +4,7 @@
 # ------------------------------------------------------------------
 
 from unittest.mock import patch
-from local_embedding import LocalEmbedding
+from retrieval.local_embedding import LocalEmbedding
 
 
 def test_local_embedding_initialization(mock_sentence_transformer):
@@ -47,13 +47,13 @@ def test_local_embedding_get_context(mock_sentence_transformer):
 
 def test_shared_sentence_transformer_caching():
     """Verify get_shared_sentence_transformer reuses the same instance in memory."""
-    from local_embedding import clear_shared_model_cache, get_shared_sentence_transformer
+    from retrieval.local_embedding import clear_shared_model_cache, get_shared_sentence_transformer
     from unittest.mock import MagicMock, patch
 
     clear_shared_model_cache()
     mock_instance = MagicMock()
 
-    with patch("local_embedding.SentenceTransformer", return_value=mock_instance) as mock_st_cls:
+    with patch("retrieval.local_embedding.SentenceTransformer", return_value=mock_instance) as mock_st_cls:
         m1 = get_shared_sentence_transformer("all-MiniLM-L6-v2", "cpu")
         m2 = get_shared_sentence_transformer("all-MiniLM-L6-v2", "cpu")
         assert m1 is m2

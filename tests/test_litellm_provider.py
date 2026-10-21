@@ -3,9 +3,9 @@
 from unittest.mock import MagicMock
 import pytest
 
-from litellm_provider import LiteLLMProvider
-from local_llm import AiModel
-from model_provider import BaseModelProvider
+from providers.litellm_provider import LiteLLMProvider
+from core.local_llm import AiModel
+from providers.model_provider import BaseModelProvider
 
 
 class MockChoice:
@@ -79,7 +79,7 @@ def test_check_health_reports_healthy_with_explicit_key() -> None:
 
 def test_check_health_when_litellm_missing(monkeypatch) -> None:
     """Verify check_health handles missing litellm library gracefully."""
-    import litellm_provider
+    from providers import litellm_provider
 
     monkeypatch.setattr(litellm_provider, "litellm", None)
 

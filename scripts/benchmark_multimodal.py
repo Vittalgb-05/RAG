@@ -18,13 +18,13 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from citation_validator import validate_citations
-from hybrid_retriever import HybridRetriever
-from llama_cpp_provider import LlamaCppProvider
-from local_embedding import LocalEmbedding
-from local_llm import AiModel
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
-from pdf_reader import PdfReader
+from core.citation_validator import validate_citations
+from retrieval.hybrid_retriever import HybridRetriever
+from providers.llama_cpp_provider import LlamaCppProvider
+from retrieval.local_embedding import LocalEmbedding
+from core.local_llm import AiModel
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from ingestion.pdf_reader import PdfReader
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("benchmark_multimodal")

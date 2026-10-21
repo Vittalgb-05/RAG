@@ -3,10 +3,10 @@
 from collections.abc import Generator
 import re
 import pytest
-from doc_store import DocStore
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
-from models import Document, Page, SummaryResult
-from summarizer import (
+from core.doc_store import DocStore
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from core.models import Document, Page, SummaryResult
+from core.summarizer import (
     PROFILE_SYSTEM_INSTRUCTIONS,
     Summarizer,
     extract_page_references,

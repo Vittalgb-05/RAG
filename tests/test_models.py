@@ -7,7 +7,7 @@
 from pathlib import Path
 import pytest
 from pydantic import ValidationError
-from models import (
+from core.models import (
     BBox,
     Chunk,
     CONFIG_VERSION,
@@ -170,8 +170,8 @@ def test_tracer_chunk_to_store_roundtrip(tmp_path, sample_pdf_path):
     insert parent Document and Chunk into SQLite via DocStore ->
     read back Document and Chunk and verify round-trip.
     """
-    from pdf_reader import PdfReader
-    from doc_store import DocStore
+    from ingestion.pdf_reader import PdfReader
+    from core.doc_store import DocStore
 
     reader = PdfReader(sample_pdf_path)
     paragraphs = reader.get_paragraphs()

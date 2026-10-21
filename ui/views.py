@@ -8,13 +8,13 @@ from typing import Any
 
 import streamlit as st
 
-from doc_store import DocStore
-from hybrid_retriever import HybridRetriever
-from local_llm import AiModel
-from models import CONFIG_VERSION
-from prompt_budget import bound_chat_history
-from resource_telemetry import get_gpu_memory_info, get_process_memory_info
-from summarizer import Summarizer
+from core.doc_store import DocStore
+from retrieval.hybrid_retriever import HybridRetriever
+from core.local_llm import AiModel
+from core.models import CONFIG_VERSION
+from core.prompt_budget import bound_chat_history
+from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
+from core.summarizer import Summarizer
 from ui.components import (
     get_brand_mark_svg,
     get_svg_icon,
@@ -26,7 +26,7 @@ from ui.components import (
 from ui.ingestion_service import IngestionService
 from ui.lifecycle_service import LifecycleService
 from ui.sanitizer import sanitize_display_markdown
-from upload_validation import MAX_FILE_MB
+from ingestion.upload_validation import MAX_FILE_MB
 
 logger = logging.getLogger(__name__)
 

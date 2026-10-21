@@ -20,10 +20,10 @@ os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 from dotenv import load_dotenv
 import streamlit as st
 
-from doc_store import DocStore
-from litellm_provider import LiteLLMProvider
-from local_llm import AiModel
-from logging_setup import suppress_torch_classes_scan_warning
+from core.doc_store import DocStore
+from providers.litellm_provider import LiteLLMProvider
+from core.local_llm import AiModel
+from core.logging_setup import suppress_torch_classes_scan_warning
 from ui.components import render_brand_header, render_status_pill
 from ui.hydration import hydrate_startup_state
 from ui.theme import inject_custom_theme

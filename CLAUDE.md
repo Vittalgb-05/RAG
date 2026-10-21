@@ -32,13 +32,13 @@ A local-first, privacy-respecting PDF intelligence application that delivers fas
 - **LanceDB 0.40.0 & PyArrow 23.0.1** (`hybrid_retriever.py`) — Persistent vector index and native Full-Text Search (FTS) with Reciprocal Rank Fusion (RRF).
 - **SQLite (sqlite3 WAL mode)** (`doc_store.py`) — Relational metadata store at `data/documents.db` with schema migrations v1–v4, indexing `chunks(doc_id)` and `pages(doc_id)`, plus physical `VACUUM` on purge.
 - **sentence-transformers 3.4.1** (`local_embedding.py`) — CPU-pinned `all-MiniLM-L6-v2` dense embeddings (384-dimensional, L2-normalized).
-- **Docling 2.138.0** (`docling_reader.py`) — Structured layout parsing, reading order, and markdown table extraction with automatic `pypdf` fallback.
-- **pypdf 5.3.0** (`pdf_reader.py`, `upload_validation.py`) — Text extraction, page accounting, and magic-byte validation (`%PDF`).
-- **RapidOCR** (`ocr_fallback.py`) — CPU-friendly ONNX OCR fallback (`rapidocr-onnxruntime==1.4.4` for Python <3.13; `rapidocr==3.10.0` for >=3.13).
-- **PyMuPDF 1.28.2 (`pymupdf` as `fitz`)** (`ocr_fallback.py`, `visual_analyzer.py`) — PDF page rasterization and 2× visual bounding box cropping.
-- **httpx 0.28.1** (`llama_cpp_provider.py`) — HTTP/SSE client communicating with local llama-server with strict loopback/SSRF enforcement.
-- **LiteLLM 1.105.0 & Groq 0.15.0** (`litellm_provider.py`, `groq_provider.py`) — Optional cloud model adapters with cryptographic/permission consent gates and key scrubbing.
-- **psutil 6.1.1 & nvidia-smi** (`resource_telemetry.py`) — Hardware telemetry for RAM RSS and GPU VRAM with 5s caching.
+- **Docling 2.138.0** (`ingestion/docling_reader.py`) — Structured layout parsing, reading order, and markdown table extraction with automatic `pypdf` fallback.
+- **pypdf 5.3.0** (`ingestion/pdf_reader.py`, `ingestion/upload_validation.py`) — Text extraction, page accounting, and magic-byte validation (`%PDF`).
+- **RapidOCR** (`ingestion/ocr_fallback.py`) — CPU-friendly ONNX OCR fallback (`rapidocr-onnxruntime==1.4.4` for Python <3.13; `rapidocr==3.10.0` for >=3.13).
+- **PyMuPDF 1.28.2 (`pymupdf` as `fitz`)** (`ingestion/ocr_fallback.py`, `ingestion/visual_analyzer.py`) — PDF page rasterization and 2× visual bounding box cropping.
+- **httpx 0.28.1** (`providers/llama_cpp_provider.py`) — HTTP/SSE client communicating with local llama-server with strict loopback/SSRF enforcement.
+- **LiteLLM 1.105.0 & Groq 0.15.0** (`providers/litellm_provider.py`, `providers/groq_provider.py`) — Optional cloud model adapters with cryptographic/permission consent gates and key scrubbing.
+- **psutil 6.1.1 & nvidia-smi** (`core/resource_telemetry.py`) — Hardware telemetry for RAM RSS and GPU VRAM with 5s caching.
 
 ### Testing & Code Quality
 - **pytest >= 8.3.0** — 296 tests across 29 test suites in `tests/`, configured in `pyproject.toml`.
@@ -57,10 +57,10 @@ A local-first, privacy-respecting PDF intelligence application that delivers fas
 ## Conventions
 
 ### Naming Patterns
-- **Root Modules:** Flat `snake_case.py` files named by domain noun: `doc_store.py`, `hybrid_retriever.py`, `local_llm.py`, `models.py`, `visual_analyzer.py`, `summarizer.py`.
-- **UI Package:** Modularized under `ui/`: `ui/views.py`, `ui/components.py`, `ui/theme.py`, `ui/sanitizer.py`, `ui/hydration.py`, `ui/ingestion_service.py`, `ui/lifecycle_service.py`.
+- **Package Layout:** Organized by responsibility: `core/` (models, storage, LLM facade, summarizer, citation validator, prompt budgeting, telemetry), `retrieval/` (hybrid retriever, vector index, embeddings), `ingestion/` (upload validation, docling reader, pdf reader, OCR fallback, visual analyzer), `providers/` (model provider ABC, llama.cpp, LiteLLM, Groq), `ui/` (views, components, theme, services).
+- **Root Entry Points:** Minimal root containing only `main.py`, `start.py`, and `setup.py`.
 - **Classes:** `PascalCase`: `DocStore`, `HybridRetriever`, `AiModel`, `IngestionService`, `LifecycleService`, `InferenceGate`, `VisualAnalyzer`, `Summarizer`.
-- **Data Models:** Pydantic v2 classes in `models.py` (`Chunk`, `Page`, `Document`, `EvidenceElement`, `RetrievalResult`, `SummaryResult`).
+- **Data Models:** Pydantic v2 classes in `core/models.py` (`Chunk`, `Page`, `Document`, `EvidenceElement`, `RetrievalResult`, `SummaryResult`).
 - **Functions:** `snake_case`, verb-first for actions (`ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`).
 - **UI Renderers:** Named `render_<area>` returning `None`: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents`.
 - **Tests:** `tests/test_<module_or_feature>.py` with test functions `test_<behavior>_<condition>`.
@@ -69,7 +69,7 @@ A local-first, privacy-respecting PDF intelligence application that delivers fas
 - **Linting & Formatting:** Enforced via Ruff (`ruff check .` and `ruff format --check .`). Indentation is 4 spaces; strings and f-strings use double quotes; line length soft cap is 120 columns.
 - **Type Annotations:** PEP 604 syntax (`str | None`, `list[dict[str, Any]]`) on all public boundaries. Abstract collections imported from `collections.abc` (`Callable`, `Generator`).
 - **Docstrings:** Top-of-file `"""..."""` module docstrings on every module stating purpose and invariants. Google-style `Args:` / `Returns:` on public methods without type repetition.
-- **Logging:** Structured logging via `logger = logging.getLogger(__name__)`. Benign watcher warnings suppressed via `logging_setup.py`.
+- **Logging:** Structured logging via `logger = logging.getLogger(__name__)`. Benign watcher warnings suppressed via `core/logging_setup.py`.
 
 ### Architecture & Lifecycle Rules
 - **GPU Concurrency Gate:** All LLM generation, VLM visual inspection, and summarization calls MUST acquire `InferenceGate.hold(timeout=60.0)` to respect the 4 GB VRAM ceiling.
@@ -91,28 +91,29 @@ A local-first, privacy-respecting PDF intelligence application that delivers fas
                 │                                           │
                 ▼                                           ▼
 ┌───────────────────────────────────┐   ┌───────────────────────────────────┐
-│ UI Orchestration Services         │   │ Domain Services                   │
-│ `ui/ingestion_service.py`         │   │ `local_llm.py` (AiModel, Gate)     │
-│ `ui/lifecycle_service.py`         │   │ `summarizer.py` (map-reduce)       │
-│ `ui/hydration.py`                 │   │ `citation_validator.py`            │
-│ `ui/lifecycle_service.py`         │   │ `prompt_budget.py`                 │
+│ UI Orchestration Services         │   │ Core Domain Services              │
+│ `ui/ingestion_service.py`         │   │ `core/local_llm.py` (AiModel)     │
+│ `ui/lifecycle_service.py`         │   │ `core/summarizer.py` (map-reduce) │
+│ `ui/hydration.py`                 │   │ `core/citation_validator.py`      │
+│                                   │   │ `core/prompt_budget.py`           │
 └───────────────┬───────────────────┘   └───────────────┬───────────────────┘
                 │                                       │
                 ▼                                       ▼
 ┌───────────────────────────────────────────────────────────────────────────┐
 │ Ingestion & Retrieval Pipeline                                            │
-│ `upload_validation.py` → `docling_reader.py` → `pdf_reader.py` (fallback)  │
-│ → `ocr_fallback.py` (RapidOCR) → `visual_analyzer.py` (VLM crops)          │
-│ → `local_embedding.py` (MiniLM, CPU) → `hybrid_retriever.py` (RRF)         │
+│ `ingestion/upload_validation.py` → `ingestion/docling_reader.py`           │
+│ → `ingestion/pdf_reader.py` (fallback) → `ingestion/ocr_fallback.py`       │
+│ → `ingestion/visual_analyzer.py` (VLM crops)                              │
+│ → `retrieval/local_embedding.py` (MiniLM) → `retrieval/hybrid_retriever.py`│
 └───────────────┬───────────────────────────────────────────┬───────────────┘
                 │                                           │
                 ▼                                           ▼
 ┌───────────────────────────────────┐   ┌───────────────────────────────────┐
 │ Persistence                       │   │ Inference Providers               │
-│ `doc_store.py` → `data/documents.db`│  │ `model_provider.py` (ABC)         │
-│ `hybrid_retriever.py` → `data/lancedb`│ │ `llama_cpp_provider.py` (local)   │
-│ `vector_index.py` → `fallback_store.json`│ `litellm_provider.py` (cloud)  │
-│ `models.cache_dir_for` → `.cache/`  │   │ `groq_provider.py` (legacy cloud) │
+│ `core/doc_store.py` (SQLite)      │   │ `providers/model_provider.py`(ABC)│
+│ `retrieval/hybrid_retriever.py`   │   │ `providers/llama_cpp_provider.py` │
+│ `retrieval/vector_index.py`       │   │ `providers/litellm_provider.py`   │
+│ `core/models.py` (cache_dir_for)  │   │ `providers/groq_provider.py`      │
 └───────────────────────────────────┘   └───────────────────────────────────┘
 ```
 

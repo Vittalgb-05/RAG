@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import streamlit as st
 
-from doc_store import DocStore
-from models import Document, SummaryResult
+from core.doc_store import DocStore
+from core.models import Document, SummaryResult
 from ui.components import (
     get_brand_mark_svg,
     get_svg_icon,

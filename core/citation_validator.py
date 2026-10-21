@@ -9,7 +9,7 @@ precision (QA-03) and detecting explicit model abstention without citation fabri
 import logging
 import re
 from pydantic import BaseModel, ConfigDict, Field
-from models import RetrievalResult
+from core.models import RetrievalResult
 
 logger = logging.getLogger(__name__)
 

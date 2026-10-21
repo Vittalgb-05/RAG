@@ -1,8 +1,8 @@
 """Unit tests for Streamlit UI data structures and presentation contracts."""
 
-from citation_validator import CitationVerificationResult
-from doc_store import DocStore
-from models import BBox, Document, EvidenceSnippet, SummaryResult
+from core.citation_validator import CitationVerificationResult
+from core.doc_store import DocStore
+from core.models import BBox, Document, EvidenceSnippet, SummaryResult
 
 
 def test_chat_turn_schema_contract():
@@ -125,7 +125,7 @@ def test_summary_data_contract_and_page_formatting(tmp_path):
 
 def test_ai_model_provider_attribute_contract(mock_llama_provider):
     """Verify that AiModel exposes .provider attribute rather than ._provider (CR-01)."""
-    from local_llm import AiModel
+    from core.local_llm import AiModel
 
     model = AiModel(provider=mock_llama_provider)
     assert hasattr(model, "provider")
@@ -221,8 +221,8 @@ def test_consent_dialog_approval_and_dismissal():
 
 def test_session_isolation_posture():
     """Verify that multiple concurrent sessions maintain isolated AiModel and consent state."""
-    from local_llm import AiModel
-    from model_provider import HealthStatus, ProviderCapabilities, BaseModelProvider
+    from core.local_llm import AiModel
+    from providers.model_provider import HealthStatus, ProviderCapabilities, BaseModelProvider
 
     class DummyLocalProvider(BaseModelProvider):
         def check_health(self):
@@ -296,7 +296,7 @@ def test_cloud_provider_model_mapping():
 
 def test_summary_cache_version_key_contract(tmp_path):
     """Verify summary retrieval uses f'{model_name}:{CONFIG_VERSION}' to match save key."""
-    from summarizer import CONFIG_VERSION
+    from core.summarizer import CONFIG_VERSION
 
     db_file = tmp_path / "ui_summary_ver.db"
     store = DocStore(db_file)
@@ -348,7 +348,7 @@ def test_ingestion_service_empty_chunks_reports_failure(tmp_path, monkeypatch):
     mock_reader.get_paragraphs.return_value = []
     mock_reader.get_page_records.return_value = []
 
-    import docling_reader
+    from ingestion import docling_reader
 
     monkeypatch.setattr(docling_reader, "DoclingReader", lambda *args, **kwargs: mock_reader)
 
@@ -367,9 +367,9 @@ def test_ingestion_service_empty_chunks_reports_failure(tmp_path, monkeypatch):
 
 def test_lifecycle_service_atomic_delete(tmp_path):
     """Verify LifecycleService deletes from SQLite, LanceDB, disk cache, and session state."""
-    from doc_store import DocStore
-    from hybrid_retriever import HybridRetriever
-    from models import Chunk, Document, cache_dir_for
+    from core.doc_store import DocStore
+    from retrieval.hybrid_retriever import HybridRetriever
+    from core.models import Chunk, Document, cache_dir_for
     from ui.lifecycle_service import LifecycleService
 
     db_path = tmp_path / "test_lifecycle.db"
@@ -450,9 +450,9 @@ def test_lifecycle_service_atomic_delete(tmp_path):
 
 def test_lifecycle_service_purge_all(tmp_path):
     """Verify LifecycleService.purge_all erases SQLite, LanceDB, cache, and chat history."""
-    from doc_store import DocStore
-    from hybrid_retriever import HybridRetriever
-    from models import Document
+    from core.doc_store import DocStore
+    from retrieval.hybrid_retriever import HybridRetriever
+    from core.models import Document
     from ui.lifecycle_service import LifecycleService
 
     db_path = tmp_path / "test_purge.db"
@@ -527,8 +527,8 @@ def test_cloud_consent_cancel_state_reset():
 
 def test_upload_loop_regression_uploader_key_rotated(tmp_path):
     """Verify that uploader_key is rotated after upload and already_indexed flag is True on dedupe."""
-    from doc_store import DocStore
-    from models import Document
+    from core.doc_store import DocStore
+    from core.models import Document
     from ui.ingestion_service import IngestionService
     from unittest.mock import MagicMock
 

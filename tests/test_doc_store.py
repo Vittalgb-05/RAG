@@ -7,8 +7,8 @@
 from pathlib import Path
 import sqlite3
 import pytest
-from doc_store import DocStore
-from models import BBox, Chunk, Document, EvidenceElement, Page, SummaryResult
+from core.doc_store import DocStore
+from core.models import BBox, Chunk, Document, EvidenceElement, Page, SummaryResult
 
 
 def test_insert_get_roundtrip(tmp_path):
@@ -187,7 +187,7 @@ def test_restore_chunks_to_embedding_from_doc_store(tmp_path, mock_sentence_tran
     Verify restart rebuild flow (CR-01 & CR-03):
     Stored chunks can be restored from DocStore and passed into LocalEmbedding.build_index.
     """
-    from local_embedding import LocalEmbedding
+    from retrieval.local_embedding import LocalEmbedding
 
     db_file = tmp_path / "restore.db"
     store = DocStore(db_file)

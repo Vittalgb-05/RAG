@@ -7,7 +7,7 @@
 import hashlib
 from pathlib import Path
 import pytest
-from upload_validation import MAX_FILE_MB, MAX_PAGES, doc_id_for, sha256_bytes, validate_pdf_bytes
+from ingestion.upload_validation import MAX_FILE_MB, MAX_PAGES, doc_id_for, sha256_bytes, validate_pdf_bytes
 
 
 CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"

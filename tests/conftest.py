@@ -50,7 +50,7 @@ def mock_groq_client(monkeypatch):
     mock_client.chat.completions.create.side_effect = mock_create
 
     try:
-        import groq_provider
+        from providers import groq_provider
 
         monkeypatch.setattr(groq_provider, "Groq", lambda api_key=None: mock_client)
     except (ImportError, AttributeError):
@@ -86,7 +86,7 @@ def mock_sentence_transformer(monkeypatch):
 
     mock_model.encode.side_effect = mock_encode
 
-    import local_embedding
+    from retrieval import local_embedding
 
     monkeypatch.setattr(local_embedding, "SentenceTransformer", lambda model_name, **kwargs: mock_model)
     return mock_model
@@ -102,7 +102,7 @@ def sample_pdf_path():
 @pytest.fixture
 def mock_llama_provider():
     """Provides a healthy mock local inference provider conforming to BaseModelProvider."""
-    from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+    from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
     class MockLlamaCppProvider(BaseModelProvider):
         def __init__(self, healthy=True, tokens=None):

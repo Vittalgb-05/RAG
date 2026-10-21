@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from llama_cpp_provider import LlamaCppProvider
+from providers.llama_cpp_provider import LlamaCppProvider
 
 
 def test_capabilities() -> None:

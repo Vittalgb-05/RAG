@@ -11,14 +11,14 @@ import logging
 import threading
 import warnings
 
-from citation_validator import CitationVerificationResult, validate_citations
-from groq_provider import GroqProvider
-from hybrid_retriever import HybridRetriever
-from llama_cpp_provider import LlamaCppProvider
-from local_embedding import LocalEmbedding
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
-from models import RetrievalResult
-from prompt_budget import assemble_grounded_messages
+from core.citation_validator import CitationVerificationResult, validate_citations
+from providers.groq_provider import GroqProvider
+from retrieval.hybrid_retriever import HybridRetriever
+from providers.llama_cpp_provider import LlamaCppProvider
+from retrieval.local_embedding import LocalEmbedding
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from core.models import RetrievalResult
+from core.prompt_budget import assemble_grounded_messages
 
 logger = logging.getLogger(__name__)
 

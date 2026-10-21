@@ -3,11 +3,11 @@
 import socket
 import pytest
 
-from hybrid_retriever import HybridRetriever
-from litellm_provider import LiteLLMProvider
-from local_embedding import LocalEmbedding
-from local_llm import AiModel
-from models import Chunk, RetrievalResult
+from retrieval.hybrid_retriever import HybridRetriever
+from providers.litellm_provider import LiteLLMProvider
+from retrieval.local_embedding import LocalEmbedding
+from core.local_llm import AiModel
+from core.models import Chunk, RetrievalResult
 
 
 def test_default_session_privacy_state_is_local_only() -> None:
@@ -150,8 +150,8 @@ def test_dynamic_cloud_provider_switching_matrix() -> None:
 
 def test_ingestion_visual_analyzer_never_calls_cloud_vision_even_in_cloud_mode(monkeypatch) -> None:
     """Verify VisualAnalyzer during ingestion strictly rejects cloud providers (CR-01, IN-02, INF-03)."""
-    from models import BBox
-    from visual_analyzer import VisualAnalyzer
+    from core.models import BBox
+    from ingestion.visual_analyzer import VisualAnalyzer
 
     cloud_provider = LiteLLMProvider(
         model_name="openai/gpt-4o-mini",
@@ -223,7 +223,7 @@ def test_ai_model_set_cloud_mode_idempotent_preserves_connections() -> None:
 
 def test_per_provider_api_key_lookup(monkeypatch) -> None:
     """Verify LiteLLMProvider uses per-provider dictionary in session state (WR-01)."""
-    from litellm_provider import _resolve_api_key_for_model
+    from providers.litellm_provider import _resolve_api_key_for_model
 
     class FakeSessionState(dict):
         pass

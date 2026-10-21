@@ -4,7 +4,7 @@ from collections.abc import Generator
 import pytest
 from pydantic import ValidationError
 
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
 
 def test_provider_capabilities_valid() -> None:

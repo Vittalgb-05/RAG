@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
 
 class LlamaCppProvider(BaseModelProvider):

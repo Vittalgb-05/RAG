@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from hybrid_retriever import DEFAULT_DB_URI, HybridRetriever, compute_rrf
-from local_embedding import LocalEmbedding
-from models import BBox, Chunk, EvidenceElement, RetrievalResult
+from retrieval.hybrid_retriever import DEFAULT_DB_URI, HybridRetriever, compute_rrf
+from retrieval.local_embedding import LocalEmbedding
+from core.models import BBox, Chunk, EvidenceElement, RetrievalResult
 
 
 def _make_unit_vector(seed: int, dim: int = 384) -> list[float]:
@@ -22,7 +22,7 @@ def _make_unit_vector(seed: int, dim: int = 384) -> list[float]:
 def test_local_embedding_cpu_pinning():
     """Verify LocalEmbedding explicitly initializes SentenceTransformer on CPU (RETR-01)."""
     mock_st_class = MagicMock()
-    import local_embedding
+    from retrieval import local_embedding
 
     original_st = local_embedding.SentenceTransformer
     try:
@@ -155,7 +155,7 @@ def test_hybrid_retriever_document_deletion(tmp_path):
 
 def test_hybrid_retriever_fallback_when_lancedb_missing(tmp_path, monkeypatch):
     """Verify graceful fallback to VectorIndex when LanceDB is not available."""
-    monkeypatch.setattr("hybrid_retriever.lancedb", None)
+    monkeypatch.setattr("retrieval.hybrid_retriever.lancedb", None)
 
     retriever = HybridRetriever(db_uri=tmp_path / "fallback_db")
     assert not retriever.is_persistent()
@@ -345,7 +345,7 @@ def test_hybrid_retriever_filter_injection_escaping(tmp_path):
 
 def test_hybrid_retriever_fallback_deduplication(tmp_path, monkeypatch):
     """Verify fallback store deduplicates chunks by chunk_id on re-indexing (WR-01)."""
-    import hybrid_retriever
+    from retrieval import hybrid_retriever
 
     monkeypatch.setattr(hybrid_retriever, "lancedb", None)
     retriever = HybridRetriever(db_uri=tmp_path / "fallback_dedup_db")

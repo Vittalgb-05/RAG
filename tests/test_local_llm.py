@@ -6,10 +6,10 @@ and non-crashing degraded startup when all inference backends are offline.
 
 from unittest.mock import MagicMock
 import pytest
-from groq_provider import GroqProvider
-from llama_cpp_provider import LlamaCppProvider
-from local_llm import AiModel
-from model_provider import HealthStatus
+from providers.groq_provider import GroqProvider
+from providers.llama_cpp_provider import LlamaCppProvider
+from core.local_llm import AiModel
+from providers.model_provider import HealthStatus
 
 
 def test_ai_model_with_explicit_provider(mock_llama_provider) -> None:
@@ -217,7 +217,7 @@ def test_groq_provider_error_encapsulation() -> None:
 
 def test_ai_model_with_precomputed_retrieval_result(mock_llama_provider) -> None:
     """Verify AiModel directly accepts pre-computed RetrievalResult without duplicate search (CR-02)."""
-    from models import EvidenceSnippet, RetrievalResult
+    from core.models import EvidenceSnippet, RetrievalResult
 
     model = AiModel(provider=mock_llama_provider)
 

@@ -15,8 +15,8 @@ from typing import Any
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from models import Chunk, Page
-from pdf_reader import PdfReader
+from core.models import Chunk, Page
+from ingestion.pdf_reader import PdfReader
 
 logger = logging.getLogger(__name__)
 

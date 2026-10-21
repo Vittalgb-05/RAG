@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from resource_telemetry import (
+from core.resource_telemetry import (
     clear_gpu_cache,
     clear_latency_history,
     get_compute_apps_gpu_memory,

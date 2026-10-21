@@ -14,8 +14,8 @@ import re
 from typing import Any
 import warnings
 
-from models import BBox, Chunk, EvidenceElement, EvidenceSnippet, RetrievalResult
-from vector_index import VectorIndex
+from core.models import BBox, Chunk, EvidenceElement, EvidenceSnippet, RetrievalResult
+from retrieval.vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
 

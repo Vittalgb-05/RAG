@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Any
 
-from model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
 

@@ -1,14 +1,14 @@
 """Unit tests for citation validation and abstention detection."""
 
-from citation_validator import (
+from core.citation_validator import (
     CitationVerificationResult,
     detect_adversarial_injection,
     extract_citations,
     is_abstention,
     validate_citations,
 )
-from local_llm import AiModel
-from models import EvidenceSnippet, RetrievalResult
+from core.local_llm import AiModel
+from core.models import EvidenceSnippet, RetrievalResult
 
 
 def _make_retrieval_result(num_snippets: int = 3) -> RetrievalResult:
