@@ -294,3 +294,48 @@ def test_export_table_markdown_with_doc_parameter():
 
     legacy_out = DoclingReader._export_table_markdown(LegacyTable(), doc=doc)
     assert "Value (legacy)" in legacy_out
+
+
+def test_docling_prose_chunk_offsets_are_monotonic_and_grounded():
+    """Long prose blocks must yield monotonic offsets that map back to the page text."""
+    mock_converter = MagicMock()
+
+    class MockProv:
+        def __init__(self, page_no):
+            self.page_no = page_no
+
+    class MockItem:
+        def __init__(self, text, label="text", page_no=1):
+            self.text = text
+            self.label = label
+            self.prov = [MockProv(page_no)]
+
+    long_text = " ".join(f"Sentence {i:04d} contains unique evidence token {i * 7}." for i in range(80))
+
+    class MockDoc:
+        def __init__(self):
+            self.pages = [1]
+            self.tables = []
+
+        def iterate_items(self):
+            return [(MockItem(long_text), 1)]
+
+    class MockConvRes:
+        def __init__(self):
+            self.document = MockDoc()
+
+    mock_converter.convert.return_value = MockConvRes()
+
+    reader = DoclingReader(CLEAN_PDF, converter=mock_converter)
+    reader._has_docling = True
+    reader.extract_text(doc_id="doc_offsets", sha12="offsets12345")
+
+    chunks = reader.get_paragraphs()
+    assert len(chunks) >= 2
+
+    page_text = reader.get_page_records()[0].page_text
+    previous_start = -1
+    for chunk in chunks:
+        assert chunk["char_start"] > previous_start
+        previous_start = chunk["char_start"]
+        assert page_text[chunk["char_start"] : chunk["char_end"]].strip() == chunk["content"].strip()

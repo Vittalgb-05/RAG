@@ -352,17 +352,28 @@ class DoclingReader:
                         chunk_index += 1
                     else:
                         sub_chunks = text_splitter.split_text(block_content)
+                        # Resolve the block's absolute position once, then map each
+                        # splitter chunk relative to it. Searching page_text again for
+                        # every chunk repeatedly missed overlapping chunks and could
+                        # leave current_offset stuck at end-of-page.
+                        block_start = page_text.find(block_content, current_offset)
+                        if block_start == -1:
+                            block_start = min(current_offset, len(page_text))
+                        local_cursor = 0
                         for sc in sub_chunks:
                             content = sc.strip()
                             if not content:
                                 continue
-                            sc_start = page_text.find(content, current_offset)
-                            if sc_start == -1:
-                                sc_start = min(current_offset, len(page_text))
-                            sc_end = min(len(page_text), sc_start + len(content))
-                            # Overlapping splitter chunks legitimately share text, so
-                            # advance by one character to find the next overlap start.
-                            current_offset = min(sc_start + 1, len(page_text))
+                            local_start = block_content.find(content, local_cursor)
+                            if local_start == -1:
+                                local_start = local_cursor
+                            local_end = min(len(block_content), local_start + len(content))
+                            sc_start = min(len(page_text), block_start + local_start)
+                            sc_end = min(len(page_text), block_start + local_end)
+                            # Chunks overlap by design (chunk_overlap=200); advance the
+                            # local cursor by one character so the next overlapping
+                            # chunk resolves its own (still monotonic) start.
+                            local_cursor = local_start + 1
 
                             chunk_id = f"{chunk_prefix}_p{page_num}_{chunk_index:04d}"
                             chunk_model = Chunk(
@@ -378,6 +389,8 @@ class DoclingReader:
                             self.page_chunks.append(chunk_model.model_dump())
                             page_chunks_added += 1
                             chunk_index += 1
+
+                        current_offset = min(len(page_text), block_start + len(block_content))
 
                 self.page_records.append(
                     Page(
