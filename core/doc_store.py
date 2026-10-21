@@ -288,6 +288,153 @@ class DocStore:
             conn.executemany(query, params)
             conn.commit()
 
+    def record_ingestion(
+        self,
+        doc: Document,
+        pages: list[Page],
+        chunks: list[Chunk],
+        evidence: list[EvidenceElement] | None = None,
+    ) -> None:
+        """Atomically replace a document's pages, chunks, and evidence in one transaction.
+
+        Ingestion previously committed the document row, pages, chunks, and evidence in
+        separate transactions.  A failure part-way through left a document marked
+        ``indexed`` with missing/duplicated child rows.  This method either commits all
+        rows for the document or none of them, and removes stale child rows from a prior
+        partial attempt so chunk counts stay truthful.
+
+        Args:
+            doc: Canonical Document instance (status and num_chunks are persisted as given).
+            pages: Ordered page records for the document.
+            chunks: Text chunks for the document.
+            evidence: Optional visual evidence elements.
+
+        Raises:
+            TypeError: If an argument has the wrong canonical type.
+        """
+        if not isinstance(doc, Document):
+            raise TypeError(f"Expected Document instance, got {type(doc).__name__}")
+
+        evidence = evidence or []
+        if not isinstance(pages, list) or any(not isinstance(p, Page) for p in pages):
+            raise TypeError("pages must be a list of Page instances")
+        if not isinstance(chunks, list) or any(not isinstance(c, Chunk) for c in chunks):
+            raise TypeError("chunks must be a list of Chunk instances")
+        if any(not isinstance(e, EvidenceElement) for e in evidence):
+            raise TypeError("evidence must be a list of EvidenceElement instances")
+
+        doc_params = (
+            doc.doc_id,
+            doc.filename,
+            doc.sha256,
+            doc.size_bytes,
+            doc.num_pages,
+            doc.status,
+            doc.upload_time,
+            doc.num_chunks,
+        )
+        page_params = [(p.doc_id, p.page_num, p.status, p.char_count, p.error, p.num_chunks) for p in pages]
+        chunk_params = [
+            (
+                c.chunk_id,
+                c.doc_id,
+                c.filename,
+                c.page,
+                c.content,
+                c.char_start,
+                c.char_end,
+                c.bbox.model_dump_json() if c.bbox else None,
+                c.extraction,
+                c.embedding_model,
+            )
+            for c in chunks
+        ]
+        evidence_params = [
+            (
+                e.element_id,
+                e.doc_id,
+                e.page,
+                e.kind,
+                e.content,
+                e.bbox.model_dump_json() if e.bbox else None,
+                e.source,
+                e.model_version,
+            )
+            for e in evidence
+        ]
+
+        with self._connect() as conn:
+            try:
+                conn.execute("DELETE FROM chunks WHERE doc_id = ?;", (doc.doc_id,))
+                conn.execute("DELETE FROM pages WHERE doc_id = ?;", (doc.doc_id,))
+                conn.execute("DELETE FROM evidence_elements WHERE doc_id = ?;", (doc.doc_id,))
+
+                conn.execute(
+                    """
+                    INSERT INTO documents (doc_id, filename, sha256, size_bytes, num_pages, status, upload_time, num_chunks)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(doc_id) DO UPDATE SET
+                        filename = excluded.filename,
+                        size_bytes = excluded.size_bytes,
+                        num_pages = excluded.num_pages,
+                        status = excluded.status,
+                        upload_time = excluded.upload_time,
+                        num_chunks = excluded.num_chunks;
+                    """,
+                    doc_params,
+                )
+                if page_params:
+                    conn.executemany(
+                        """
+                        INSERT INTO pages (doc_id, page_num, status, char_count, error, num_chunks)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(doc_id, page_num) DO UPDATE SET
+                            status = excluded.status,
+                            char_count = excluded.char_count,
+                            error = excluded.error,
+                            num_chunks = excluded.num_chunks;
+                        """,
+                        page_params,
+                    )
+                if chunk_params:
+                    conn.executemany(
+                        """
+                        INSERT INTO chunks (chunk_id, doc_id, filename, page, content, char_start, char_end, bbox_json, extraction, embedding_model)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(chunk_id) DO UPDATE SET
+                            doc_id = excluded.doc_id,
+                            filename = excluded.filename,
+                            page = excluded.page,
+                            content = excluded.content,
+                            char_start = excluded.char_start,
+                            char_end = excluded.char_end,
+                            bbox_json = excluded.bbox_json,
+                            extraction = excluded.extraction,
+                            embedding_model = excluded.embedding_model;
+                        """,
+                        chunk_params,
+                    )
+                if evidence_params:
+                    conn.executemany(
+                        """
+                        INSERT INTO evidence_elements (element_id, doc_id, page, kind, content, bbox_json, source, model_version)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(element_id) DO UPDATE SET
+                            doc_id = excluded.doc_id,
+                            page = excluded.page,
+                            kind = excluded.kind,
+                            content = excluded.content,
+                            bbox_json = excluded.bbox_json,
+                            source = excluded.source,
+                            model_version = excluded.model_version;
+                        """,
+                        evidence_params,
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
     def record_page(self, page: Page) -> None:
         """
         Insert or update a page-level extraction record.
@@ -296,6 +443,22 @@ class DocStore:
             page: Canonical Page instance.
         """
         self.record_pages_batch([page])
+
+    def get_pages_for_doc(self, doc_id: str) -> list[Page]:
+        """Retrieve ordered page records for a document.
+
+        Args:
+            doc_id: Unique document identifier.
+
+        Returns:
+            list[Page]: Canonical Page instances ordered by page number.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM pages WHERE doc_id = ? ORDER BY page_num ASC;",
+                (doc_id,),
+            )
+            return [Page.model_validate(dict(row)) for row in cursor.fetchall()]
 
     def record_chunks(self, chunks: list[Chunk]) -> None:
         """
@@ -513,11 +676,9 @@ class DocStore:
             if row is None:
                 return None
             row_dict = dict(row)
-            if (
-                model_version is not None
-                and row_dict.get("model_version")
-                and row_dict.get("model_version") != model_version
-            ):
+            if model_version is not None and row_dict.get("model_version") != model_version:
+                # A missing/empty legacy version is stale too: serving it would bypass
+                # invalidation after a model or chunking-config change.
                 return None
             try:
                 page_refs = json.loads(row_dict.get("page_references_json") or "[]")
