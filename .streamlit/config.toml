@@ -7,6 +7,12 @@ textColor = "#F5F3FF"
 font = "sans serif"
 
 [server]
+# Local-first default: the UI has no authentication and is single-user.
+# Keep this on loopback. start.py refuses non-loopback binds unless
+# --allow-non-loopback or RAG_ALLOW_NON_LOOPBACK=1 is set. The Docker image
+# overrides this explicitly with --server.address=0.0.0.0 and maps only
+# 127.0.0.1:8501 on the host.
+address = "127.0.0.1"
 enableCORS = true
 enableXsrfProtection = true
 maxUploadSize = 50

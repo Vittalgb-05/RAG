@@ -15,6 +15,57 @@ import pypdf
 MAX_FILE_MB: int = 50
 MAX_PAGES: int = 500
 
+# Cheap pre-flight estimate: sample a handful of pages only.  This is advisory
+# (never rejects an upload) and deliberately does not trigger Docling/OCR.
+PREFLIGHT_SAMPLE_PAGES: int = 5
+PREFLIGHT_LOW_TEXT_CHARS: int = 50
+
+
+def estimate_scanned_ratio(reader: "pypdf.PdfReader", sample_limit: int = PREFLIGHT_SAMPLE_PAGES) -> float:
+    """Estimate the fraction of sampled pages that are likely scanned.
+
+    Uses ``pypdf`` text extraction only (no rasterization, OCR, or model loads),
+    so it is safe to run as a pre-flight diagnostic before ingestion.
+
+    Args:
+        reader: Already-open pypdf reader.
+        sample_limit: Maximum number of pages to sample.
+
+    Returns:
+        Ratio in ``[0.0, 1.0]``, or 0.0 when no page could be sampled.
+    """
+    try:
+        page_count = len(reader.pages)
+    except Exception:
+        return 0.0
+
+    sampled = min(max(0, int(sample_limit)), page_count)
+    if sampled <= 0:
+        return 0.0
+
+    low_text_pages = 0
+    for index in range(sampled):
+        try:
+            text = reader.pages[index].extract_text() or ""
+        except Exception:
+            text = ""
+        if len(text.strip()) < PREFLIGHT_LOW_TEXT_CHARS:
+            low_text_pages += 1
+
+    return low_text_pages / sampled
+
+
+def _preflight_note(ratio: float) -> str:
+    """Build a human-readable pre-flight diagnostic for the scanned-page ratio."""
+    if ratio <= 0.0:
+        return "Preflight: sampled pages contain digital text."
+    if ratio >= 0.8:
+        return (
+            f"Preflight: ~{ratio:.0%} of sampled pages appear scanned; OCR fallback will run "
+            "and is bounded by per-document page/time budgets."
+        )
+    return f"Preflight: ~{ratio:.0%} of sampled pages may require OCR fallback."
+
 
 def sha256_bytes(raw: bytes) -> str:
     """
@@ -59,6 +110,8 @@ class ValidatedUpload:
     sha256: str
     size_bytes: int
     num_pages: int
+    estimated_scanned_ratio: float = 0.0
+    preflight_note: str = ""
 
 
 def validate_pdf_bytes(raw: bytes, filename: str) -> ValidatedUpload:
@@ -99,15 +152,22 @@ def validate_pdf_bytes(raw: bytes, filename: str) -> ValidatedUpload:
     if num_pages > MAX_PAGES:
         raise ValueError(f"Too many pages ({num_pages} > {MAX_PAGES}) — {filename}.")
 
-    # 4. Content hashing
+    # 4. Cheap scanned-page pre-flight (advisory only; never rejects the upload).
+    scanned_ratio = estimate_scanned_ratio(reader)
+    preflight_note = _preflight_note(scanned_ratio)
+
+    # 5. Content hashing
     sha = sha256_bytes(raw)
     doc_id = doc_id_for(sha)
 
     print(f"[UploadValidation] Validated {filename} ({doc_id}, {num_pages} pages, {size_bytes} bytes)")
+    print(f"[UploadValidation] {preflight_note}")
     return ValidatedUpload(
         doc_id=doc_id,
         filename=filename,
         sha256=sha,
         size_bytes=size_bytes,
         num_pages=num_pages,
+        estimated_scanned_ratio=scanned_ratio,
+        preflight_note=preflight_note,
     )

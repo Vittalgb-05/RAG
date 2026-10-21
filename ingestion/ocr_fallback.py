@@ -6,10 +6,12 @@ sub-5-second throughput. Isolates OCR failures strictly at the page level.
 """
 
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import logging
+import math
 import os
 import threading
+import time
 from typing import Any
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -17,6 +19,52 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from core.models import Chunk, Page
 
 logger = logging.getLogger(__name__)
+
+# Hard per-page raster budgets for untrusted PDF geometry.  These bound memory
+# amplification independently of the 50 MB / 500 page upload caps in
+# `ingestion.upload_validation`.
+MAX_RENDER_PIXELS: int = 2048 * 2048
+MAX_RENDER_BYTES: int = 64 * 1024 * 1024
+MIN_RENDER_ZOOM: float = 0.5
+BYTES_PER_PIXEL: int = 4  # conservative RGBA-style estimate
+
+# Per-document OCR budgets.  A scanned document above these limits is processed
+# partially rather than stalling ingestion for an unbounded amount of time.
+MAX_OCR_PAGES_PER_DOC: int = 200
+MAX_OCR_SECONDS_PER_DOC: float = 300.0
+
+
+def _bounded_zoom(width: float, height: float, requested_zoom: float) -> float | None:
+    """Return a zoom that satisfies the post-clamp pixel and memory budgets.
+
+    Args:
+        width: Page/crop width in PDF points.
+        height: Page/crop height in PDF points.
+        requested_zoom: Desired scale factor before clamping.
+
+    Returns:
+        A safe zoom factor, or None when even the minimum zoom would exceed the
+        hard pixel/memory budget (caller should skip rendering).
+    """
+    if not math.isfinite(width) or not math.isfinite(height) or width <= 0 or height <= 0:
+        return None
+    if not math.isfinite(requested_zoom) or requested_zoom <= 0:
+        return None
+
+    zoom = requested_zoom
+    estimated_pixels = (width * zoom) * (height * zoom)
+    if estimated_pixels > MAX_RENDER_PIXELS:
+        zoom = max(MIN_RENDER_ZOOM, zoom * math.sqrt(MAX_RENDER_PIXELS / estimated_pixels))
+
+    # Post-clamp enforcement: the 0.5 minimum can still leave oversized geometry
+    # far above budget.  Skip instead of allocating the pixmap.
+    post_clamp_pixels = (width * zoom) * (height * zoom)
+    if post_clamp_pixels > MAX_RENDER_PIXELS:
+        return None
+    if post_clamp_pixels * BYTES_PER_PIXEL > MAX_RENDER_BYTES:
+        return None
+    return zoom
+
 
 try:
     from rapidocr_onnxruntime import RapidOCR
@@ -108,14 +156,19 @@ class OcrEngine:
                     if page_num < 1 or page_num > len(doc):
                         return None
                     page = doc.load_page(page_num - 1)
-                    zoom = eff_dpi / 72.0
-                    # Bounded resource guard: limit total rendered pixels to 2048x2048 (~4.2M px)
                     page_rect = page.rect
-                    max_total_pixels = 2048 * 2048
-                    est_pixels = (page_rect.width * zoom) * (page_rect.height * zoom)
-                    if est_pixels > max_total_pixels:
-                        scale = (max_total_pixels / max(1.0, est_pixels)) ** 0.5
-                        zoom = max(0.5, zoom * scale)
+                    zoom = _bounded_zoom(page_rect.width, page_rect.height, eff_dpi / 72.0)
+                    if zoom is None:
+                        logger.warning(
+                            "Skipping OCR render of page %d: %.0fx%.0f pt exceeds the "
+                            "hard pixel/memory budget (%d px, %d bytes).",
+                            page_num,
+                            page_rect.width,
+                            page_rect.height,
+                            MAX_RENDER_PIXELS,
+                            MAX_RENDER_BYTES,
+                        )
+                        return None
 
                     matrix = fitz.Matrix(zoom, zoom)
                     pix = page.get_pixmap(matrix=matrix)
@@ -324,6 +377,8 @@ def apply_conditional_ocr(
     filename: str = "document.pdf",
     engine: OcrEngine | None = None,
     threshold: int = 50,
+    max_ocr_pages: int | None = None,
+    max_ocr_seconds: float | None = None,
 ) -> tuple[list[Page], list[dict[str, Any]]]:
     """Conditionally run OCR on low-text pages while preserving clean pages.
 
@@ -339,6 +394,11 @@ def apply_conditional_ocr(
         filename: Document filename.
         engine: Optional pre-configured OcrEngine.
         threshold: Character count threshold for triggering OCR.
+        max_ocr_pages: Maximum pages to OCR for this document. Defaults to
+            ``MAX_OCR_PAGES_PER_DOC``; pages beyond the cap are left unchanged.
+        max_ocr_seconds: Wall-clock budget for OCR in this document. Defaults to
+            ``MAX_OCR_SECONDS_PER_DOC``; pages not started before the deadline are
+            left unchanged.
 
     Returns:
         Updated tuple of (page_records, chunk_dicts).
@@ -372,40 +432,99 @@ def apply_conditional_ocr(
         else:
             ocr_tasks.append((idx, page, curr_chunks))
 
+    # Bound the total work per document before dispatching any OCR.
+    page_cap = MAX_OCR_PAGES_PER_DOC if max_ocr_pages is None else max(0, int(max_ocr_pages))
+    second_cap = MAX_OCR_SECONDS_PER_DOC if max_ocr_seconds is None else max(0.0, float(max_ocr_seconds))
+    if len(ocr_tasks) > page_cap:
+        logger.warning(
+            "OCR page budget reached for %s: processing %d of %d candidate pages (cap=%d); "
+            "remaining pages keep their primary extraction output.",
+            doc_id,
+            page_cap,
+            len(ocr_tasks),
+            page_cap,
+        )
+        for idx, page, curr_chunks in ocr_tasks[page_cap:]:
+            page_results[idx] = (page, curr_chunks)
+        ocr_tasks = ocr_tasks[:page_cap]
+
+    ocr_started = time.monotonic()
+    deadline = ocr_started + second_cap
+    time_budget_exceeded = False
+
+    def _submit_ocr(executor: ThreadPoolExecutor | None, task: tuple[int, Page, list[dict[str, Any]]]) -> Any:
+        idx, page, curr_chunks = task
+        if time.monotonic() >= deadline:
+            page_results[idx] = (page, curr_chunks)
+            return None
+        kwargs = {
+            "page": page,
+            "pdf_bytes": pdf_bytes,
+            "curr_chunks": curr_chunks,
+            "doc_id": doc_id,
+            "sha12": sha12,
+            "filename": filename,
+            "engine": active_engine,
+            "text_splitter": text_splitter,
+        }
+        if executor is None:
+            page_results[idx] = _process_page_ocr(**kwargs)
+            return None
+        return executor.submit(_process_page_ocr, **kwargs)
+
     # Execute OCR on candidate pages
     if len(ocr_tasks) == 1:
-        idx, page, curr_chunks = ocr_tasks[0]
-        page_results[idx] = _process_page_ocr(
-            page=page,
-            pdf_bytes=pdf_bytes,
-            curr_chunks=curr_chunks,
-            doc_id=doc_id,
-            sha12=sha12,
-            filename=filename,
-            engine=active_engine,
-            text_splitter=text_splitter,
-        )
+        task = ocr_tasks[0]
+        if time.monotonic() >= deadline:
+            page_results[task[0]] = (task[1], task[2])
+            time_budget_exceeded = True
+        else:
+            _submit_ocr(None, task)
     elif len(ocr_tasks) > 1:
         # Batch OCR inference across multiple worker threads on multi-core CPUs (CONCERNS.md Performance Bottleneck 1)
         max_workers = min(4, os.cpu_count() or 1, len(ocr_tasks))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_idx = {
-                executor.submit(
-                    _process_page_ocr,
-                    page=p,
-                    pdf_bytes=pdf_bytes,
-                    curr_chunks=c,
-                    doc_id=doc_id,
-                    sha12=sha12,
-                    filename=filename,
-                    engine=active_engine,
-                    text_splitter=text_splitter,
-                ): i
-                for (i, p, c) in ocr_tasks
-            }
-            for future in future_to_idx:
-                i = future_to_idx[future]
-                page_results[i] = future.result()
+            pending: dict[Any, tuple[int, Page, list[dict[str, Any]]]] = {}
+            task_iter = iter(ocr_tasks)
+
+            def _submit_next() -> bool:
+                nonlocal time_budget_exceeded
+                try:
+                    task = next(task_iter)
+                except StopIteration:
+                    return False
+                future = _submit_ocr(executor, task)
+                if future is None:
+                    time_budget_exceeded = True
+                    return False
+                pending[future] = task
+                return True
+
+            for _ in range(max_workers):
+                if not _submit_next():
+                    break
+
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    task = pending.pop(future)
+                    page_results[task[0]] = future.result()
+                    _submit_next()
+
+            # Any candidate that never started because the deadline elapsed keeps
+            # its primary-extraction output unchanged.
+            for task in task_iter:
+                page_results[task[0]] = (task[1], task[2])
+                time_budget_exceeded = True
+
+    if time_budget_exceeded:
+        logger.warning(
+            "OCR time budget reached for %s after %.1fs (cap=%.1fs); remaining low-text pages "
+            "were left with their primary extraction output.",
+            doc_id,
+            time.monotonic() - ocr_started,
+            second_cap,
+        )
 
     updated_pages: list[Page] = []
     final_chunks: list[dict[str, Any]] = []

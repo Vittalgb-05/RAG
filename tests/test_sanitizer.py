@@ -78,3 +78,62 @@ def test_sanitize_removes_svg_use_href() -> None:
     sanitized = sanitize_markdown_for_local(raw, allow_external=False)
     assert "evil.example" not in sanitized
     assert "<use" not in sanitized.lower()
+
+
+def test_sanitize_blocks_angle_bracket_link_destinations() -> None:
+    """Regression: `[x](<https://...>)` is a valid CommonMark destination form."""
+    raw = "See [the guide](<https://evil.example/leak>) now."
+    sanitized = sanitize_markdown_for_local(raw, allow_external=False)
+    assert "evil.example" not in sanitized
+    assert "`the guide` *(external link blocked)*" in sanitized
+
+
+def test_sanitize_blocks_angle_bracket_image_destinations() -> None:
+    raw = "![tracker](<https://evil.example/pixel.png>)"
+    sanitized = sanitize_markdown_for_local(raw, allow_external=False)
+    assert "evil.example" not in sanitized
+    assert "[Blocked external image: tracker]" in sanitized
+
+
+def test_sanitize_preserves_angle_bracket_links_in_cloud_mode() -> None:
+    raw = "See [the guide](<https://example.com/guide>) now."
+    sanitized = sanitize_markdown_for_local(raw, allow_external=True)
+    assert "https://example.com/guide" in sanitized
+
+
+def test_sanitize_blocks_entity_encoded_schemes() -> None:
+    """Regression: HTML character references must not hide executable schemes."""
+    raw = (
+        "[click](java&#x73;cript:alert(1)) and "
+        "[other](d&#97;ta:text/html,<b>x</b>) and "
+        '<a href="java&#x73;cript:alert(2)">anchor</a>'
+    )
+    sanitized = sanitize_markdown_for_local(raw, allow_external=False)
+    assert "&#x73;cript" not in sanitized
+    assert "&#97;ta" not in sanitized
+    assert "script:" not in sanitized.lower()
+    assert "[blocked link]" in sanitized
+
+
+def test_sanitize_strips_inline_event_handlers() -> None:
+    """Regression: `onerror=`/`onload=` must be removed even without a link scheme."""
+    raw = '<img src="local.png" onerror="alert(1)"><img/onload=alert(2)><div onclick="alert(3)">content</div>'
+    sanitized = sanitize_markdown_for_local(raw, allow_external=False)
+    lowered = sanitized.lower()
+    assert "onerror" not in lowered
+    assert "onload" not in lowered
+    assert "onclick" not in lowered
+    assert "alert" not in lowered
+    assert "content" in sanitized
+
+
+def test_sanitize_removes_svg_payloads_in_both_modes() -> None:
+    """Regression: SVG can carry scripts, event handlers, and external references."""
+    raw = '<svg onload="alert(1)"><script>alert(2)</script><use href="https://evil.example/icon.svg#x"/></svg>after'
+    for allow_external in (False, True):
+        sanitized = sanitize_markdown_for_local(raw, allow_external=allow_external)
+        lowered = sanitized.lower()
+        assert "<svg" not in lowered
+        assert "evil.example" not in sanitized
+        assert "alert" not in lowered
+        assert "after" in sanitized

@@ -9,6 +9,7 @@ import base64
 from collections.abc import Generator
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -19,6 +20,31 @@ from urllib.parse import urlparse
 import httpx
 
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+
+logger = logging.getLogger(__name__)
+
+
+def detect_image_mime(image_bytes: bytes) -> str | None:
+    """Detect the MIME type of an image from its magic bytes.
+
+    Args:
+        image_bytes: Raw encoded image bytes.
+
+    Returns:
+        A ``data:``-compatible MIME type, or None for unsupported/undecodable input.
+    """
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(image_bytes) >= 12 and image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    if image_bytes.startswith(b"BM"):
+        return "image/bmp"
+    return None
+
 
 # The on-disk filename is a legacy artifact name from earlier releases.  Its GGUF
 # metadata identifies the checkpoint as Qwen2-VL-2B-Instruct ("qwen2vl").
@@ -289,6 +315,16 @@ class LlamaCppProvider(BaseModelProvider):
         if not image_bytes:
             raise ValueError("image_bytes cannot be empty.")
 
+        mime = detect_image_mime(image_bytes)
+        if mime is None:
+            logger.warning(
+                "Unsupported or undecodable image format (%d bytes, leading=%r); "
+                "falling back to image/jpeg for the VLM payload.",
+                len(image_bytes),
+                image_bytes[:8],
+            )
+            mime = "image/jpeg"
+
         b64_image = base64.b64encode(image_bytes).decode("ascii")
         messages = [
             {
@@ -297,7 +333,7 @@ class LlamaCppProvider(BaseModelProvider):
                     {"type": "text", "text": prompt},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"},
+                        "image_url": {"url": f"data:{mime};base64,{b64_image}"},
                     },
                 ],
             }

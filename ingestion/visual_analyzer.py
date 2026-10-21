@@ -8,12 +8,21 @@ EvidenceElement records with isolated model provenance (VIS-01, VIS-02, VIS-03).
 
 import hashlib
 import logging
+import math
 from typing import Any
 
 from providers.model_provider import BaseModelProvider
 from core.models import BBox, EvidenceElement
 
 logger = logging.getLogger(__name__)
+
+# Hard per-crop raster budgets for untrusted PDF geometry (see CONCERNS.md:
+# "Untrusted-PDF resource amplification").  These are enforced *after* the zoom
+# clamp so oversized pages are skipped rather than allocated.
+MAX_CROP_PIXELS: int = 2048 * 2048
+MAX_CROP_BYTES: int = 64 * 1024 * 1024
+MIN_CROP_ZOOM: float = 0.5
+BYTES_PER_PIXEL: int = 4  # conservative RGBA-style estimate
 
 try:
     import pymupdf as fitz  # Modern import; the legacy `fitz` alias is deprecated in PyMuPDF >= 1.24
@@ -174,7 +183,7 @@ class VisualAnalyzer:
         if fitz is None:
             raise RuntimeError("PyMuPDF (fitz) is not available for visual cropping.")
 
-        zoom_clamped = min(3.0, max(0.5, float(zoom)))
+        zoom_clamped = min(3.0, max(MIN_CROP_ZOOM, float(zoom)))
 
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         try:
@@ -187,11 +196,19 @@ class VisualAnalyzer:
                 raise ValueError("Bounding box does not intersect page boundaries.")
 
             # Strict pixel budget clamp (max 2048x2048 area) to avoid runaway raster memory allocations
-            max_crop_pixels = 2048 * 2048
             est_pixels = (clip_rect.width * zoom_clamped) * (clip_rect.height * zoom_clamped)
-            if est_pixels > max_crop_pixels:
-                scale = (max_crop_pixels / est_pixels) ** 0.5
-                zoom_clamped = max(0.5, zoom_clamped * scale)
+            if est_pixels > MAX_CROP_PIXELS:
+                scale = math.sqrt(MAX_CROP_PIXELS / est_pixels)
+                zoom_clamped = max(MIN_CROP_ZOOM, zoom_clamped * scale)
+
+            # Post-clamp enforcement: the 0.5 minimum can still leave oversized
+            # geometry above the hard budget.  Skip instead of allocating it.
+            post_clamp_pixels = (clip_rect.width * zoom_clamped) * (clip_rect.height * zoom_clamped)
+            if post_clamp_pixels > MAX_CROP_PIXELS or post_clamp_pixels * BYTES_PER_PIXEL > MAX_CROP_BYTES:
+                raise ValueError(
+                    f"Visual crop exceeds hard pixel/memory budget "
+                    f"({post_clamp_pixels:.0f} px at zoom {zoom_clamped:.2f})."
+                )
 
             mat = fitz.Matrix(zoom_clamped, zoom_clamped)
             pix = page.get_pixmap(matrix=mat, clip=clip_rect)

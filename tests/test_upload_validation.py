@@ -109,3 +109,73 @@ def test_doc_id_for_invalid_sha_rejected():
 
     with pytest.raises(ValueError, match="Invalid sha256"):
         doc_id_for("G" * 64)
+
+
+def test_preflight_estimates_scanned_ratio(monkeypatch):
+    """Pre-flight estimates a scanned ratio from cheap pypdf text extraction."""
+
+    class FakePage:
+        def __init__(self, text: str):
+            self._text = text
+
+        def extract_text(self) -> str:
+            return self._text
+
+    class ScannedReader:
+        def __init__(self, stream):
+            self.pages = [FakePage("") for _ in range(3)]
+
+    import pypdf
+
+    monkeypatch.setattr(pypdf, "PdfReader", ScannedReader)
+
+    result = validate_pdf_bytes(b"%PDF-1.4 fake", "scan.pdf")
+    assert result.estimated_scanned_ratio == 1.0
+    assert "appear scanned" in result.preflight_note
+    assert "OCR" in result.preflight_note
+
+
+def test_preflight_reports_digital_pages(monkeypatch):
+    """Pre-flight reports digital text without rejecting or OCR'ing the upload."""
+
+    class FakePage:
+        def extract_text(self) -> str:
+            return "A" * 80
+
+    class DigitalReader:
+        def __init__(self, stream):
+            self.pages = [FakePage() for _ in range(2)]
+
+    import pypdf
+
+    monkeypatch.setattr(pypdf, "PdfReader", DigitalReader)
+
+    result = validate_pdf_bytes(b"%PDF-1.4 fake", "digital.pdf")
+    assert result.estimated_scanned_ratio == 0.0
+    assert "digital text" in result.preflight_note
+
+
+def test_preflight_failure_does_not_reject_upload(monkeypatch):
+    """A page whose text extraction fails is counted as low-text, not fatal."""
+
+    class BrokenPage:
+        def extract_text(self) -> str:
+            raise RuntimeError("damaged content stream")
+
+    class BrokenReader:
+        def __init__(self, stream):
+            self.pages = [BrokenPage(), BrokenPage()]
+
+    import pypdf
+
+    monkeypatch.setattr(pypdf, "PdfReader", BrokenReader)
+
+    result = validate_pdf_bytes(b"%PDF-1.4 fake", "broken_text.pdf")
+    assert result.estimated_scanned_ratio == 1.0
+    assert result.doc_id.startswith("doc_")
+
+
+def test_preflight_caps_are_unchanged():
+    """The 50 MB and 500 page hard caps remain in force."""
+    assert MAX_FILE_MB == 50
+    assert MAX_PAGES == 500

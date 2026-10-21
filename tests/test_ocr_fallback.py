@@ -423,3 +423,167 @@ def test_rapidocr_non_iterable_unrecognized_output_does_not_crash():
     text, avg_score = engine.ocr_page_image(b"fake_image_bytes")
     assert text == ""
     assert avg_score == 0.0
+
+
+def test_render_page_image_skips_geometry_above_post_clamp_budget(monkeypatch, caplog):
+    """A page whose 0.5-zoom render still exceeds the budget is skipped, not allocated."""
+    import ingestion.ocr_fallback as ocr
+
+    get_pixmap = MagicMock()
+
+    class HugeRect:
+        width = 10000.0
+        height = 10000.0
+
+    class HugePage:
+        rect = HugeRect()
+
+        def get_pixmap(self, matrix):
+            get_pixmap(matrix)
+            return MagicMock()
+
+    class FakeDoc:
+        def __len__(self):
+            return 1
+
+        def load_page(self, idx):
+            return HugePage()
+
+        def close(self):
+            pass
+
+    class FakeFitz:
+        Matrix = MagicMock(side_effect=lambda x, y: (x, y))
+
+        @staticmethod
+        def open(stream=None, filetype=None):
+            return FakeDoc()
+
+    monkeypatch.setattr(ocr, "fitz", FakeFitz)
+    engine = OcrEngine(recognizer=MagicMock(), renderer=None)
+
+    with caplog.at_level("WARNING"):
+        assert engine.render_page_image(b"%PDF...", 1, dpi=150) is None
+
+    get_pixmap.assert_not_called()
+    assert "hard pixel/memory budget" in caplog.text
+
+
+def test_render_page_image_normal_geometry_still_renders(monkeypatch):
+    """Normal letter-size pages continue to render after the budget check."""
+    import ingestion.ocr_fallback as ocr
+
+    class NormalRect:
+        width = 612.0
+        height = 792.0
+
+    class FakePix:
+        def tobytes(self, fmt):
+            assert fmt == "png"
+            return b"rendered_png"
+
+    class NormalPage:
+        rect = NormalRect()
+
+        def get_pixmap(self, matrix):
+            return FakePix()
+
+    class FakeDoc:
+        def __len__(self):
+            return 1
+
+        def load_page(self, idx):
+            return NormalPage()
+
+        def close(self):
+            pass
+
+    class FakeFitz:
+        Matrix = MagicMock(side_effect=lambda x, y: (x, y))
+
+        @staticmethod
+        def open(stream=None, filetype=None):
+            return FakeDoc()
+
+    monkeypatch.setattr(ocr, "fitz", FakeFitz)
+    engine = OcrEngine(recognizer=MagicMock(), renderer=None)
+
+    assert engine.render_page_image(b"%PDF...", 1, dpi=150) == b"rendered_png"
+
+
+def test_bounded_zoom_memory_guard_is_configurable(monkeypatch):
+    """The post-clamp memory guard rejects rasters above MAX_RENDER_BYTES."""
+    import ingestion.ocr_fallback as ocr
+
+    monkeypatch.setattr(ocr, "MAX_RENDER_PIXELS", 10_000_000_000)
+    monkeypatch.setattr(ocr, "MAX_RENDER_BYTES", 1_000_000)
+
+    # 1000x1000 @ zoom 1.0 = 1M px * 4 bytes = 4 MB > 1 MB budget.
+    assert ocr._bounded_zoom(1000.0, 1000.0, 1.0) is None
+    # 100x100 @ zoom 1.0 = 10k px * 4 bytes = 40 kB, within budget.
+    assert ocr._bounded_zoom(100.0, 100.0, 1.0) == 1.0
+
+
+def test_ocr_page_budget_caps_pages(monkeypatch, caplog):
+    """Per-document page cap leaves excess low-text pages unchanged with a diagnostic."""
+    import ingestion.ocr_fallback as ocr
+
+    monkeypatch.setattr(ocr, "MAX_OCR_PAGES_PER_DOC", 2)
+    monkeypatch.setattr(ocr, "MAX_OCR_SECONDS_PER_DOC", 300.0)
+
+    mock_recognizer = MagicMock(return_value=([[[[0, 0], [1, 0], [1, 1], [0, 1]], "OCR text for page", 0.95]], 0.01))
+    mock_renderer = MagicMock(return_value=b"fake_png_bytes")
+    engine = OcrEngine(recognizer=mock_recognizer, renderer=mock_renderer)
+
+    pages = [Page(doc_id="doc_budget", page_num=i, status="empty", char_count=0, num_chunks=0) for i in range(1, 5)]
+
+    with caplog.at_level("WARNING"):
+        updated_pages, _ = apply_conditional_ocr(
+            pdf_bytes=b"%PDF...",
+            page_records=pages,
+            existing_chunks=[],
+            doc_id="doc_budget",
+            sha12="budget123456",
+            filename="budget.pdf",
+            engine=engine,
+        )
+
+    assert mock_renderer.call_count == 2
+    assert [p.status for p in updated_pages[:2]] == ["ok", "ok"]
+    # Pages beyond the cap keep their primary extraction state.
+    assert updated_pages[2].status == "empty"
+    assert updated_pages[3].status == "empty"
+    assert "OCR page budget reached" in caplog.text
+
+
+def test_ocr_time_budget_skips_remaining_pages(monkeypatch, caplog):
+    """A zero-second budget leaves all candidates unchanged and logs a clear diagnostic."""
+    import ingestion.ocr_fallback as ocr
+
+    monkeypatch.setattr(ocr, "MAX_OCR_PAGES_PER_DOC", 200)
+    monkeypatch.setattr(ocr, "MAX_OCR_SECONDS_PER_DOC", 0.0)
+
+    mock_recognizer = MagicMock(return_value=([], 0.0))
+    mock_renderer = MagicMock(return_value=b"fake_png_bytes")
+    engine = OcrEngine(recognizer=mock_recognizer, renderer=mock_renderer)
+
+    pages = [
+        Page(doc_id="doc_timeout", page_num=1, status="empty", char_count=0, num_chunks=0),
+        Page(doc_id="doc_timeout", page_num=2, status="empty", char_count=0, num_chunks=0),
+    ]
+
+    with caplog.at_level("WARNING"):
+        updated_pages, updated_chunks = apply_conditional_ocr(
+            pdf_bytes=b"%PDF...",
+            page_records=pages,
+            existing_chunks=[],
+            doc_id="doc_timeout",
+            sha12="timeout12345",
+            filename="timeout.pdf",
+            engine=engine,
+        )
+
+    mock_renderer.assert_not_called()
+    assert [p.status for p in updated_pages] == ["empty", "empty"]
+    assert updated_chunks == []
+    assert "OCR time budget reached" in caplog.text

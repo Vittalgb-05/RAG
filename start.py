@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -36,6 +37,51 @@ os.environ.setdefault("USE_TORCH", "1")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+# Host values that keep the single-user Streamlit UI reachable only from this machine.
+_LOOPBACK_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"}
+_NON_LOOPBACK_OPT_IN_ENV = "RAG_ALLOW_NON_LOOPBACK"
+
+
+def is_loopback_host(host: str) -> bool:
+    """Return True when *host* binds only the local loopback interface."""
+    normalized = (host or "").strip().lower().strip("[]")
+    if normalized in _LOOPBACK_HOSTNAMES:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def non_loopback_opt_in() -> bool:
+    """Return True when the operator explicitly opted into a non-loopback bind."""
+    return os.environ.get(_NON_LOOPBACK_OPT_IN_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
+    """Refuse a non-loopback UI bind unless the operator explicitly opted in.
+
+    The application has no authentication layer: every indexed document and the
+    cloud API-key settings page are readable by anyone who can reach the port.
+    It is therefore designed for a single trusted user on one machine.
+
+    Returns:
+        True when the bind is allowed, False when it must be refused.
+    """
+    if is_loopback_host(host) or allow_non_loopback or non_loopback_opt_in():
+        return True
+
+    print(
+        f"❌ Refusing to bind Streamlit to non-loopback host '{host}'.\n"
+        "   This application is single-user and has NO authentication: any host\n"
+        "   that can reach this port can read every indexed document and the\n"
+        "   cloud API-key settings page.\n"
+        "   Use --host 127.0.0.1 (default) or, if you accept the risk, re-run with\n"
+        f"   --allow-non-loopback or set {_NON_LOOPBACK_OPT_IN_ENV}=1.",
+        file=sys.stderr,
+    )
+    return False
 
 
 def print_banner() -> None:
@@ -235,6 +281,14 @@ def main() -> int:
     )
     parser.add_argument("--port", type=int, default=8501, help="Streamlit port")
     parser.add_argument("--host", type=str, default="localhost", help="Streamlit bind address")
+    parser.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help=(
+            "Allow a non-loopback --host bind. Only for trusted networks: the app has no "
+            "authentication and exposes all indexed documents."
+        ),
+    )
     parser.add_argument("--headless", action="store_true", help="Run without opening browser automatically")
     parser.add_argument("--llama-host", type=str, default="127.0.0.1", help="llama-server host to probe")
     parser.add_argument("--llama-port", type=int, default=8080, help="llama-server port to probe")
@@ -252,6 +306,9 @@ def main() -> int:
 
     if not check_python_version():
         return 1
+
+    if not refuse_unsafe_bind(args.host, allow_non_loopback=args.allow_non_loopback):
+        return 2
 
     ensure_directories()
 

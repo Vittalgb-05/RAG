@@ -116,6 +116,67 @@ def test_main_cli_args_parsing():
                         mock_launch.assert_called_once_with(port=9000, host="127.0.0.1", headless=True)
 
 
+def test_is_loopback_host_classification():
+    """Loopback hostnames and IPs are recognised; wildcard/LAN binds are not."""
+    for host in ("localhost", "127.0.0.1", "127.0.0.2", "::1", "[::1]", "0:0:0:0:0:0:0:1"):
+        assert start.is_loopback_host(host) is True
+
+    for host in ("0.0.0.0", "192.168.1.10", "10.0.0.5", "example.com", ""):
+        assert start.is_loopback_host(host) is False
+
+
+def test_refuse_unsafe_bind_prints_single_user_warning(capsys):
+    """Refusal explains the no-auth/single-user assumption."""
+    assert start.refuse_unsafe_bind("0.0.0.0") is False
+    captured = capsys.readouterr()
+    assert "non-loopback host" in captured.err
+    assert "single-user" in captured.err
+    assert "NO authentication" in captured.err
+    assert "RAG_ALLOW_NON_LOOPBACK" in captured.err
+
+
+def test_main_refuses_non_loopback_bind_without_opt_in(monkeypatch):
+    """main() must not launch Streamlit on a wildcard/LAN bind by default."""
+    monkeypatch.delenv("RAG_ALLOW_NON_LOOPBACK", raising=False)
+    test_args = ["start.py", "--host", "0.0.0.0"]
+    with patch.object(sys, "argv", test_args):
+        with patch("start.check_python_version", return_value=True):
+            with patch("start.ensure_directories"):
+                with patch("start.check_llama_server"):
+                    with patch("start.launch_streamlit") as mock_launch:
+                        rc = start.main()
+    assert rc == 2
+    mock_launch.assert_not_called()
+
+
+def test_main_allows_non_loopback_with_flag(monkeypatch):
+    """--allow-non-loopback is the explicit opt-in for LAN exposure."""
+    monkeypatch.delenv("RAG_ALLOW_NON_LOOPBACK", raising=False)
+    test_args = ["start.py", "--host", "0.0.0.0", "--allow-non-loopback"]
+    with patch.object(sys, "argv", test_args):
+        with patch("start.check_python_version", return_value=True):
+            with patch("start.ensure_directories"):
+                with patch("start.check_llama_server"):
+                    with patch("start.launch_streamlit", return_value=0) as mock_launch:
+                        rc = start.main()
+    assert rc == 0
+    mock_launch.assert_called_once_with(port=8501, host="0.0.0.0", headless=False)
+
+
+def test_main_allows_non_loopback_with_env(monkeypatch):
+    """RAG_ALLOW_NON_LOOPBACK=1 is the environment opt-in for LAN exposure."""
+    monkeypatch.setenv("RAG_ALLOW_NON_LOOPBACK", "1")
+    test_args = ["start.py", "--host", "192.168.1.10"]
+    with patch.object(sys, "argv", test_args):
+        with patch("start.check_python_version", return_value=True):
+            with patch("start.ensure_directories"):
+                with patch("start.check_llama_server"):
+                    with patch("start.launch_streamlit", return_value=0) as mock_launch:
+                        rc = start.main()
+    assert rc == 0
+    mock_launch.assert_called_once()
+
+
 def test_main_cli_start_llama_lifecycle(tmp_path):
     """Verify main() spawns and terminates background llama-server when --start-llama is passed."""
     mock_proc = MagicMock()

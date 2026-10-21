@@ -390,3 +390,128 @@ def test_visual_analyzer_uses_modern_pymupdf_import():
     from ingestion import visual_analyzer
 
     assert visual_analyzer.fitz is pymupdf
+
+
+def test_crop_rejects_geometry_above_post_clamp_budget(monkeypatch):
+    """A crop whose 0.5-zoom render still exceeds the budget must not allocate a pixmap."""
+    get_pixmap = MagicMock()
+
+    class FakeRect:
+        def __init__(self, x0, y0, x1, y1):
+            self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+
+        def intersect(self, other):
+            ix0 = max(self.x0, other.x0)
+            iy0 = max(self.y0, other.y0)
+            ix1 = min(self.x1, other.x1)
+            iy1 = min(self.y1, other.y1)
+            return FakeRect(ix0, iy0, ix1, iy1)
+
+        @property
+        def is_empty(self):
+            return self.x1 <= self.x0 or self.y1 <= self.y0
+
+        @property
+        def width(self):
+            return max(0.0, self.x1 - self.x0)
+
+        @property
+        def height(self):
+            return max(0.0, self.y1 - self.y0)
+
+    class FakePage:
+        rect = FakeRect(0, 0, 10000, 10000)
+
+        def get_pixmap(self, matrix, clip):
+            get_pixmap(matrix, clip)
+            return MagicMock()
+
+    class FakeDoc:
+        def __len__(self):
+            return 1
+
+        def load_page(self, idx):
+            return FakePage()
+
+        def close(self):
+            pass
+
+    class FakeFitz:
+        Rect = FakeRect
+        Matrix = MagicMock(side_effect=lambda x, y: (x, y))
+
+        @staticmethod
+        def open(stream=None, filetype=None):
+            return FakeDoc()
+
+    monkeypatch.setattr("ingestion.visual_analyzer.fitz", FakeFitz)
+    analyzer = VisualAnalyzer()
+
+    huge_bbox = BBox(x0=0.0, y0=0.0, x1=10000.0, y1=10000.0)
+    with pytest.raises(ValueError, match="hard pixel/memory budget"):
+        analyzer.crop_visual_element(b"%PDF...", page_num=1, bbox=huge_bbox)
+
+    get_pixmap.assert_not_called()
+
+
+def test_crop_normal_geometry_still_renders(monkeypatch):
+    """Normal page geometry continues to render after the crop budget check."""
+
+    class FakeRect:
+        def __init__(self, x0, y0, x1, y1):
+            self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+
+        def intersect(self, other):
+            return FakeRect(
+                max(self.x0, other.x0),
+                max(self.y0, other.y0),
+                min(self.x1, other.x1),
+                min(self.y1, other.y1),
+            )
+
+        @property
+        def is_empty(self):
+            return self.x1 <= self.x0 or self.y1 <= self.y0
+
+        @property
+        def width(self):
+            return max(0.0, self.x1 - self.x0)
+
+        @property
+        def height(self):
+            return max(0.0, self.y1 - self.y0)
+
+    class FakePix:
+        def tobytes(self, fmt):
+            assert fmt == "png"
+            return b"normal_crop_png"
+
+    class FakePage:
+        rect = FakeRect(0, 0, 612, 792)
+
+        def get_pixmap(self, matrix, clip):
+            return FakePix()
+
+    class FakeDoc:
+        def __len__(self):
+            return 1
+
+        def load_page(self, idx):
+            return FakePage()
+
+        def close(self):
+            pass
+
+    class FakeFitz:
+        Rect = FakeRect
+        Matrix = MagicMock(side_effect=lambda x, y: (x, y))
+
+        @staticmethod
+        def open(stream=None, filetype=None):
+            return FakeDoc()
+
+    monkeypatch.setattr("ingestion.visual_analyzer.fitz", FakeFitz)
+    analyzer = VisualAnalyzer()
+
+    crop = analyzer.crop_visual_element(b"%PDF...", 1, BBox(x0=10.0, y0=10.0, x1=200.0, y1=200.0))
+    assert crop == b"normal_crop_png"

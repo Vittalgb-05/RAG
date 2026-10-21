@@ -227,7 +227,61 @@ def test_analyze_image_payload() -> None:
     assert contents[0] == {"type": "text", "text": "Describe the chart in detail."}
     assert contents[1]["type"] == "image_url"
     expected_b64 = base64.b64encode(fake_png).decode("ascii")
-    assert contents[1]["image_url"]["url"] == f"data:image/jpeg;base64,{expected_b64}"
+    assert contents[1]["image_url"]["url"] == f"data:image/png;base64,{expected_b64}"
+
+
+def test_analyze_image_jpeg_mime_detected() -> None:
+    """Regression: JPEG magic bytes must produce a data:image/jpeg URL."""
+    captured_payload: dict = {}
+    fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with LlamaCppProvider(transport=transport) as provider:
+        provider.analyze_image(fake_jpeg, "Describe")
+
+    expected_b64 = base64.b64encode(fake_jpeg).decode("ascii")
+    assert captured_payload["messages"][0]["content"][1]["image_url"]["url"] == (
+        f"data:image/jpeg;base64,{expected_b64}"
+    )
+
+
+def test_analyze_image_unsupported_format_warns_and_falls_back(caplog) -> None:
+    """Unsupported image formats are logged at warning level and keep a JPEG fallback."""
+    captured_payload: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with LlamaCppProvider(transport=transport) as provider:
+        with caplog.at_level("WARNING"):
+            provider.analyze_image(b"not-an-image", "Describe")
+
+    assert "Unsupported or undecodable image format" in caplog.text
+    assert captured_payload["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_detect_image_mime_magic_bytes() -> None:
+    from providers.llama_cpp_provider import detect_image_mime
+
+    assert detect_image_mime(b"\x89PNG\r\n\x1a\nrest") == "image/png"
+    assert detect_image_mime(b"\xff\xd8\xffrest") == "image/jpeg"
+    assert detect_image_mime(b"GIF89a...") == "image/gif"
+    assert detect_image_mime(b"RIFF\x00\x00\x00\x00WEBP...") == "image/webp"
+    assert detect_image_mime(b"unknown") is None
 
 
 def test_analyze_image_empty_bytes_raises() -> None:
