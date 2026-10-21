@@ -15,6 +15,90 @@ logger = logging.getLogger(__name__)
 
 CITATION_REGEX = re.compile(r"\[E(\d+)\]", re.IGNORECASE)
 
+# Lexical support check (no new dependencies). A citation-bearing sentence is
+# considered supported when enough of its content tokens also occur in the cited
+# snippet(s). The threshold is deliberately conservative: this is a diagnostic,
+# not a replacement for rank validity.
+SUPPORT_TOKEN_THRESHOLD = 0.35
+SUPPORT_MIN_CLAIM_TOKENS = 3
+SENTENCE_SPLIT_REGEX = re.compile(r"(?<=[.!?])\s+|\n+")
+SUPPORT_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "by",
+        "as",
+        "at",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "its",
+        "their",
+        "our",
+        "your",
+        "we",
+        "you",
+        "they",
+        "he",
+        "she",
+        "them",
+        "his",
+        "her",
+        "not",
+        "no",
+        "do",
+        "does",
+        "did",
+        "can",
+        "could",
+        "should",
+        "would",
+        "may",
+        "might",
+        "will",
+        "shall",
+        "have",
+        "has",
+        "had",
+        "than",
+        "then",
+        "there",
+        "here",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "when",
+        "where",
+        "why",
+        "how",
+        "also",
+        "such",
+        "into",
+        "about",
+    }
+)
+
 CANONICAL_ABSTENTION_MARKERS = [
     "does not contain sufficient evidence",
     "does not contain sufficient information",
@@ -63,6 +147,19 @@ class CitationVerificationResult(BaseModel):
     abstention_detected: bool = Field(default=False, description="Whether response explicitly abstains from answering.")
     injection_detected: bool = Field(
         default=False, description="Whether adversarial prompt injection directive was detected."
+    )
+    support_checked: bool = Field(
+        default=False, description="Whether the lightweight lexical claim-to-snippet support check ran."
+    )
+    support_precision: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Fraction of citation-bearing sentences whose content lexically overlaps the cited snippet.",
+    )
+    unsupported_ranks: list[int] = Field(
+        default_factory=list,
+        description="Cited ranks whose sentences had insufficient lexical support (diagnostic, not rank validity).",
     )
     message: str = Field(default="", description="Human-readable verification diagnostic.")
 
@@ -128,6 +225,69 @@ def should_withhold_answer(verification: CitationVerificationResult) -> bool:
     if verification.abstention_detected:
         return False
     return not verification.is_valid
+
+
+def _support_tokens(text: str) -> set[str]:
+    """Return lowercase content tokens for the lexical support heuristic."""
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    return {token for token in tokens if len(token) >= 2 and token not in SUPPORT_STOPWORDS}
+
+
+def _evaluate_lexical_support(
+    text: str,
+    valid_ranks: list[int],
+    retrieval_result: RetrievalResult | None,
+) -> tuple[bool, float, list[int]]:
+    """Check whether cited sentences lexically overlap the snippets they cite.
+
+    This is intentionally a conservative diagnostic rather than a second validity
+    gate: rank validity remains the contract that decides ``is_valid`` and
+    ``precision``. The result lets the UI distinguish "the citation points at a
+    real snippet" from "the snippet actually contains the claim's wording".
+
+    Args:
+        text: Assistant response text.
+        valid_ranks: Ranks that exist in the retrieval result.
+        retrieval_result: Retrieval result holding the cited snippet texts.
+
+    Returns:
+        Tuple of (checked, support_precision, unsupported_ranks).
+    """
+    if not text or not valid_ranks or retrieval_result is None or not retrieval_result.snippets:
+        return False, 0.0, []
+
+    valid_rank_set = set(valid_ranks)
+    snippet_by_rank = {index: snippet.content for index, snippet in enumerate(retrieval_result.snippets, start=1)}
+
+    evaluable = 0
+    supported = 0
+    unsupported: set[int] = set()
+
+    for sentence in SENTENCE_SPLIT_REGEX.split(text):
+        cited = [rank for rank in extract_citations(sentence) if rank in valid_rank_set]
+        if not cited:
+            continue
+
+        claim = CITATION_REGEX.sub(" ", sentence)
+        claim_tokens = _support_tokens(claim)
+        if len(claim_tokens) < SUPPORT_MIN_CLAIM_TOKENS:
+            continue
+
+        evaluable += 1
+        snippet_tokens: set[str] = set()
+        for rank in cited:
+            snippet_tokens.update(_support_tokens(snippet_by_rank.get(rank, "")))
+
+        overlap = len(claim_tokens & snippet_tokens) / len(claim_tokens)
+        if overlap >= SUPPORT_TOKEN_THRESHOLD:
+            supported += 1
+        else:
+            unsupported.update(cited)
+
+    if evaluable == 0:
+        return False, 0.0, []
+
+    return True, supported / evaluable, sorted(unsupported)
 
 
 def validate_citations(
@@ -229,6 +389,10 @@ def validate_citations(
     precision = len(valid_ranks) / total_claimed
     is_valid = precision >= 0.95
 
+    support_checked, support_precision, unsupported_ranks = _evaluate_lexical_support(
+        text, valid_ranks, retrieval_result
+    )
+
     if is_valid:
         msg = f"Citation precision {precision:.1%} ({len(valid_ranks)}/{total_claimed} citations verified)."
     else:
@@ -244,5 +408,8 @@ def validate_citations(
         hallucinated_citations=hallucinated_tags,
         cited_ranks=valid_ranks,
         abstention_detected=False,
+        support_checked=support_checked,
+        support_precision=support_precision,
+        unsupported_ranks=unsupported_ranks,
         message=msg,
     )

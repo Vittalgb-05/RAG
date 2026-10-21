@@ -178,3 +178,66 @@ def test_validate_citations_rejects_adversarial_injection() -> None:
     assert result.is_valid is False
     assert result.injection_detected is True
     assert "Adversarial prompt injection directive detected" in result.message
+
+
+def _make_support_retrieval_result() -> RetrievalResult:
+    """Retrieval result with one supporting and one unrelated snippet."""
+    return RetrievalResult(
+        query="latency and revenue",
+        snippets=[
+            EvidenceSnippet(
+                content="Quarterly revenue rose sharply after the third-quarter launch.",
+                doc_id="doc_support",
+                filename="report.pdf",
+                page=1,
+                chunk_id="chk_support_1",
+                score=0.9,
+                rank=1,
+            ),
+            EvidenceSnippet(
+                content="Migratory birds navigate using magnetic fields and star patterns.",
+                doc_id="doc_support",
+                filename="report.pdf",
+                page=2,
+                chunk_id="chk_support_2",
+                score=0.8,
+                rank=2,
+            ),
+        ],
+        total_candidates=2,
+        search_mode="hybrid",
+    )
+
+
+def test_validate_citations_lexical_support_distinguishes_validity_from_support() -> None:
+    """Rank-valid citations remain valid, while support flags the unrelated snippet."""
+    rr = _make_support_retrieval_result()
+    response = (
+        "Quarterly revenue rose sharply after the launch [E1]. "
+        "The sensor calibration failed during the overnight test [E2]."
+    )
+
+    result = validate_citations(response, rr)
+
+    # Existing precision semantics are unchanged: both ranks exist.
+    assert result.is_valid is True
+    assert result.precision == 1.0
+    assert result.cited_ranks == [1, 2]
+
+    # The separate lexical check catches that [E2] does not support its claim.
+    assert result.support_checked is True
+    assert result.support_precision == 0.5
+    assert result.unsupported_ranks == [2]
+
+
+def test_validate_citations_support_confirmed_for_overlapping_claim() -> None:
+    """A claim whose wording overlaps the cited snippet is marked supported."""
+    rr = _make_support_retrieval_result()
+    response = "Quarterly revenue rose sharply after the launch [E1]."
+
+    result = validate_citations(response, rr)
+
+    assert result.is_valid is True
+    assert result.support_checked is True
+    assert result.support_precision == 1.0
+    assert result.unsupported_ranks == []

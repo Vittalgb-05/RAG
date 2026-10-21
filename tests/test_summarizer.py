@@ -5,7 +5,7 @@ import re
 import pytest
 from core.doc_store import DocStore
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
-from core.models import Document, Page, SummaryResult
+from core.models import Chunk, Document, EvidenceElement, Page, SummaryResult
 from core.summarizer import (
     PROFILE_SYSTEM_INSTRUCTIONS,
     Summarizer,
@@ -340,3 +340,105 @@ def test_summarizer_cache_invalidates_on_model_version_change(tmp_path):
     res2 = s2.summarize_document(doc_id=doc_id, sha256=sha, pages=pages, profile="overview")
     assert res2.cached is False
     assert res2.model_version.startswith("model_v2")
+
+
+def test_summarizer_includes_figure_only_evidence(tmp_path):
+    """A document with only VLM evidence must still produce a grounded summary input."""
+    store = DocStore(tmp_path / "figure_only.db")
+    doc_id = "doc_fig_only"
+    sha = "7" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="figures.pdf",
+            sha256=sha,
+            size_bytes=2048,
+            num_pages=4,
+            status="indexed",
+            upload_time="2026-10-21T10:00:00Z",
+        )
+    )
+    store.record_evidence_elements(
+        [
+            EvidenceElement(
+                element_id="ev_fig_1",
+                doc_id=doc_id,
+                page=3,
+                kind="image",
+                content="Chart shows median latency falling from 40 ms to 12 ms after caching.",
+                source="vlm:mock",
+                model_version="mock-vlm",
+            ),
+            EvidenceElement(
+                element_id="ev_tab_1",
+                doc_id=doc_id,
+                page=4,
+                kind="table",
+                content="| Metric | Before | After |\n| Latency | 40 ms | 12 ms |",
+                source="vlm:mock",
+                model_version="mock-vlm",
+            ),
+        ]
+    )
+
+    provider = MockSummarizerProvider()
+    summarizer = Summarizer(provider=provider, doc_store=store)
+
+    result = summarizer.summarize_document(doc_id=doc_id, sha256=sha, profile="tables_figures")
+
+    assert result.summary_text
+    assert result.page_references == [3, 4]
+    prompt = provider.generate_calls[0]["prompt"]
+    assert "[Figure p.3]" in prompt
+    assert "median latency falling from 40 ms to 12 ms" in prompt
+    assert "[Table p.4]" in prompt
+    assert "| Metric | Before | After |" in prompt
+
+
+def test_summarizer_does_not_duplicate_evidence_already_in_chunks(tmp_path):
+    """Evidence text already present in chunk text must not be counted twice."""
+    store = DocStore(tmp_path / "dedupe.db")
+    doc_id = "doc_dedupe"
+    sha = "6" * 64
+    store.upsert_document(
+        Document(
+            doc_id=doc_id,
+            filename="dedupe.pdf",
+            sha256=sha,
+            size_bytes=1024,
+            num_pages=2,
+            status="indexed",
+            upload_time="2026-10-21T10:00:00Z",
+        )
+    )
+    store.record_evidence_elements(
+        [
+            EvidenceElement(
+                element_id="ev_table_dup",
+                doc_id=doc_id,
+                page=2,
+                kind="table",
+                content="Revenue grew 20 percent year over year.",
+                source="vlm:mock",
+                model_version="mock-vlm",
+            )
+        ]
+    )
+    chunks = [
+        Chunk(
+            content="Revenue grew 20 percent year over year.",
+            filename="dedupe.pdf",
+            page=2,
+            chunk_id="chk_dup_1",
+            doc_id=doc_id,
+            extraction="docling",
+        )
+    ]
+
+    provider = MockSummarizerProvider()
+    summarizer = Summarizer(provider=provider, doc_store=store)
+    summarizer.summarize_document(doc_id=doc_id, sha256=sha, chunks=chunks, profile="tables_figures")
+
+    prompt = provider.generate_calls[0]["prompt"]
+    assert prompt.count("Revenue grew 20 percent year over year.") == 1
+    assert "[Table p.2]" not in prompt

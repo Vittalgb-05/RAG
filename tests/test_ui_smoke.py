@@ -14,6 +14,14 @@ from ui.components import (
 )
 from ui.hydration import hydrate_startup_state
 from ui.sanitizer import sanitize_display_markdown
+from ui.views import (
+    clear_cloud_credentials,
+    get_session_summary,
+    store_session_summary,
+    summary_session_key,
+    truncation_notice,
+    verification_caption,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -227,3 +235,93 @@ def test_cached_summary_invalidates_on_model_version_mismatch(tmp_path):
     # Lookup with upgraded model version returns None (invalidating stale cache)
     miss = store.get_summary(sha, "overview", model_version="qwen3-vl-2b-q8")
     assert miss is None
+
+
+def test_stale_summary_session_entry_is_rejected():
+    """A session summary from another model version must not be displayed."""
+    model_version = "active-model:cfg"
+    store_session_summary(
+        "doc_stale",
+        "overview",
+        model_version,
+        {"model_version": "old-model:cfg", "summary_text": "stale summary"},
+    )
+
+    stale_key = summary_session_key("doc_stale", "overview", model_version)
+    assert st.session_state[stale_key]["model_version"] == "old-model:cfg"
+
+    assert get_session_summary("doc_stale", "overview", model_version) is None
+    assert stale_key not in st.session_state
+
+
+def test_current_summary_session_entry_is_returned():
+    """A session summary matching the active version is served."""
+    model_version = "active-model:cfg"
+    store_session_summary(
+        "doc_current",
+        "overview",
+        model_version,
+        {"model_version": model_version, "summary_text": "current summary"},
+    )
+
+    cached = get_session_summary("doc_current", "overview", model_version)
+    assert cached is not None
+    assert cached["summary_text"] == "current summary"
+
+
+def test_truncation_notice_contract_is_non_blocking():
+    """Truncation is surfaced as a caption string, never as an error."""
+    assert truncation_notice(None) is None
+    assert (
+        truncation_notice({"prompt_truncated": False, "context_truncated": False, "history_truncated": False}) is None
+    )
+    assert "Context truncated" in truncation_notice(
+        {"prompt_truncated": False, "context_truncated": True, "history_truncated": False}
+    )
+    assert "history truncated" in truncation_notice(
+        {"prompt_truncated": False, "context_truncated": False, "history_truncated": True}
+    )
+
+
+def test_verification_caption_separates_validity_from_support():
+    """The UI caption must not call rank-valid citations 'verified grounding'."""
+    valid_but_unsupported = {
+        "abstention_detected": False,
+        "total_citations": 1,
+        "is_valid": True,
+        "precision": 1.0,
+        "support_checked": True,
+        "support_precision": 0.0,
+    }
+    caption = verification_caption(valid_but_unsupported)
+    assert "Citation validity 100%" in caption
+    assert "support not confirmed" in caption
+    assert "Verified Grounding" not in caption
+
+    supported = dict(valid_but_unsupported, support_precision=1.0)
+    assert "support confirmed" in verification_caption(supported)
+
+    unchecked = dict(valid_but_unsupported, support_checked=False, support_precision=0.0)
+    assert "support not verified" in verification_caption(unchecked)
+
+
+def test_clear_cloud_credentials_scrubs_session_and_provider():
+    """Clearing keys removes them from session state and provider objects."""
+    provider = MagicMock()
+    provider.api_key = "secret-key"
+    provider._client = object()
+    ai_model = MagicMock()
+    ai_model.cloud_provider = provider
+    ai_model.provider = provider
+
+    st.session_state.cloud_api_keys = {"groq": "gsk_secret", "openai": "sk_secret", "anthropic": ""}
+    st.session_state.active_cloud_provider = provider
+    st.session_state._cached_cloud_key = "gsk_secret"
+
+    clear_cloud_credentials(ai_model)
+
+    assert st.session_state.cloud_api_keys == {"groq": "", "openai": "", "anthropic": ""}
+    assert st.session_state._cached_cloud_key is None
+    assert st.session_state.active_cloud_provider is None
+    assert provider.api_key is None
+    assert provider._client is None

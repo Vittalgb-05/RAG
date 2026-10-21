@@ -36,6 +36,240 @@ logger = logging.getLogger(__name__)
 MAX_CHAT_TURNS = 50
 
 
+def summary_session_key(doc_id: str, profile: str, model_version: str) -> str:
+    """Return the version-aware session cache key for a generated summary."""
+    return f"summary_{doc_id}_{profile}_{model_version}"
+
+
+def clear_summary_session_cache() -> None:
+    """Drop every in-memory summary, e.g. after a provider or model change."""
+    for key in list(st.session_state.keys()):
+        if key.startswith("summary_"):
+            del st.session_state[key]
+
+
+def get_session_summary(doc_id: str, profile: str, model_version: str) -> dict[str, Any] | None:
+    """Return a session-cached summary only when it matches the active model version.
+
+    The persistent SQLite cache is already version-aware. The session layer used to
+    short-circuit it with a version-agnostic key, so a summary from the previous
+    provider could be displayed as current after switching models.
+
+    Args:
+        doc_id: Selected document ID.
+        profile: Summary profile.
+        model_version: Active ``model_name:CONFIG_VERSION`` string.
+
+    Returns:
+        The cached summary payload, or None if absent/stale (stale keys are removed).
+    """
+    key = summary_session_key(doc_id, profile, model_version)
+    cached = st.session_state.get(key)
+    if not isinstance(cached, dict):
+        return None
+    if cached.get("model_version") != model_version:
+        logger.info("Discarding stale session summary for %s (%s)", doc_id, profile)
+        st.session_state.pop(key, None)
+        return None
+    return cached
+
+
+def store_session_summary(doc_id: str, profile: str, model_version: str, summary: dict[str, Any]) -> None:
+    """Store a summary payload under its version-aware session key."""
+    st.session_state[summary_session_key(doc_id, profile, model_version)] = summary
+
+
+def verification_caption(verification: dict[str, Any]) -> str:
+    """Build a caption that separates citation validity from verified support.
+
+    ``is_valid`` / ``precision`` only assert that cited ranks exist. The lexical
+    support check is a weaker, separate signal; the UI must not call a rank-valid
+    answer "verified" when the cited text does not overlap the claim.
+    """
+    if verification.get("abstention_detected"):
+        return "Explicit abstention — no document evidence found."
+    if verification.get("total_citations", 0) == 0:
+        return "Ungrounded response — no evidence citations ([E#]) were included in the answer."
+
+    precision = float(verification.get("precision", 0.0))
+    if not verification.get("is_valid"):
+        return f"Citation validity failed ({precision:.0%} of cited ranks exist in retrieved evidence)."
+
+    caption = f"Citation validity {precision:.0%} (cited ranks exist)"
+    if verification.get("support_checked"):
+        support = float(verification.get("support_precision", 0.0))
+        if support >= 0.5:
+            caption += f" — lexical support confirmed ({support:.0%})"
+        else:
+            caption += f" — lexical support not confirmed ({support:.0%})"
+    else:
+        caption += " — support not verified"
+    return caption + "."
+
+
+def truncation_notice(warning: dict[str, bool] | None) -> str | None:
+    """Return a small non-blocking notice for the truncation flags, if any fired."""
+    if not warning:
+        return None
+    if warning.get("context_truncated"):
+        return "Context truncated; some evidence was omitted from the prompt."
+    if warning.get("history_truncated"):
+        return "Conversation history truncated; earlier turns were omitted from the prompt."
+    if warning.get("prompt_truncated"):
+        return "Question truncated; the prompt exceeded the context budget."
+    return None
+
+
+def _active_retriever() -> Any | None:
+    """Return the active vector retriever for lifecycle operations, if any."""
+    return st.session_state.get("hybrid_retriever") or st.session_state.get("local_embedding")
+
+
+def _lifecycle_preflight(action: str, retriever: Any | None = None) -> Any | None:
+    """Require a working vector retriever before mutating persistent storage.
+
+    Deleting SQLite rows while vectors remain indexed lets hydration resurrect a
+    "deleted" document. Missing retriever support is therefore a hard failure.
+    """
+    retriever = retriever or _active_retriever()
+    if retriever is None or not hasattr(retriever, "delete_document"):
+        st.error(
+            f"Cannot {action}: the vector index is unavailable in this session. "
+            "Refusing to modify SQLite only, because orphaned vectors can resurrect deleted documents. "
+            "Restart the app so the index rehydrates, then retry."
+        )
+        return None
+    return retriever
+
+
+def _delete_document(
+    doc_store: DocStore,
+    cache_dir: Path,
+    doc_id: str,
+    filename: str,
+    retriever: Any | None = None,
+) -> bool:
+    """Delete a document across storage tiers with an error boundary."""
+    retriever = _lifecycle_preflight("delete this document", retriever)
+    if retriever is None:
+        return False
+
+    try:
+        lifecycle = LifecycleService(
+            doc_store=doc_store,
+            hybrid_retriever=retriever,
+            local_embedding=st.session_state.get("local_embedding"),
+            cache_dir=cache_dir,
+        )
+        lifecycle.delete_document(doc_id, session_state=st.session_state)
+    except Exception as err:
+        logger.exception("Delete failed for %s", doc_id)
+        st.error(
+            f"Delete failed for {filename}: {err}. SQLite was left untouched, so the document remains visible. "
+            "Retry, or restart the app if the vector index is locked."
+        )
+        return False
+
+    st.session_state.pop("pending_delete_doc_id", None)
+    st.session_state.pop("pending_delete_filename", None)
+    st.toast(f"Deleted {filename}")
+    return True
+
+
+def _reindex_document(
+    doc_store: DocStore,
+    cache_dir: Path,
+    doc_id: str,
+    filename: str,
+    retriever: Any | None = None,
+) -> bool:
+    """Re-index one document with an error boundary and retriever preflight."""
+    retriever = _lifecycle_preflight("re-index this document", retriever)
+    if retriever is None:
+        return False
+
+    try:
+        lifecycle = LifecycleService(
+            doc_store=doc_store,
+            hybrid_retriever=retriever,
+            local_embedding=st.session_state.get("local_embedding"),
+            cache_dir=cache_dir,
+        )
+        reindexed = lifecycle.reindex_document(doc_id)
+    except Exception as err:
+        logger.exception("Reindex failed for %s", doc_id)
+        st.error(
+            f"Re-index failed for {filename}: {err}. Stored text is intact; retry after restarting "
+            "the app if the vector index is locked."
+        )
+        return False
+
+    if not reindexed:
+        st.error(
+            f"Could not re-index {filename}: the document has no stored chunks or the vector index "
+            "is unavailable. Re-upload the PDF if extraction produced no text."
+        )
+        return False
+
+    st.toast(f"Re-indexed {filename}")
+    return True
+
+
+def _purge_all(doc_store: DocStore, cache_dir: Path, retriever: Any | None = None) -> bool:
+    """Purge all storage with an error boundary and retriever preflight."""
+    retriever = _lifecycle_preflight("purge all data", retriever)
+    if retriever is None:
+        return False
+
+    try:
+        lifecycle = LifecycleService(
+            doc_store=doc_store,
+            hybrid_retriever=retriever,
+            local_embedding=st.session_state.get("local_embedding"),
+            cache_dir=cache_dir,
+        )
+        lifecycle.purge_all(session_state=st.session_state)
+    except Exception as err:
+        logger.exception("Purge failed")
+        st.error(
+            f"Purge incomplete: {err}. Some storage tiers may still hold data; retry, or restart "
+            "the app if the vector index is locked."
+        )
+        return False
+
+    st.toast("Purged all local database records, vector tables, and cache files.")
+    return True
+
+
+def clear_cloud_credentials(ai_model: AiModel) -> None:
+    """Remove cloud API keys from session state and active provider objects."""
+    st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
+    st.session_state._cached_cloud_key = None
+    st.session_state._cached_cloud_model = None
+
+    active = st.session_state.get("active_cloud_provider")
+    for provider in (active, getattr(ai_model, "cloud_provider", None), getattr(ai_model, "provider", None)):
+        if provider is None:
+            continue
+        if hasattr(provider, "api_key"):
+            try:
+                provider.api_key = None
+            except Exception as err:  # noqa: BLE001 - credentials must still be scrubbed best-effort
+                logger.warning("Could not clear provider key: %s", err)
+        if hasattr(provider, "_client"):
+            try:
+                provider._client = None
+            except Exception as err:  # noqa: BLE001
+                logger.warning("Could not clear provider client: %s", err)
+
+    if active is not None and hasattr(active, "close"):
+        try:
+            active.close()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("Could not close cloud provider: %s", err)
+    st.session_state.active_cloud_provider = None
+
+
 def append_chat_turn(turn: dict[str, Any]) -> None:
     """Append a message turn to chat history and enforce MAX_CHAT_TURNS memory bounding."""
     st.session_state.chat_history.append(turn)
@@ -169,14 +403,26 @@ def render_sidebar_documents(
                 )
             with col_del:
                 if st.button("×", key=f"del_sidebar_{doc_id}", help=f"Remove {fname}"):
-                    lifecycle = LifecycleService(
-                        doc_store=doc_store,
-                        hybrid_retriever=st.session_state.get("hybrid_retriever"),
-                        local_embedding=st.session_state.get("local_embedding"),
-                        cache_dir=cache_dir,
-                    )
-                    lifecycle.delete_document(doc_id, session_state=st.session_state)
-                    st.toast(f"Removed {fname}")
+                    st.session_state.pending_delete_doc_id = doc_id
+                    st.session_state.pending_delete_filename = fname
+                    st.rerun()
+
+        pending_delete_id = st.session_state.get("pending_delete_doc_id")
+        if pending_delete_id:
+            pending_name = st.session_state.get("pending_delete_filename", pending_delete_id)
+            st.sidebar.warning(
+                f"Delete '{pending_name}'? Its text, visual evidence, vectors, summaries, and cache "
+                "will be permanently removed."
+            )
+            confirm_col, cancel_col = st.sidebar.columns(2)
+            with confirm_col:
+                if st.button("Confirm delete", key="sidebar_confirm_delete", type="primary", use_container_width=True):
+                    if _delete_document(doc_store, cache_dir, pending_delete_id, pending_name):
+                        st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key="sidebar_cancel_delete", use_container_width=True):
+                    st.session_state.pop("pending_delete_doc_id", None)
+                    st.session_state.pop("pending_delete_filename", None)
                     st.rerun()
 
 
@@ -305,16 +551,11 @@ def render_chat_view(
 
                 v_data = message.get("verification")
                 if v_data and not message.get("rejected"):
-                    if v_data.get("abstention_detected"):
-                        st.caption("Explicit abstention — no document evidence found.")
-                    elif v_data.get("total_citations", 0) == 0:
-                        st.caption("Ungrounded response — no evidence citations ([E#]) were included in the answer.")
-                    elif v_data.get("is_valid"):
-                        precision = v_data.get("precision", 1.0)
-                        st.caption(f"Verified Grounding ({precision:.0%} citation precision)")
-                    else:
-                        precision = v_data.get("precision", 0.0)
-                        st.caption(f"Unverified Citations ({precision:.0%} citation precision)")
+                    st.caption(verification_caption(v_data))
+
+                notice = truncation_notice(message.get("truncation_warning"))
+                if notice:
+                    st.caption(notice)
 
                 snippets = message.get("snippets", [])
                 if snippets:
@@ -460,16 +701,13 @@ def render_chat_view(
                     )
                     with st.expander("Rejected draft (not accepted as an answer)", expanded=False):
                         st.markdown(sanitize_display_markdown(full_response))
-                elif verification.abstention_detected:
-                    st.caption("Explicit abstention — no document evidence found.")
-                elif verification.total_citations == 0:
-                    st.caption("Ungrounded response — no evidence citations ([E#]) were included in the answer.")
-                elif verification.is_valid:
-                    precision = verification.precision
-                    st.caption(f"Verified Grounding ({precision:.0%} citation precision)")
                 else:
-                    precision = verification.precision
-                    st.caption(f"Unverified Citations ({precision:.0%} citation precision)")
+                    st.caption(verification_caption(verification.model_dump()))
+
+                truncation_warning = dict(getattr(ai_model, "last_truncation_warning", {}) or {})
+                notice = truncation_notice(truncation_warning)
+                if notice:
+                    st.caption(notice)
 
                 if not caps.is_local:
                     st.caption(f"Generated via external cloud provider ({caps.model_name}) with user consent.")
@@ -521,6 +759,7 @@ def render_chat_view(
                         "sources": list(sources),
                         "verification": verification.model_dump(),
                         "snippets": snippets_data,
+                        "truncation_warning": truncation_warning,
                         "is_cloud": not caps.is_local,
                         "model_name": caps.model_name,
                     }
@@ -535,6 +774,7 @@ def render_chat_view(
                         "sources": list(sources),
                         "verification": None,
                         "snippets": snippets_data,
+                        "truncation_warning": dict(getattr(ai_model, "last_truncation_warning", {}) or {}),
                         "is_cloud": not caps.is_local,
                         "model_name": caps.model_name,
                     }
@@ -601,7 +841,9 @@ def render_summarizer_view(
     with col_force:
         force_refresh_summary = st.checkbox("Force re-generate (bypass cache)", value=False)
 
-    summary_cache_key = f"summary_{selected_doc_id}_{selected_profile}"
+    # The session layer must use the same version-aware key as the SQLite cache,
+    # otherwise a summary generated by the previous provider is shown as current.
+    active_model_version = f"{ai_model.model_name}:{CONFIG_VERSION}"
 
     if generate_summary_btn:
         with st.status(
@@ -615,19 +857,23 @@ def render_summarizer_view(
                     profile=selected_profile,
                     force_refresh=force_refresh_summary,
                 )
-                st.session_state[summary_cache_key] = summary_obj.model_dump()
+                store_session_summary(
+                    selected_doc_id,
+                    selected_profile,
+                    active_model_version,
+                    summary_obj.model_dump(),
+                )
                 sum_status.update(label="Summary generated successfully!", state="complete", expanded=False)
             except Exception as sum_err:
                 sum_status.update(label="Summary generation failed", state="error", expanded=True)
                 st.error(f"Summarization error: {sum_err}")
 
     # Check for summary to display with exact model version + config verification (P1 audit)
-    active_summary = st.session_state.get(summary_cache_key)
+    active_summary = get_session_summary(selected_doc_id, selected_profile, active_model_version)
     if not active_summary and selected_sha:
-        expected_version = f"{ai_model.model_name}:{CONFIG_VERSION}"
         # Never fall back to a version-agnostic lookup here: that would resurrect a
         # summary generated by a different model/config after invalidation.
-        cached_summ = doc_store.get_summary(selected_sha, selected_profile, model_version=expected_version)
+        cached_summ = doc_store.get_summary(selected_sha, selected_profile, model_version=active_model_version)
         if cached_summ:
             active_summary = cached_summ.model_dump()
 
@@ -724,29 +970,47 @@ def render_library_view(
                     help="Rebuild vector embeddings in LanceDB",
                     use_container_width=True,
                 ):
-                    lifecycle = LifecycleService(
-                        doc_store=doc_store,
-                        hybrid_retriever=hybrid_retriever,
-                        local_embedding=st.session_state.get("local_embedding"),
-                        cache_dir=cache_dir,
-                    )
-                    if lifecycle.reindex_document(doc.doc_id):
+                    if _reindex_document(
+                        doc_store,
+                        cache_dir,
+                        doc.doc_id,
+                        doc.filename,
+                        retriever=hybrid_retriever,
+                    ):
                         if doc.doc_id in st.session_state.document_metadata:
                             st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = False
-                        st.toast(f"Reindexed {doc.filename}")
-                    else:
-                        st.error(f"Could not reindex {doc.filename}")
-                    st.rerun()
+                        st.rerun()
             with col_del:
                 if st.button("Delete", key=f"lib_del_{doc.doc_id}", type="secondary", use_container_width=True):
-                    lifecycle = LifecycleService(
-                        doc_store=doc_store,
-                        hybrid_retriever=hybrid_retriever,
-                        local_embedding=st.session_state.get("local_embedding"),
-                        cache_dir=cache_dir,
-                    )
-                    lifecycle.delete_document(doc.doc_id, session_state=st.session_state)
-                    st.toast(f"Deleted {doc.filename}")
+                    st.session_state.pending_delete_doc_id = doc.doc_id
+                    st.session_state.pending_delete_filename = doc.filename
+                    st.rerun()
+
+        if st.session_state.get("pending_delete_doc_id") == doc.doc_id:
+            st.warning(
+                f"Delete '{doc.filename}'? Its text, visual evidence, vectors, summaries, and cache "
+                "will be permanently removed. This cannot be undone."
+            )
+            confirm_col, cancel_col = st.columns([1, 1])
+            with confirm_col:
+                if st.button(
+                    "Confirm delete",
+                    key=f"lib_confirm_del_{doc.doc_id}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    if _delete_document(
+                        doc_store,
+                        cache_dir,
+                        doc.doc_id,
+                        doc.filename,
+                        retriever=hybrid_retriever,
+                    ):
+                        st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key=f"lib_cancel_del_{doc.doc_id}", use_container_width=True):
+                    st.session_state.pop("pending_delete_doc_id", None)
+                    st.session_state.pop("pending_delete_filename", None)
                     st.rerun()
 
     st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
@@ -758,15 +1022,8 @@ def render_library_view(
         )
         confirm_purge = st.checkbox("I understand that this will erase all stored documents and vectors.")
         if st.button("Purge All Data Now", type="primary", disabled=not confirm_purge):
-            lifecycle = LifecycleService(
-                doc_store=doc_store,
-                hybrid_retriever=hybrid_retriever,
-                local_embedding=st.session_state.get("local_embedding"),
-                cache_dir=cache_dir,
-            )
-            lifecycle.purge_all(session_state=st.session_state)
-            st.toast("Purged all local database records, vector tables, and cache files.")
-            st.rerun()
+            if _purge_all(doc_store, cache_dir, retriever=hybrid_retriever):
+                st.rerun()
 
 
 # =====================================================================
@@ -808,6 +1065,8 @@ def render_settings_view(
                 st.session_state.cloud_mode_toggle = cloud_active
                 if not cloud_active:
                     st.session_state.user_consented = False
+                # Summaries are model-specific: never show a previous model's output.
+                clear_summary_session_cache()
             st.rerun()
 
     with col_status:
@@ -851,6 +1110,7 @@ def render_settings_view(
         if selected_prov != st.session_state.cloud_provider:
             st.session_state.cloud_provider = selected_prov
             st.session_state.cloud_model = PROVIDER_CONFIG[selected_prov][1]
+            clear_summary_session_cache()
             st.rerun()
 
         # API Key entry for cloud providers
@@ -870,6 +1130,17 @@ def render_settings_view(
             st.session_state.cloud_mode = False
             st.session_state.cloud_mode_toggle = False
             st.session_state.user_consented = False
+            clear_summary_session_cache()
+            st.rerun()
+
+    with st.expander("Cloud Credentials", expanded=False):
+        st.caption(
+            "Cloud API keys are kept in this browser session only. Clearing them removes the keys "
+            "from session state and the active provider objects."
+        )
+        if st.button("Clear cloud keys", use_container_width=True):
+            clear_cloud_credentials(ai_model)
+            st.toast("Cloud API keys cleared from session state.")
             st.rerun()
 
     st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
