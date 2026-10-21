@@ -7,7 +7,7 @@
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-Local_Inference-000000?logo=cplusplus)](https://github.com/ggerganov/llama.cpp)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Hybrid_Vector_DB-black)](https://lancedb.com/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-248%20Passed-success)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-309%20Passed-success)](tests/)
 
 ---
 
@@ -158,7 +158,14 @@ curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Q
 curl -L -o models/mmproj-f16.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-qwen2-vl-2b-instruct-f16.gguf
 ```
 
-### 4. Start Local `llama-server`
+### 4. Verify and Start Local `llama-server`
+
+Verify that the filename and projector actually describe the same architecture before launching (the launcher also enforces this):
+
+```bash
+python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3-vl-2b-instruct-q4_k_m.gguf', 'models/mmproj-f16.gguf') or 'identity OK')"
+```
+
 
 Run `llama-server` with parameters tuned for 4 GB VRAM (batch caps prevent transient spikes during prompt ingestion; see `docs/LOCAL_INFERENCE.md` for 8K-context and Flash Attention options):
 

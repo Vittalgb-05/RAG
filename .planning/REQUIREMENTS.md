@@ -24,7 +24,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Local & Cloud Inference Infrastructure
 
 - [x] **INF-01**: System provides a unified `BaseModelProvider` interface supporting text generation, token streaming, image analysis, and capability inspection.
-- [x] **INF-02**: System implements a local `LlamaCppProvider` communicating with `llama-server` running a quantized 2B VLM (Qwen3-VL 2B GGUF Q4_K_M) with health checks and bounded context (4K-8K tokens).
+- [x] **INF-02**: System implements a local `LlamaCppProvider` communicating with `llama-server` running a quantized 2B VLM (Qwen2-VL 2B GGUF Q4_K_M; filename retained as legacy `qwen3-vl-2b-instruct-q4_k_m.gguf`) with health checks and bounded context (4K-8K tokens).
 - [x] **INF-03**: System operates 100% offline without outbound network calls during local mode.
 - [x] **INF-04**: System implements an optional `LiteLLMProvider` enabling cloud model routing (Groq, OpenAI, Anthropic) only when explicitly configured and consented to by user.
 

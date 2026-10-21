@@ -25,7 +25,7 @@ Fast, evidence-grounded document summarization and question answering with visua
 - [ ] **FR-01: Robust PDF Ingestion** — SHA-256 content hashing, stable internal document IDs, magic-byte validation, file size/page limits, page-level fault isolation, and duplicate upload prevention
 - [ ] **FR-02: Structured Extraction with Docling** — Native extraction of reading order, section hierarchy, tables, and figure references; digital extraction by default without redundant OCR
 - [ ] **FR-03: Conditional Local OCR** — RapidOCR engine triggered only for scanned pages or missing text layers, preserving OCR confidence and avoiding re-runs
-- [ ] **FR-04: Selective Visual Understanding** — Heuristic detection of visual elements (charts, diagrams, tables, figures); selective rendering and local VLM inspection (e.g. Qwen3-VL 2B GGUF via llama-server); distinct tagging of visual interpretations
+- [ ] **FR-04: Selective Visual Understanding** — Heuristic detection of visual elements (charts, diagrams, tables, figures); selective rendering and local VLM inspection (e.g. Qwen2-VL 2B GGUF via llama-server); distinct tagging of visual interpretations
 - [ ] **FR-05: Document Storage & Provenance** — SQLite transactional metadata store and local filesystem artifact storage; strict local retention
 - [ ] **FR-06: Hierarchical Summarization** — Multiple summary profiles (Overview, Detailed, Study notes, Tables & figures, Findings) with hierarchical reduction preserving page references
 - [ ] **FR-07: Grounded Question Answering** — Evidence retrieval before generation; single shared retrieval context for generation and citations; strict citation validation (>=95% precision) and explicit abstention when evidence is insufficient

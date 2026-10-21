@@ -74,7 +74,7 @@ RAG/
 │   └── lancedb_bench/          # Benchmark index (explicit db_uri)
 │
 ├── .cache/                     # Per-document extraction cache: <sha256>/<CONFIG_VERSION>/
-├── models/                     # GGUF weights (Qwen3-VL 2B Q4_K_M + mmproj)
+├── models/                     # GGUF weights (Qwen2-VL 2B Q4_K_M + mmproj; legacy qwen3 filename)
 ├── tools/llama-server/         # Native llama-server binary (installed by setup.py)
 ├── assets/                     # brand_mark.svg + 22 monochrome icons
 ├── docs/                       # RUNBOOK, LOCAL_INFERENCE, EVALUATION, LICENSES

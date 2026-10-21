@@ -61,14 +61,15 @@
 - Impact: Packaging side effects and CLI/download code are hard to test; `pip install -e .` loads the whole script.
 - Fix approach: move operational logic to `scripts/setup_cli.py`, keep `setup.py`/`pyproject.toml` declarative.
 
-**Model naming misrepresentation (Qwen2 vs Qwen3):**
-- Issue: Docs, UI copy, prompts, and `LlamaCppProvider` claim "Qwen3-VL 2B", but `setup.py` and README download Qwen2-VL 2B weights and save them under a `qwen3-vl-...` filename. `docs/RUNBOOK.md:95` admits the rename.
+**Model naming misrepresentation (Qwen2 vs Qwen3) — RESOLVED 2026-10-21:**
+- Issue: Docs, UI copy, prompts, and `LlamaCppProvider` claimed "Qwen3-VL 2B", but `setup.py` and README downloaded Qwen2-VL 2B weights under a `qwen3-vl-...` filename.
+- Resolution: prose labels now say Qwen2-VL; `core/model_identity.py` parses GGUF metadata and the launcher refuses mismatched LM/projector pairs. The legacy filename is retained for on-disk compatibility.
 - Files: `setup.py:59-78`, `providers/llama_cpp_provider.py:1-30`, `main.py:323`, `README.md:17-18`, `docs/RUNBOOK.md:95`
 - Impact: Capability/benchmark claims are attributed to the wrong model; a Qwen3 upgrade would not actually change behavior unless the filename is replaced manually.
 - Fix approach: pick one real model, use its canonical filename, and update telemetry/provenance (`model_version`) to report the true checkpoint.
 
 **Documentation drift:**
-- Issue: README badge says 248 tests while the suite has 296; the repository tree lists pre-refactor root modules (`resource_telemetry.py`), and `start.py` is described as doing "pre-flight hardware checks" but only checks Python version and directories.
+- Issue: README badge previously said 248 tests while the suite grew past 296; the repository tree lists pre-refactor root modules (`resource_telemetry.py`), and `start.py` is described as doing "pre-flight hardware checks" but only checks Python version and directories.
 - Files: `README.md:10`, `README.md:76-106`, `start.py:49-66`, `start.py:214-262`
 - Impact: Onboarding and operational expectations are wrong; no VRAM preflight actually exists.
 - Fix approach: generate the tree/test-count snippets in CI or remove volatile claims.

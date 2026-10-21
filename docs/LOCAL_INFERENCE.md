@@ -37,11 +37,17 @@ mkdir -p models
 ```
 
 1. **Text & Vision Model (`Q4_K_M`)**:
-   - Filename: `qwen3-vl-2b-instruct-q4_k_m.gguf` (~1.45 GB)
+   - Filename: `qwen3-vl-2b-instruct-q4_k_m.gguf` (~1.45 GB; legacy name, GGUF metadata reports Qwen2-VL)
 2. **Vision Projector**:
    - Filename: `mmproj-f16.gguf` (~450 MB)
 
 *(Weights can be downloaded directly from Hugging Face repositories hosting quantized Qwen-VL GGUF models).*
+
+Verify the pair before launching (the launcher also refuses mismatched artifacts):
+
+```powershell
+python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3-vl-2b-instruct-q4_k_m.gguf', 'models/mmproj-f16.gguf') or 'identity OK')"
+```
 
 ---
 
@@ -116,7 +122,7 @@ If `llama-server` is not running or if GPU memory is occupied by other tasks, th
 GROQ_API_KEY=gsk_your_groq_api_key_here
 ```
 
-When Groq is used, the sidebar badge indicates `🔵 Inference: Groq Cloud (openai/gpt-oss-20b)`. When local `llama-server` is active, it indicates `🟢 Inference: Local (qwen3-vl-2b)`.
+When Groq is used, the sidebar badge indicates `🔵 Inference: Groq Cloud (openai/gpt-oss-20b)`. When local `llama-server` is active, it indicates `🟢 Inference: Local (qwen2-vl-2b)`.
 
 ---
 

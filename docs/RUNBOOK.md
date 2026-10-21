@@ -112,6 +112,12 @@ curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Q
 curl -L -o models/mmproj-f16.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-qwen2-vl-2b-instruct-f16.gguf
 ```
 
+Verify the downloaded artifacts before launching. `python setup.py download_models` does this automatically, and `start.py` refuses to launch a mismatched pair:
+
+```bash
+python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3-vl-2b-instruct-q4_k_m.gguf', 'models/mmproj-f16.gguf') or 'identity OK')"
+```
+
 ---
 
 ## 4. Starting the Local Inference Server
