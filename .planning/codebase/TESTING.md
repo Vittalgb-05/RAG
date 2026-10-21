@@ -1,3 +1,4 @@
+<!-- refreshed: 2026-10-21 -->
 # Testing Patterns
 
 **Analysis Date:** 2026-10-21
@@ -5,373 +6,338 @@
 ## Test Framework
 
 **Runner:**
-- `pytest >= 8.3.0` (declared in `requirements-test.txt`; CI installs from that file).
-- Config in `pyproject.toml`:
-  ```toml
-  [tool.pytest.ini_options]
-  testpaths = ["tests"]
-  python_files = ["test_*.py"]
-  python_functions = ["test_*"]
-  filterwarnings = [
-      "ignore::UserWarning",
-      "ignore::DeprecationWarning",
-  ]
-  ```
-- No `addopts`, no custom markers, no plugin registration (`pytest-cov`, `pytest-xdist`, `pytest-asyncio` are **not** installed), no `pytest.ini`/`tox.ini` overrides.
+- `pytest` (`>=8.3.0` in `requirements-test.txt`; local environment runs `pytest 9.0.3`).
+- Config: `pyproject.toml` → `[tool.pytest.ini_options]`.
+
+```toml
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+filterwarnings = [
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+]
+```
+
+- No `addopts`, no custom markers, no pytest plugins (`pytest-asyncio`, `pytest-mock`, `pytest-cov` are **not** installed). Mocking uses stdlib `unittest.mock` plus pytest's built-in `monkeypatch`.
+- Root conftest: `tests/conftest.py`. Package marker: `tests/__init__.py`.
+- CI: `.github/workflows/ci.yml` runs on Ubuntu with Python 3.11, installs `requirements-lock.txt` + `requirements-test.txt` + editable package via `uv`, generates the corpus, then runs `pytest tests/ -v`. Local analysis ran Python 3.13.5; the target/runtime is 3.11+.
 
 **Assertion Library:**
-- Plain `assert` statements plus `pytest.raises(...)` for exceptions. No `unittest.TestCase`, no third-party assertion helpers.
-- Current suite: **296 tests collected** across **29 test modules** (plus `tests/conftest.py` and `tests/__init__.py`), ~7,275 lines under `tests/`.
+- Plain `assert` statements. No `unittest.TestCase`, no third-party assertion helpers.
+- `pytest.raises(..., match="...")` for exceptions, `pytest.approx` for floats, `capsys` for CLI output, `MagicMock.assert_called_once_with` / `assert_called_once` for call assertions.
 
 **Run Commands:**
 ```bash
-pytest tests/ -v                      # CI command (full suite)
-python -m pytest tests/test_doc_store.py -q   # single module
-python -m pytest -k "sanitize" -q     # keyword selection
-python -m ruff check .                # lint gate
-python -m ruff format --check .       # format gate
-python tests/data/corpus/generate_corpus.py   # regenerate PDF fixtures
+python tests/data/corpus/generate_corpus.py   # required once; CI runs this before pytest
+python -m pytest tests/ -v                    # full suite (318 tests)
+python -m pytest tests/ -q                    # concise
+python -m pytest tests/test_doc_store.py -v   # single module
+python -m pytest tests/ -k "inference_gate"   # single behavior group
+ruff check . && ruff format --check .         # lint/format gate
 ```
-`README.md:226-232` documents `pytest tests/ -v`, `ruff check .`, and `ruff format --check .`.
+
+- Current result: `318 passed in 42.11s` with no failures, warnings, or skips on a machine with local GGUF weights and cached embedding model.
 
 ## Test File Organization
 
 **Location:**
-- **Flat directory** `tests/` — files are not grouped by layer (no `tests/unit/`, `tests/integration/`). Each file maps to one production module or feature area.
+- Separate `tests/` tree at the repo root; tests are **not** co-located with source.
+- 30 `test_*.py` modules, 318 test functions, plus `tests/conftest.py` and `tests/__init__.py`.
+- `tests/test_audit_repairs.py` is a cross-cutting regression suite for audit fixes; feature suites otherwise map 1:1 to a source module or area.
 
 **Naming:**
-- `tests/test_<module_or_feature>.py`, mirroring the module under test:
-  - `tests/test_doc_store.py` → `core/doc_store.py`
-  - `tests/test_hybrid_retriever.py` → `retrieval/hybrid_retriever.py`
-  - `tests/test_llama_cpp_provider.py` → `providers/llama_cpp_provider.py`
-  - `tests/test_ui_smoke.py`, `tests/test_main_ui.py`, `tests/test_hydration.py` → `ui/` + `main.py`
-  - `tests/test_setup_llama.py`, `tests/test_start_launcher.py` → `setup.py`, `start.py`
-- There is one `tests/test_models.py` for all Pydantic schemas, and `tests/test_cloud_privacy.py` as the cross-cutting privacy/invariant suite.
+- Files: `tests/test_<module_or_feature>.py` (e.g. `test_hybrid_retriever.py`, `test_llama_cpp_provider.py`, `test_main_ui.py`, `test_ui_smoke.py`).
+- Functions: `test_<behavior>_<condition>` (`test_inference_gate_reentrancy_in_same_thread`, `test_sha_unique_violation_on_reupload`, `test_health_check_loading_503`, `test_visual_element_detection_and_cropping`).
+- Requirement/audit tags frequently appear in the docstring and occasionally in the name: `test_two_instance_interleave_R1`, `test_corrupt_invalid_rejected_WR07`; docstrings carry `(QUAL-01)`, `(RETR-04)`, `(INF-03)`, `(P0-1)`.
+- Test classes are **not** used to group tests. Classes in test files are fakes/mocks (`DummyProvider`, `MockVisionProvider`, `MockSummarizerProvider`) or fixtures (`_FailingTable`).
 
 **Structure:**
-```
+```text
 tests/
-├── __init__.py                  # package marker (docstring only)
-├── conftest.py                  # shared fixtures + env setup + mock seams
-├── test_<module>.py             # 29 modules, flat
-└── data/
-    └── corpus/
-        ├── generate_corpus.py   # reportlab generator (runs in CI)
-        ├── clean_digital.pdf
-        ├── multi_column.pdf
-        ├── dense_table.pdf
-        ├── scanned_sample.pdf
-        ├── chart_diagram.pdf
-        └── corrupt_invalid.pdf
+├── __init__.py
+├── conftest.py                     # shared fixtures + offline env setup
+├── data/
+│   └── corpus/
+│       ├── generate_corpus.py      # reportlab generator (run before pytest)
+│       ├── clean_digital.pdf
+│       ├── scanned_sample.pdf
+│       ├── dense_table.pdf
+│       ├── multi_column.pdf
+│       ├── chart_diagram.pdf
+│       └── corrupt_invalid.pdf
+├── test_<area>.py                  # 30 modules
+└── test_audit_repairs.py           # cross-cutting regressions
 ```
 
-**Module-level constants for fixture paths** are the standard pattern at the top of test modules:
-```python
-CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"
-CLEAN_PDF = CORPUS_DIR / "clean_digital.pdf"
-SCANNED_PDF = CORPUS_DIR / "scanned_sample.pdf"
-```
-(`tests/test_ocr_fallback.py:11-13`, also `tests/test_visual_analyzer.py`, `tests/test_docling_reader.py`, `tests/test_upload_validation.py`).
+**Largest suites (by test count):**
+
+| Tests | Module |
+|------:|--------|
+| 20 | `tests/test_models.py` |
+| 20 | `tests/test_hybrid_retriever.py` |
+| 17 | `tests/test_llama_cpp_provider.py` |
+| 17 | `tests/test_doc_store.py` |
+| 16 | `tests/test_main_ui.py` |
+| 14 | `tests/test_resource_telemetry.py` |
+| 14 | `tests/test_local_llm.py` |
+| 13 | `tests/test_ocr_fallback.py`, `tests/test_citation_validator.py`, `tests/test_audit_repairs.py` |
 
 ## Test Structure
 
 **Suite Organization:**
-- **Module-level functions only** for tests; no `class Test*` suites. Classes that do appear are mock providers/stubs, not test containers.
-- Every test gets a one-line docstring naming the invariant and often the requirement ID:
-  ```python
-  def test_health_check_loading_503() -> None:
-      """Test check_health when llama-server returns 503 while loading model weights."""
-  ```
-  (`tests/test_llama_cpp_provider.py:43-44`)
-- Requirement-tagged names are used where traceability matters: `test_two_instance_interleave_R1` (`tests/test_doc_store.py:93`), `test_corrupt_invalid_rejected_WR07` (`tests/test_upload_validation.py:16`), `test_inference_gate_basic_acquire_release` (`tests/test_concurrency_lock.py:71`).
-- Test body pattern: arrange fixtures → act → multiple focused asserts, with numbered comments for multi-phase scenarios:
-  ```python
-  # 1. Start in local mode
-  # 2. Attempting cloud provider without consent raises PermissionError
-  # 3. Explicit consent allows cloud operation
-  # 4. Revoking consent switches AiModel back to local mode
-  ```
-  (`tests/test_cloud_privacy.py:24-50`)
-- Type annotations on test functions are **mixed**: newer files use `-> None` (`tests/test_sanitizer.py`, `tests/test_concurrency_lock.py`), older files omit it (`tests/test_doc_store.py`, `tests/test_main_ui.py`). New tests should annotate `-> None` and annotate `tmp_path: Path`/`monkeypatch: pytest.MonkeyPatch` when used.
+- Module docstring states the unit under test and requirement IDs, then imports, then fixtures, then flat test functions.
 
-**Setup / Teardown:**
-- `tmp_path` is the default isolation mechanism for SQLite and LanceDB — never write into the repo `data/` directory:
-  ```python
-  db_file = tmp_path / "test_docs.db"
-  store = DocStore(db_file)
-  ```
-  (`tests/test_doc_store.py:14-16`); LanceDB: `HybridRetriever(db_uri=tmp_path / "lancedb_test")` (`tests/test_hybrid_retriever.py:50-51`).
-- Module-local `@pytest.fixture(autouse=True)` resets process-global state before and after each test. Required for:
-  - `InferenceGate` lock state (`tests/test_concurrency_lock.py:61-67`)
-  - Streamlit `session_state` (`tests/test_ui_smoke.py:19-35`, `tests/test_hydration.py:12-19`)
-  - telemetry caches / latency history (`tests/test_resource_telemetry.py:25-33`)
-- Teardown is done in `yield` fixtures or `try/finally` when monkeypatching module attributes directly:
-  ```python
-  original_st = local_embedding.SentenceTransformer
-  try:
-      local_embedding.SentenceTransformer = mock_st_class
-      ...
-  finally:
-      local_embedding.clear_shared_model_cache()
-      local_embedding.SentenceTransformer = original_st
-  ```
-  (`tests/test_hybrid_retriever.py:27-36`)
+```python
+"""Unit tests for InferenceGate process-level concurrency lock (QUAL-01)."""
+
+import threading
+import time
+from unittest.mock import MagicMock
+
+import pytest
+
+from core.local_llm import AiModel, InferenceGate
+from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+
+
+@pytest.fixture(autouse=True)
+def ensure_gate_released() -> None:
+    """Ensure InferenceGate is fully released before and after every test."""
+    while InferenceGate.is_locked():
+        InferenceGate.release()
+    yield
+    while InferenceGate.is_locked():
+        InferenceGate.release()
+
+
+def test_inference_gate_reentrancy_in_same_thread() -> None:
+    """Test reentrancy: same thread can acquire multiple times without deadlocking."""
+    with InferenceGate.hold(timeout=1.0):
+        assert InferenceGate.is_locked()
+        with InferenceGate.hold(timeout=1.0):
+            assert InferenceGate.is_locked()
+        assert InferenceGate.is_locked()
+    assert not InferenceGate.is_locked()
+```
+
+**Patterns:**
+- **Setup:** fixtures (module-level for specialized fakes, `tests/conftest.py` for shared ones); `autouse=True` only for global-state reset.
+- **Teardown:** `yield` fixtures; explicit release loops for `InferenceGate`; `st.session_state.clear()` for Streamlit; `clear_latency_history()` / `clear_gpu_cache()` for telemetry.
+- **Arrange/Act/Assert:** often labeled with numbered comments in workflow tests:
+
+```python
+# 1. Start in local mode
+model = AiModel(cloud_mode=False)
+assert model.provider.get_capabilities().is_local is True
+
+# 2. Attempting cloud provider without consent raises PermissionError
+...
+```
+
+- **Assertion style:** one behavior per test, multiple focused asserts on the same output. Compare canonical models directly (`assert retrieved == doc`), inspect serialized dicts for UI contracts (`turn["snippets"][0]["rank"] == 1`), and assert on error message fragments with `match=`.
+- **Return annotations:** `-> None` is used in newer suites (137 of 318 tests); older suites omit it (`tests/test_doc_store.py`, `tests/test_hybrid_retriever.py`). New tests should include `-> None`.
+- **Test docstrings:** every test has a one-line docstring describing the invariant, often with requirement tags. Keep this convention.
 
 ## Mocking
 
-**Framework:** `unittest.mock` (`MagicMock`, `patch`, `patch.object`, `patch.dict`) plus pytest's `monkeypatch`. No `pytest-mock`, no `responses`, no `vcrpy`.
+**Framework:** stdlib `unittest.mock` (`MagicMock`, `patch`) + pytest `monkeypatch`. Usage counts: 75 `monkeypatch` references, 48 `with patch(...)` blocks.
 
 **Patterns:**
 
-1. **Shared fixtures in `tests/conftest.py`** (preferred for seams used by multiple modules):
-   - `fake_env_groq_key` — `monkeypatch.setenv("GROQ_API_KEY", "test-key-not-a-secret-mock-value")`
-   - `mock_groq_client` — patches `providers.groq_provider.Groq`, yields canned streaming chunks (`MockDelta`/`MockChoice`/`MockChunk`)
-   - `mock_sentence_transformer` — patches `retrieval.local_embedding.SentenceTransformer`, returns deterministic 384-dim L2-normalized float32 vectors
-   - `sample_pdf_path` — path to `tests/data/corpus/clean_digital.pdf`
-   - `mock_llama_provider` — full `BaseModelProvider` subclass with recorded `stream_calls`
-   ```python
-   @pytest.fixture
-   def mock_sentence_transformer(monkeypatch):
-       mock_model = MagicMock()
-       def mock_encode(texts, normalize_embeddings=True, **kwargs):
-           ...
-       mock_model.encode.side_effect = mock_encode
-       from retrieval import local_embedding
-       monkeypatch.setattr(local_embedding, "SentenceTransformer", lambda model_name, **kwargs: mock_model)
-       return mock_model
-   ```
-   (`tests/conftest.py:62-92`)
+1. **Contract-faithful fake providers (preferred).** Shared `mock_llama_provider` subclasses the real ABC so interface drift fails loudly:
 
-2. **Patch at the module under test's namespace**, not the vendor namespace:
-   ```python
-   with patch("providers.groq_provider.Groq", return_value=mock_client):
-   with patch("ui.hydration.HybridRetriever") as mock_retriever_cls:
-   with patch("subprocess.run", return_value=mock_res):
-   ```
-   (`tests/test_groq_provider.py:38`, `tests/test_hydration.py:40`, `tests/test_resource_telemetry.py:44`)
+```python
+@pytest.fixture
+def mock_llama_provider():
+    """Provides a healthy mock local inference provider conforming to BaseModelProvider."""
+    from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
-3. **`httpx.MockTransport` for provider HTTP behavior** — no network, full request/response control:
-   ```python
-   def handler(request: httpx.Request) -> httpx.Response:
-       assert request.url.path == "/v1/chat/completions"
-       captured_payload = json.loads(request.read())
-       return httpx.Response(200, json={"choices": [{"message": {"content": "Generated reply."}}]})
+    class MockLlamaCppProvider(BaseModelProvider):
+        def check_health(self) -> HealthStatus:
+            return HealthStatus(status="healthy", message="Mock llama-server ready.", latency_ms=1.5)
 
-   transport = httpx.MockTransport(handler)
-   provider = LlamaCppProvider(transport=transport)
-   ```
-   (`tests/test_llama_cpp_provider.py:30-40,87-117`; constructor seam `transport=` is defined in `providers/llama_cpp_provider.py:33`)
+        def stream_text(self, prompt, system_prompt=None, history=None, max_tokens=1024, temperature=0.2):
+            self.stream_calls.append({...})
+            for token in self._tokens:
+                yield token
+    return MockLlamaCppProvider()
+```
 
-4. **Injectable constructor seams instead of patching internals.** Production classes accept mockable collaborators:
-   - `LlamaCppProvider(transport=...)`
-   - `OcrEngine(recognizer=..., renderer=...)` → `MagicMock` (`tests/test_ocr_fallback.py:44-45`)
-   - `VisualAnalyzer(region_detector=..., cropper=...)` → `MagicMock(return_value=[...])` (`tests/test_visual_analyzer.py:94-110`)
-   - `DoclingReader(converter=...)` and private `_has_docling = False` (`tests/test_docling_reader.py:16-18`)
+2. **HTTP transports instead of a live server.** `providers/llama_cpp_provider.py` accepts an `httpx` transport, so tests exercise request/response handling with `httpx.MockTransport`:
 
-5. **Class-based provider stubs implementing `BaseModelProvider`** — used when behavior ordering/call recording matters. They record calls in instance lists asserted later:
-   ```python
-   class MockVisionProvider(BaseModelProvider):
-       def __init__(self, model_name: str = "qwen3-vl-2b"):
-           self.analyze_calls: list[dict] = []
-       def analyze_image(self, image_bytes, prompt, max_tokens=512):
-           self.analyze_calls.append({"image_len": len(image_bytes), "prompt": prompt})
-           return "..."
-   ```
-   (`tests/test_visual_analyzer.py:19-55`; also `MockSummarizerProvider` in `tests/test_summarizer.py`, `DummyProvider` in `tests/test_concurrency_lock.py`, `MockLlamaCppProvider` in `tests/conftest.py:107-172`)
+```python
+def handler(request: httpx.Request) -> httpx.Response:
+    assert request.url.path == "/health"
+    return httpx.Response(503, json={"status": "loading model"})
 
-6. **`monkeypatch` for module-level seams and environment:**
-   ```python
-   monkeypatch.setattr(pypdf, "PdfReader", StubReader)         # tests/test_upload_validation.py
-   monkeypatch.setattr(socket, "create_connection", guarded)   # tests/test_cloud_privacy.py:64
-   monkeypatch.delenv("GROQ_API_KEY", raising=False)
-   ```
+transport = httpx.MockTransport(handler)
+provider = LlamaCppProvider(transport=transport)
+status = provider.check_health()
+assert status.status == "loading"
+```
+
+3. **Monkeypatch module attributes for optional backends and network guards:**
+
+```python
+monkeypatch.setattr("retrieval.hybrid_retriever.lancedb", None)  # exercise in-memory fallback
+
+def guarded_create_connection(*args, **kwargs):
+    raise ConnectionRefusedError("Outbound network egress strictly forbidden ...")
+
+monkeypatch.setattr(socket, "create_connection", guarded_create_connection)
+```
+
+4. **MagicMock for third-party model clients** whose surface is large and irrelevant: `sentence_transformers.SentenceTransformer` (`tests/conftest.py::mock_sentence_transformer` returns deterministic 384-dim normalized vectors), `litellm.completion` (`tests/test_litellm_provider.py`), `groq.Groq` (`tests/conftest.py::mock_groq_client`).
+5. **`patch("subprocess.run")` for OS-level probes**: `nvidia-smi` in `tests/test_resource_telemetry.py` and `tests/test_setup_llama.py`; Streamlit launch/llama-server process spawn in `tests/test_start_launcher.py`.
 
 **What to Mock:**
-- All network clients and transports (`httpx`, `groq`, `litellm`).
-- Model loading (`SentenceTransformer`), OCR engines, Docling converters, `nvidia-smi`/`subprocess.run`, `psutil`.
-- Streamlit state (`monkeypatch.setattr(st, "session_state", fake_state, raising=False)`).
-- Time/latency only where assertions depend on it (concurrency tests use real small `time.sleep(0.01)`; telemetry tests reset cache instead of patching clocks).
+- Network egress (cloud APIs, llama-server HTTP), GPU/nvidia-smi, model weight loading, and OS process spawning.
+- Heavy optional parsers when the test targets orchestration rather than parsing quality: Docling `DocumentConverter` is mocked (`tests/test_docling_reader.py`), and OCR recognizer/renderer are `MagicMock`s (`tests/test_ocr_fallback.py`); the fallback `PdfReader` path runs for real.
+- Time/latency-sensitive provider calls where the test asserts timeout behavior (`monkeypatch.setattr(InferenceGate, "acquire", MagicMock(return_value=False))`).
 
 **What NOT to Mock:**
-- SQLite (`DocStore`) — tests use real temp databases to verify WAL, migrations, foreign-key cascades, and `UNIQUE(sha256)` (`tests/test_doc_store.py`).
-- PDF parsing for offline corpus files — real `pypdf`/Docling/PyMuPDF paths run against `tests/data/corpus/*.pdf` (`tests/test_docling_reader.py`, `tests/test_ocr_fallback.py`, `tests/test_visual_analyzer.py`).
-- LanceDB persistence — real on-disk LanceDB under `tmp_path`, including reopen-across-instances checks (`tests/test_hybrid_retriever.py:100-126`).
-- Security invariants — the privacy suite deliberately runs the real embedding/indexing path with `socket.create_connection` monkeypatched to raise, proving no egress (`tests/test_cloud_privacy.py:55-75`).
+- SQLite (`sqlite3` + `DocStore`), LanceDB persistence, PyMuPDF rasterization, pypdf parsing, Pydantic validation, sanitizer regexes, and prompt-budget math. These run against real implementations so contract drift and schema/SQL bugs surface.
+- Use `tmp_path` for any on-disk store; never write to the repo's `data/` or `.cache/`.
+- Prefer a hand-written fake subclassing `BaseModelProvider` over `MagicMock` when the test depends on provider semantics (health status, capabilities, streaming order).
+- **Do not copy the stale `HealthStatus(..., provider_type="local")` construction** found in `tests/test_concurrency_lock.py:20`, `tests/test_main_ui.py:229`, and `tests/test_summarizer.py:24`. `HealthStatus` is `extra="forbid"` and has no `provider_type` field, so those `check_health()` methods would raise if invoked. Build statuses with `status`, `message`, and optional `latency_ms` only.
 
 ## Fixtures and Factories
 
-**Shared fixtures (`tests/conftest.py`):**
+**Test Data:**
+- Synthetic PDF corpus generated by `tests/data/corpus/generate_corpus.py` (reportlab) — six deterministic documents covering digital text, scanned pages, tables, multi-column layout, figures/charts, and an invalid file. CI regenerates it before pytest.
+- Canonical models are constructed directly with valid IDs and 64-char hashes:
+
+```python
+sha = "1" * 64
+doc = Document(
+    doc_id="doc_1111111111111111",
+    filename="test_doc.pdf",
+    sha256=sha,
+    size_bytes=4096,
+    num_pages=3,
+    status="indexed",
+    upload_time="2026-10-11T01:00:00Z",
+    num_chunks=6,
+)
+```
+
+- Deterministic embeddings/vectors instead of randomness: `mock_sentence_transformer` derives values from text length; `_make_unit_vector(seed)` in `tests/test_hybrid_retriever.py` seeds NumPy and L2-normalizes.
+
+**Location:**
+- Shared fixtures: `tests/conftest.py`.
 
 | Fixture | Purpose |
-|---|---|
-| `fake_env_groq_key` | Sets a dummy `GROQ_API_KEY` via `monkeypatch.setenv` |
-| `mock_groq_client` | Patches `providers.groq_provider.Groq`; canned streaming response |
-| `mock_sentence_transformer` | Patches `SentenceTransformer`; deterministic 384-dim normalized vectors |
-| `sample_pdf_path` | Absolute path to `tests/data/corpus/clean_digital.pdf` |
-| `mock_llama_provider` | Healthy `BaseModelProvider` implementation with recorded `stream_calls` |
+|---------|---------|
+| `fake_env_groq_key` | Sets a mock `GROQ_API_KEY` via `monkeypatch.setenv`. |
+| `mock_groq_client` | Replaces `providers.groq_provider.Groq` with a streaming mock yielding five tokens. |
+| `mock_sentence_transformer` | Replaces `SentenceTransformer` with deterministic 384-dim normalized vectors; prevents model download/GPU use. |
+| `sample_pdf_path` | Absolute path to `tests/data/corpus/clean_digital.pdf`. |
+| `mock_llama_provider` | Healthy local provider fake subclassing `BaseModelProvider`, recording stream calls. |
 
-`conftest.py` also performs process-wide environment setup **before** importing numpy/pytest:
-```python
-os.environ["USE_TF"] = "0"
-os.environ["USE_TORCH"] = "1"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-```
-(`tests/conftest.py:6-15`) — keep this block first when editing the file.
+- Module-local autouse resets: `ensure_gate_released` (`tests/test_concurrency_lock.py`), `clean_session_state` (`tests/test_ui_smoke.py`), `reset_latencies` (`tests/test_resource_telemetry.py`), hydration reset (`tests/test_hydration.py`).
+- `tmp_path` is the dominant isolation mechanism (141 uses) for SQLite files, LanceDB directories, and cache roots. Older tests use `tempfile.TemporaryDirectory()` (`tests/test_cache_invalidation.py`); prefer `tmp_path`.
+- Lightweight factories are plain module-level helpers: `_doc()` (`tests/test_audit_repairs.py`), `_make_unit_vector()` (`tests/test_hybrid_retriever.py`), `MockVisionProvider` / `MockTextOnlyProvider` (`tests/test_visual_analyzer.py`).
 
-**Factories / helpers:**
-- No factory library. Deterministic data builders are private helpers in the test module:
-  ```python
-  def _make_unit_vector(seed: int, dim: int = 384) -> list[float]:
-      """Generate a deterministic normalized float vector."""
-      np.random.seed(seed)
-      v = np.random.randn(dim).astype(np.float32)
-      norm = np.linalg.norm(v)
-      if norm > 0:
-          v = v / norm
-      return [float(x) for x in v]
-  ```
-  (`tests/test_hybrid_retriever.py:12-19`)
-- Inline Pydantic construction is the norm for domain objects; use `"a" * 64` / `"1" * 64` for sha256 and fixed ISO timestamps (`"2026-10-11T01:00:00Z"`). IDs follow production prefixes (`doc_...`, `summ_...`) because validators enforce them.
-- Test data location: `tests/data/corpus/`; generated by `tests/data/corpus/generate_corpus.py` and **also committed** to git.
+**Environment setup (critical):**
+- `tests/conftest.py` sets `USE_TF=0`, `USE_TORCH=1`, `TF_ENABLE_ONEDNN_OPTS=0` **before** importing NumPy/pytest. `retrieval/local_embedding.py` repeats the same guard. Keep environment mutation at the top of conftest; moving it below imports reintroduces TensorFlow/Keras noise.
 
-**Corpus generator (`tests/data/corpus/generate_corpus.py`):**
-- Uses `reportlab` (`SimpleDocTemplate`, `canvas`, `Table`) to build six PDFs:
-  - `clean_digital.pdf` — 20 pages of headings/paragraphs with per-page verifiable claims (`target-{p}0 milliseconds`)
-  - `multi_column.pdf` — 2-page two-column layout
-  - `dense_table.pdf` — quarterly metrics table
-  - `scanned_sample.pdf` — raster shapes only, zero extractable text
-  - `chart_diagram.pdf` — flowchart with labeled boxes
-  - `corrupt_invalid.pdf` — bytes without `%PDF` header
-- Entry point `generate_all_corpus_files() -> dict[str, Path]` returns name→path map; `__main__` prints sizes. The generator is idempotent and runs in CI before pytest.
+**Corpus and model prerequisites:**
+- Several tests assert corpus files exist and would fail rather than skip if the corpus is missing (`tests/test_pdf_reader.py`, `tests/test_ocr_fallback.py`, `tests/test_visual_analyzer.py`). Always run the generator first.
+- `tests/test_cloud_privacy.py` and `tests/test_doc_store.py` instantiate the real CPU `LocalEmbedding` (SentenceTransformer `all-MiniLM-L6-v2`), so a cached embedding model is required; most other embedding tests use `mock_sentence_transformer`.
+- `tests/test_audit_repairs.py::test_local_model_identity_matches_declared_architecture` is skipped unless `models/qwen3-vl-2b-instruct-q4_k_m.gguf` and `models/mmproj-f16.gguf` exist. This is the only `skipif` in the suite.
 
 ## Coverage
 
-**Requirements:** None enforced. There is no `pytest-cov` dependency, no `--cov` in CI, no `[tool.coverage]` section, and no coverage threshold in `pyproject.toml`. `.gitignore` lists `.coverage` and `htmlcov/`, but neither is produced by any configured command.
+**Requirements:** None enforced.
+- No `pytest-cov` / `coverage` dependency in `requirements-test.txt` or `pyproject.toml`.
+- No `--cov`, `fail_under`, coverage config, or CI coverage upload. CI gates only on lint/format and test pass/fail.
+- `README.md` advertises "318 tests" and `docs/EVALUATION.md` reports "24 test suites"; the current tree has 30 test modules / 318 tests. Treat the docs as stale when counting.
 
-**View Coverage (if added locally):**
+**View Coverage:**
 ```bash
+# Not configured in this repo. To inspect locally:
 pip install pytest-cov
-python -m pytest tests/ --cov=core --cov=retrieval --cov=ingestion --cov=providers --cov=ui --cov-report=term-missing
+python -m pytest tests/ --cov=core --cov=retrieval --cov=ingestion --cov=providers --cov=ui
 ```
 
-**Documentation drift to be aware of:** `README.md:106` claims "248 tests"; current collection is **296**. Update the README when test counts change.
+**Known coverage gaps:**
+- **Streamlit view rendering.** No test imports or calls `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, or `render_sidebar_documents` (`ui/views.py`, ~880 lines). Tests cover data contracts (`tests/test_main_ui.py`), components, sanitizer, hydration, and session reset instead. There is no `streamlit.testing.v1.AppTest` usage.
+- **Live local inference.** No test starts `llama-server` or loads the GGUF; `LlamaCppProvider` is verified through `httpx.MockTransport`. GGUF metadata parsing is checked only when model files are present, otherwise skipped.
+- **GPU/VRAM behavior.** `nvidia-smi` and `psutil` telemetry are tested with mocked `subprocess.run`; the 4 GB envelope and `InferenceGate` are validated logically, not under real VRAM pressure.
+- **Cloud providers.** No live Groq/OpenAI/Anthropic calls; consent gates and request shaping are tested with mocks.
+- **Launcher/setup side effects.** `start.py` process spawning and `setup.py` downloads/archive extraction are mocked; no real download, extraction, or server boot is exercised.
+- **End-to-end ingestion.** `IngestionService` is tested for failure/atomicity paths, but there is no full ingest → embed → LanceDB → retrieve → answer test with the real Docling pipeline.
+- **Platform matrix.** CI is Ubuntu-only; Windows-primary behaviors (SQLite WAL file locking, path handling) are not covered in CI.
+- **Static/security checks.** No mypy/pyright, no `pip-audit`/`bandit`, no secret scanning in CI.
 
 ## Test Types
 
-**Unit Tests (majority):**
-- Pure functions and schemas: `tests/test_models.py` (validation, frozen/extra-forbid, legacy key compatibility), `tests/test_citation_validator.py`, `tests/test_prompt_budget.py`, `tests/test_sanitizer.py`.
-- Persistence: `tests/test_doc_store.py` — migrations/user_version, `UNIQUE(sha256)`, WAL/interleaved instances, cascade deletes, summary cache invalidation, `VACUUM` purge.
-- Retrieval: `tests/test_hybrid_retriever.py`, `tests/test_vector_index.py`, `tests/test_local_embedding.py`.
-- Providers: `tests/test_llama_cpp_provider.py` (HTTP via `MockTransport`), `tests/test_litellm_provider.py`, `tests/test_groq_provider.py`, `tests/test_model_provider.py` (ABC contract + schema validation).
-- UI/presentation contracts: `tests/test_ui_smoke.py`, `tests/test_main_ui.py`, `tests/test_hydration.py`, `tests/test_components` behavior covered inside `test_ui_smoke.py`.
+**Unit Tests:**
+- Majority of the suite. Pure functions and classes tested directly: `core/citation_validator.py`, `core/prompt_budget.py`, `core/models.py`, `ui/sanitizer.py`, `retrieval/vector_index.py`, `providers/*`, `setup.py`, `start.py`.
+- Global-state components are tested concurrently with real threads (`tests/test_concurrency_lock.py`) and with autouse state resets.
 
-**Integration-Style Tests (offline, in-process):**
-- `tests/test_ocr_fallback.py`, `tests/test_docling_reader.py`, `tests/test_visual_analyzer.py` run real extractors over the synthetic corpus, often combined with `DocStore` + mock VLM.
-- `tests/test_cloud_privacy.py` exercises `LocalEmbedding` → `HybridRetriever` → SQLite with outbound sockets blocked, and verifies consent transitions and per-provider key lookup.
-- `tests/test_concurrency_lock.py` uses real threads and `time.sleep` to prove `InferenceGate` serialization, reentrancy, and timeout behavior.
+**Integration Tests:**
+- Offline integration-style tests run real storage/parsing components against `tmp_path` and the synthetic corpus: SQLite `DocStore` (migrations, WAL, integrity errors), LanceDB `HybridRetriever` (dense search, FTS/RRF, persistence, deletion, fallback), PyMuPDF cropping, pypdf/Docling fallback, and Pydantic round-trips.
+- External boundaries (HTTP, cloud SDKs, GPU probes, optional model converters) are mocked, so these are "integration within the process," not system integration.
 
-**E2E / Browser Tests:** Not used. Streamlit render functions are exercised only through their pure helpers and via `tests/test_ui_smoke.py` (HTML-string assertions, `st.session_state` fixtures). No Playwright/Selenium.
-
-**GPU / Live Model Tests:** Not used. Local inference is always mocked (`MockTransport`, provider stubs); `tests/conftest.py` is explicitly designed for "100% offline unit testing without GPU allocation or API calls".
-
-**Markers:** No custom or built-in markers (`@pytest.mark.slow`, `integration`, etc.) are used anywhere. All 296 tests run in the default CI job.
-
-## CI Pipeline
-
-`.github/workflows/ci.yml` — single job `Lint & Test Suite (Python 3.11)` on `ubuntu-latest`, triggered on push/PR to `main`:
-
-1. `actions/checkout@v4`
-2. `actions/setup-python@v5` with `python-version: "3.11"`
-3. `astral-sh/setup-uv@v5` with caching
-4. Install from lockfiles (reproducible):
-   ```bash
-   uv pip install --system -r requirements-lock.txt
-   uv pip install --system -r requirements-test.txt
-   uv pip install --system -e . --no-deps
-   ```
-5. `ruff check . && ruff format --check .`
-6. `python tests/data/corpus/generate_corpus.py` (regenerates PDFs, ensuring generator works)
-7. `pytest tests/ -v`
-
-Notes:
-- CI uses Python 3.11 while local development here is 3.13.5; keep tests version-agnostic and avoid 3.12+-only syntax.
-- No matrix, no caching of the HF model cache, no coverage upload, no artifact upload of failures.
+**E2E Tests:**
+- Not used. No browser automation, no Streamlit `AppTest`, no live llama-server/Streamlit pair.
 
 ## Common Patterns
 
-**Exception assertions with message match:**
-```python
-with pytest.raises(ValueError, match="Not a valid PDF: missing %PDF header"):
-    validate_pdf_bytes(raw_bytes, "corrupt_invalid.pdf")
+**Async Testing:**
+- Not applicable — the codebase is synchronous. Concurrency is tested with `threading.Thread` + `threading.Event`, acquiring the gate with a short timeout and asserting the second acquire fails:
 
+```python
+def t1_worker() -> None:
+    with InferenceGate.hold(timeout=2.0):
+        t1_started.set()
+        t1_finish.wait(timeout=2.0)
+
+def t2_worker() -> None:
+    t1_started.wait(timeout=2.0)
+    acquired = InferenceGate.acquire(timeout=0.05)
+    acquired_by_t2.append(acquired)
+
+...
+assert acquired_by_t2 == [False], "Thread 2 should have timed out while Thread 1 held the gate"
+```
+
+**Streaming Testing:**
+- Consume the generator fully and assert on the token list / provider call record:
+  `tokens = list(model.ask_a_question_from_pdf_stream(...))`; `assert len(mock_llama_provider.stream_calls) == 1`.
+
+**Error Testing:**
+- Assert exception type plus an actionable message fragment (`match=`), and verify state afterward:
+
+```python
 with pytest.raises(PermissionError, match="Cloud transmission blocked"):
-    unconsented_cloud.generate_text("Test prompt")
+    provider.generate_text("Explain quantum computing")
+
+with pytest.raises(TimeoutError, match="InferenceGate acquisition timed out"):
+    with InferenceGate.hold(timeout=0.05):
+        pass
+
+with pytest.raises(sqlite3.IntegrityError):
+    store.upsert_document(doc2)  # same sha256, different doc_id
 ```
-(`tests/test_upload_validation.py:21`, `tests/test_cloud_privacy.py:34`)
 
-**Pydantic validation failures:**
-```python
-with pytest.raises(ValidationError, match="doc_id must start with 'doc_'"):
-    Document(...)
-```
-(`tests/test_models.py:272`)
+- Validation tests enumerate invalid inputs (bad magic bytes, oversized files, bad SHA, `doc_` prefix, negative bbox) and assert `pydantic.ValidationError` / `ValueError`.
+- Fault-isolation tests inject a per-item failure (e.g. renderer raises on page 2) and assert other pages still succeed.
 
-**Streaming generators:** materialize with `list(...)` or iterate and join; assert captured payloads on the provider stub:
-```python
-tokens = list(provider.stream_text("prompt"))
-assert "".join(tokens) == "This is a grounded answer."
-```
-Pattern derived from `MockLlamaCppProvider._tokens` (`tests/conftest.py:144-162`) and `tests/test_llama_cpp_provider.py` streaming tests.
+**Fault injection:**
+- Failure seams are constructor-injected (`converter=`, `transport=`, `recognizer=`, `renderer=`, `provider=`) or patched at module scope. Use these instead of patching private internals.
+- Filesystem failure paths are simulated with `monkeypatch.setattr` on the collaborator (e.g. force `VectorIndexError` and assert SQLite rows survive).
 
-**CLI output:** `capsys.readouterr()`:
-```python
-start.print_banner()
-captured = capsys.readouterr()
-assert "Local-First Multimodal PDF Intelligence System" in captured.out
-```
-(`tests/test_start_launcher.py:11-17`; also `tests/test_setup_llama.py:31-41`)
-
-**Concurrency:** real `threading.Thread` + `InferenceGate`; assert serialization by call counts and elapsed ordering, and an explicit `TimeoutError` on non-blocking acquisition (`tests/test_concurrency_lock.py:150-200`).
-
-**Determinism:** seed numpy (`np.random.seed(seed)`), fixed sha strings, fixed ISO timestamps, and canned token lists. No reliance on wall-clock dates.
-
-**Temporary storage cleanup:** rely on `tmp_path` auto-cleanup; do not manually delete `data/` or `.cache/`. For `HybridRetriever`, instantiate with `db_uri=tmp_path / ...` so the real `data/lancedb` is untouched.
-
-## Where to Add New Tests
-
-- **New module in `core/`** → `tests/test_<module>.py`, unit-test pure functions first, then persistence/edge cases with `tmp_path`.
-- **New provider** → `tests/test_<provider>_provider.py`; implement a `MockTransport` handler for HTTP providers and a class-based stub for ABC contract tests (`HealthStatus`, `ProviderCapabilities`).
-- **New ingestion stage** → extend `tests/data/corpus/generate_corpus.py` if a new document shape is needed, add the file path constant at the top of the test module, and cover both success and fallback/failure isolation.
-- **New UI behavior** → prefer extracting pure logic (formatting, state transitions, sanitization) into a testable function in `ui/` and testing it directly in `tests/test_main_ui.py` or a new `tests/test_<feature>.py`; add an autouse `clean_session_state` fixture if `st.session_state` is touched.
-- **Privacy/egress behavior** → add to `tests/test_cloud_privacy.py` with `socket.create_connection` monkeypatched (never make real network calls).
-- **Global mutable state** → add an autouse reset fixture mirroring `ensure_gate_released` / `reset_latencies`, and provide a `clear_*` helper in production code (as `retrieval/local_embedding.py:45` does with `clear_shared_model_cache`).
-
-## Test Pitfalls To Avoid
-
-**Mock provider schemas must match `extra="forbid"` models.**
-- What happens: several test/dummy providers construct `HealthStatus(status="healthy", message="ok", provider_type="local")` (`tests/test_concurrency_lock.py:20`, `tests/test_summarizer.py:24`, `tests/test_main_ui.py:229`). `HealthStatus` in `providers/model_provider.py` defines only `status`, `message`, `latency_ms` and sets `extra="forbid"`, so any code path that actually calls `check_health()` on these stubs would raise `ValidationError`.
-- Why it matters: the suite currently passes because those `check_health` methods are not invoked, but the stubs are latent failures.
-- Do this instead: construct only schema fields — `HealthStatus(status="healthy", message="ok", latency_ms=1.0)` (as `tests/test_visual_analyzer.py` does).
-
-**Tests that duplicate production logic instead of calling it.**
-- What happens: `tests/test_main_ui.py` re-implements the "Clear All" purge and consent state transitions against a local `mock_session` dict.
-- Why it matters: the test asserts the copy, not the shipped handler, so regressions in `main.py` go undetected.
-- Do this instead: extract the transition into a function (e.g. in `ui/` or `main.py`) and call it from both the UI and the test.
-
-**No parametrization.**
-- What happens: near-identical cases are written as separate functions (e.g. `test_health_check_healthy`, `test_health_check_loading_503`, `test_health_check_unreachable`, `test_health_check_error_status` in `tests/test_llama_cpp_provider.py`).
-- Why it matters: more boilerplate and drift between cases.
-- Do this instead: use `@pytest.mark.parametrize` for table-driven input/output pairs (currently zero uses, so introduce it deliberately).
-
-**Flat, unmarked suite.**
-- What happens: all tests, including real LanceDB/model-loading paths, run in one CI job with no `integration` marker.
-- Why it matters: slower feedback and no way to skip heavyweight tests locally.
-- Do this instead: if adding slow tests, register a marker in `pyproject.toml` (`markers = [...]`) and document the deselection command; do not silently add multi-minute tests.
-
-**Stale documentation counts.**
-- What happens: `README.md` states 248 tests; actual collection is 296.
-- Why it matters: misleading onboarding and CI expectations.
-- Do this instead: update the README count when test modules are added.
+**Determinism and isolation checklist for new tests:**
+- Use `tmp_path` for every DB/index/cache path; never touch `data/` or `.cache/`.
+- Reset process-global state (`InferenceGate`, `st.session_state`, telemetry caches) with an autouse fixture.
+- Use fixed hashes (`"a" * 64`), fixed timestamps, and seeded vectors.
+- Mock only the external boundary; keep real SQLite/LanceDB/Pydantic in the loop.
+- Add `-> None` and a requirement-tagged one-line docstring.
+- Run `ruff check .`, `ruff format .`, then `python -m pytest tests/ -q` before committing.
 
 ---
 
