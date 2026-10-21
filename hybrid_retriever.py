@@ -646,7 +646,7 @@ class HybridRetriever:
                 search_mode="hybrid",
             )
 
-        candidate_pool = max(k * 4 if doc_id else k * 2, 10)
+        candidate_pool = max(k * 5 if doc_id else k * 4, 30)
 
         # 1. Dense vector search
         dense_matches: list[dict[str, Any]] = []

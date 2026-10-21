@@ -239,18 +239,38 @@ class DoclingReader:
                 chunk_index = 0
                 current_offset = 0
 
-                for item in items:
-                    item_start = page_text.find(item, current_offset)
-                    if item_start == -1:
-                        item_start = current_offset
-                    item_end = item_start + len(item)
-                    current_offset = item_end
+                # Group consecutive non-table items into coherent blocks
+                blocks: list[tuple[str, bool]] = []  # (content, is_table)
+                text_group: list[str] = []
 
-                    # If item is a markdown table (starts with |), keep intact if reasonable length
-                    if item.startswith("|") and len(item) <= 2000:
+                def flush_group() -> None:
+                    if text_group:
+                        blocks.append(("\n\n".join(text_group).strip(), False))
+                        text_group.clear()
+
+                for item in items:
+                    item_str = item.strip()
+                    if not item_str:
+                        continue
+                    if item_str.startswith("|") and len(item_str) <= 2000:
+                        flush_group()
+                        blocks.append((item_str, True))
+                    else:
+                        text_group.append(item_str)
+
+                flush_group()
+
+                for block_content, is_tbl in blocks:
+                    if is_tbl:
+                        item_start = page_text.find(block_content, current_offset)
+                        if item_start == -1:
+                            item_start = current_offset
+                        item_end = item_start + len(block_content)
+                        current_offset = item_end
+
                         chunk_id = f"{chunk_prefix}_p{page_num}_{chunk_index:04d}"
                         chunk_model = Chunk(
-                            content=item,
+                            content=block_content,
                             filename=self.filename,
                             page=page_num,
                             chunk_id=chunk_id,
@@ -263,17 +283,16 @@ class DoclingReader:
                         page_chunks_added += 1
                         chunk_index += 1
                     else:
-                        sub_chunks = text_splitter.split_text(item)
-                        sub_offset = item_start
+                        sub_chunks = text_splitter.split_text(block_content)
                         for sc in sub_chunks:
                             content = sc.strip()
                             if not content:
                                 continue
-                            sc_start = page_text.find(content, sub_offset)
+                            sc_start = page_text.find(content, current_offset)
                             if sc_start == -1:
-                                sc_start = sub_offset
+                                sc_start = current_offset
                             sc_end = sc_start + len(content)
-                            sub_offset = sc_end
+                            current_offset = sc_start + 1
 
                             chunk_id = f"{chunk_prefix}_p{page_num}_{chunk_index:04d}"
                             chunk_model = Chunk(
@@ -298,6 +317,7 @@ class DoclingReader:
                         char_count=len(page_text),
                         error=None,
                         num_chunks=page_chunks_added,
+                        page_text=page_text,
                     )
                 )
 

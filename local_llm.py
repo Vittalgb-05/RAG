@@ -249,9 +249,28 @@ class AiModel:
                     "Please provide an indexed retriever (LocalEmbedding or HybridRetriever) or explicit RetrievalResult."
                 )
 
-            # Contextualize search query with previous user question if history exists
+            # Contextualize search query ONLY if current prompt is an ambiguous short follow-up
             search_query = prompt
-            if chat_history:
+            tokens = prompt.strip().lower().split()
+            is_short_followup = len(tokens) <= 4 and any(
+                t
+                in {
+                    "it",
+                    "that",
+                    "this",
+                    "these",
+                    "those",
+                    "they",
+                    "them",
+                    "why",
+                    "how",
+                    "more",
+                    "elaborate",
+                    "details",
+                }
+                for t in tokens
+            )
+            if is_short_followup and chat_history:
                 last_user_msgs = [
                     m["content"]
                     for m in chat_history

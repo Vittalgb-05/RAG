@@ -294,6 +294,8 @@ def render_chat_view(
                 if v_data:
                     if v_data.get("abstention_detected"):
                         st.caption("Explicit abstention — no document evidence found.")
+                    elif v_data.get("total_citations", 0) == 0:
+                        st.caption("Ungrounded response — no evidence citations ([E#]) were included in the answer.")
                     elif v_data.get("is_valid"):
                         precision = v_data.get("precision", 1.0)
                         st.caption(f"Verified Grounding ({precision:.0%} citation precision)")
@@ -359,7 +361,13 @@ def render_chat_view(
 
         history_to_pass = st.session_state.chat_history[:-1][-10:]
         search_query = effective_prompt
-        if history_to_pass:
+        # Contextualize search query ONLY if current prompt is an ambiguous short follow-up
+        tokens = effective_prompt.strip().lower().split()
+        is_short_followup = len(tokens) <= 4 and any(
+            t in {"it", "that", "this", "these", "those", "they", "them", "why", "how", "more", "elaborate", "details"}
+            for t in tokens
+        )
+        if is_short_followup and history_to_pass:
             last_user_msgs = [
                 m["content"]
                 for m in history_to_pass
@@ -368,14 +376,24 @@ def render_chat_view(
             if last_user_msgs:
                 search_query = f"{last_user_msgs[-1]} {effective_prompt}"
 
+        # Target document: explicit filter or auto-detected from query
+        doc_filter = None if selected_filter == "all" else selected_filter
+        if doc_filter is None and st.session_state.get("document_metadata"):
+            prompt_lower = effective_prompt.lower()
+            for did, meta in st.session_state.document_metadata.items():
+                fn = meta.get("filename", "").lower()
+                stem = Path(fn).stem.lower()
+                if fn in prompt_lower or (len(stem) >= 3 and stem in prompt_lower):
+                    doc_filter = did
+                    break
+
         sources: list[str] = []
         retrieval_res = None
         active_retriever = st.session_state.get("hybrid_retriever") or st.session_state.local_embedding
 
         if active_retriever is not None:
-            doc_filter = None if selected_filter == "all" else selected_filter
             if hasattr(active_retriever, "search_hybrid"):
-                retrieval_res = active_retriever.search_hybrid(search_query, k=5, doc_id=doc_filter)
+                retrieval_res = active_retriever.search_hybrid(search_query, k=8, doc_id=doc_filter)
                 sources = retrieval_res.source_labels()
             else:
                 results = active_retriever.search(search_query, k=10)
@@ -409,6 +427,8 @@ def render_chat_view(
                 verification = ai_model.validate_response(full_response, retrieval_res)
                 if verification.abstention_detected:
                     st.caption("Explicit abstention — no document evidence found.")
+                elif verification.total_citations == 0:
+                    st.caption("Ungrounded response — no evidence citations ([E#]) were included in the answer.")
                 elif verification.is_valid:
                     precision = verification.precision
                     st.caption(f"Verified Grounding ({precision:.0%} citation precision)")
@@ -417,6 +437,7 @@ def render_chat_view(
                     st.caption(f"Unverified Citations ({precision:.0%} citation precision)")
 
                 if snippets_data:
+                    cited_ranks = set(verification.cited_ranks) if verification.cited_ranks else set()
                     chips = [
                         render_citation_chip(
                             doc_id=s.get("doc_id", ""),
@@ -425,6 +446,7 @@ def render_chat_view(
                             rank=s.get("rank"),
                         )
                         for s in snippets_data
+                        if (not cited_ranks or s.get("rank") in cited_ranks)
                     ]
                     chip_html = " ".join(chips)
                     if hasattr(st, "html"):
@@ -432,9 +454,16 @@ def render_chat_view(
                     else:
                         st.markdown(chip_html, unsafe_allow_html=True)
 
-                    with st.expander("Cited Evidence & Source Context", expanded=False):
+                    expander_label = (
+                        "Cited Evidence & Source Context" if cited_ranks else "Retrieved Candidate Context (Uncited)"
+                    )
+                    with st.expander(expander_label, expanded=False):
                         for s in snippets_data:
-                            header = f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
+                            is_cited = s.get("rank") in cited_ranks
+                            header = (
+                                f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
+                                + (" — *Cited in response*" if is_cited else "")
+                            )
                             st.markdown(header)
                             snippet_text = sanitize_display_markdown(s.get("content", "").strip())
                             st.markdown(f"> {snippet_text}")
