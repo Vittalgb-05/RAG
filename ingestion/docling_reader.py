@@ -10,7 +10,9 @@ from collections import defaultdict
 import hashlib
 import io
 import logging
+import os
 from pathlib import Path
+import re
 from typing import Any
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -78,6 +80,52 @@ class DoclingReader:
         self.fallback_used: bool = False
 
     @staticmethod
+    def _split_table_markdown(table_md: str, max_chars: int = 1800) -> list[str]:
+        """Split a long markdown table into row-group chunks, repeating the header.
+
+        Tables longer than the previous 2,000-character threshold were routed through
+        the prose splitter, which cut rows arbitrarily and lost the header.  Each
+        returned chunk contains the header + separator so it remains interpretable.
+
+        Args:
+            table_md: Markdown table text.
+            max_chars: Maximum characters per output chunk.
+
+        Returns:
+            List of markdown table chunks (at least one).
+        """
+        lines = [ln for ln in table_md.splitlines() if ln.strip()]
+        if len(lines) <= 2:
+            return [table_md.strip()] if table_md.strip() else []
+
+        header: list[str] = []
+        body_start = 0
+        if len(lines) >= 2 and re.match(r"^\s*\|?[\s:|-]+\|?\s*$", lines[1]):
+            header = lines[:2]
+            body_start = 2
+        elif lines[0].lstrip().startswith("|"):
+            header = [lines[0]]
+            body_start = 1
+
+        prefix = "\n".join(header)
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = len(prefix)
+
+        for row in lines[body_start:]:
+            if current and current_len + len(row) + 1 > max_chars:
+                chunks.append("\n".join(header + current))
+                current = [row]
+                current_len = len(prefix) + len(row) + 1
+            else:
+                current.append(row)
+                current_len += len(row) + 1
+
+        if current:
+            chunks.append("\n".join(header + current))
+        return chunks or [table_md.strip()]
+
+    @staticmethod
     def _export_table_markdown(table_obj: Any, doc: Any = None) -> str:
         """Safely export a table to markdown, supplying parent doc to suppress deprecation warnings."""
         if not hasattr(table_obj, "export_to_markdown"):
@@ -127,6 +175,24 @@ class DoclingReader:
                 pipeline_options = PdfPipelineOptions()
                 pipeline_options.do_ocr = False
                 pipeline_options.do_table_structure = True
+                # Pin layout/table models to CPU.  Docling defaults to accelerator
+                # "auto" and would otherwise compete with llama-server for the 4 GB
+                # VRAM budget during ingestion.
+                try:
+                    from docling.datamodel.pipeline_options import AcceleratorDevice
+
+                    pipeline_options.accelerator_options.device = AcceleratorDevice.CPU
+                except (ImportError, AttributeError) as accel_err:
+                    logger.debug("Could not pin Docling accelerator to CPU: %s", accel_err)
+
+                # Optional local artifact directory for fully offline deployments.
+                # First run without pre-downloaded artifacts will fetch models from
+                # the HuggingFace cache/network; this is a model download, never
+                # document content egress, and is documented in docs/RUNBOOK.md.
+                artifacts_path = os.environ.get("DOCLING_ARTIFACTS_PATH")
+                if artifacts_path:
+                    pipeline_options.artifacts_path = artifacts_path
+
                 self._converter = DocumentConverter(
                     format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
                 )
@@ -252,9 +318,11 @@ class DoclingReader:
                     item_str = item.strip()
                     if not item_str:
                         continue
-                    if item_str.startswith("|") and len(item_str) <= 2000:
+                    if item_str.startswith("|"):
                         flush_group()
-                        blocks.append((item_str, True))
+                        for table_piece in self._split_table_markdown(item_str):
+                            if table_piece.strip():
+                                blocks.append((table_piece.strip(), True))
                     else:
                         text_group.append(item_str)
 
@@ -264,8 +332,8 @@ class DoclingReader:
                     if is_tbl:
                         item_start = page_text.find(block_content, current_offset)
                         if item_start == -1:
-                            item_start = current_offset
-                        item_end = item_start + len(block_content)
+                            item_start = min(current_offset, len(page_text))
+                        item_end = min(len(page_text), item_start + len(block_content))
                         current_offset = item_end
 
                         chunk_id = f"{chunk_prefix}_p{page_num}_{chunk_index:04d}"
@@ -290,9 +358,11 @@ class DoclingReader:
                                 continue
                             sc_start = page_text.find(content, current_offset)
                             if sc_start == -1:
-                                sc_start = current_offset
-                            sc_end = sc_start + len(content)
-                            current_offset = sc_start + 1
+                                sc_start = min(current_offset, len(page_text))
+                            sc_end = min(len(page_text), sc_start + len(content))
+                            # Overlapping splitter chunks legitimately share text, so
+                            # advance by one character to find the next overlap start.
+                            current_offset = min(sc_start + 1, len(page_text))
 
                             chunk_id = f"{chunk_prefix}_p{page_num}_{chunk_index:04d}"
                             chunk_model = Chunk(
