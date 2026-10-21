@@ -144,6 +144,20 @@ class AiModel:
         if hasattr(self.provider, "close"):
             self.provider.close()
 
+    def reset_turn_state(self) -> None:
+        """Clear per-turn retrieval, citation, and truncation state.
+
+        Called when the UI resets the session so the next question cannot reuse
+        evidence or verification results from the previous conversation.
+        """
+        self.last_retrieval_result = None
+        self.last_verification_result = None
+        self.last_truncation_warning = {
+            "prompt_truncated": False,
+            "context_truncated": False,
+            "history_truncated": False,
+        }
+
     def __enter__(self) -> "AiModel":
         return self
 

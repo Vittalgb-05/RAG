@@ -260,3 +260,21 @@ def test_direct_pdf_path_without_retriever_raises_error(mock_llama_provider) -> 
                 retrieval_result=None,
             )
         )
+
+
+def test_reset_turn_state_clears_prior_retrieval_and_verification(mock_llama_provider) -> None:
+    """Session reset must drop evidence and citation state from the previous turn."""
+    model = AiModel(provider=mock_llama_provider)
+    model.last_retrieval_result = MagicMock()
+    model.last_verification_result = MagicMock()
+    model.last_truncation_warning["prompt_truncated"] = True
+
+    model.reset_turn_state()
+
+    assert model.last_retrieval_result is None
+    assert model.last_verification_result is None
+    assert model.last_truncation_warning == {
+        "prompt_truncated": False,
+        "context_truncated": False,
+        "history_truncated": False,
+    }

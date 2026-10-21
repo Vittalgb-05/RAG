@@ -27,6 +27,7 @@ from core.local_llm import AiModel
 from core.logging_setup import suppress_torch_classes_scan_warning
 from ui.components import render_brand_header, render_status_pill
 from ui.hydration import hydrate_startup_state
+from ui.session_state import reset_in_memory_session
 from ui.theme import inject_custom_theme
 from ui.views import (
     render_chat_view,
@@ -56,40 +57,7 @@ def safe_has_secret(key: str) -> bool:
 
 def _reset_session_security_state() -> None:
     """Reset session security state, in-memory models, and cleanse credentials (WR-02)."""
-    st.session_state.doc_ids = set()
-    st.session_state.failed_doc_ids = set()
-    st.session_state.indexed_files = set()
-    st.session_state.document_metadata = {}
-    st.session_state.local_embedding = None
-    if st.session_state.get("hybrid_retriever"):
-        try:
-            st.session_state.hybrid_retriever.close()
-        except Exception:
-            pass
-    st.session_state.hybrid_retriever = None
-    st.session_state.chat_history = []
-    st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
-    st.session_state._startup_hydrated = False
-
-    for k in list(st.session_state.keys()):
-        if k.startswith("summary_"):
-            del st.session_state[k]
-
-    if st.session_state.get("active_cloud_provider"):
-        try:
-            st.session_state.active_cloud_provider.close()
-        except Exception:
-            pass
-    st.session_state.active_cloud_provider = None
-    st.session_state._cached_cloud_model = None
-    st.session_state._cached_cloud_key = None
-    st.session_state.cloud_mode = False
-    st.session_state.cloud_mode_toggle = False
-    st.session_state.settings_cloud_toggle = False
-    st.session_state.user_consented = False
-    st.session_state.selected_chat_doc = None
-    st.session_state.selected_summary_doc = None
-    st.session_state.cloud_api_keys = {"groq": "", "openai": "", "anthropic": ""}
+    reset_in_memory_session()
 
 
 # ------------------------------------------------------------------

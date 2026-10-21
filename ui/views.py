@@ -26,6 +26,7 @@ from ui.components import (
 from ui.ingestion_service import IngestionService
 from ui.lifecycle_service import LifecycleService
 from ui.sanitizer import sanitize_display_markdown
+from ui.session_state import reset_in_memory_session
 from ingestion.upload_validation import MAX_FILE_MB
 
 logger = logging.getLogger(__name__)
@@ -865,9 +866,7 @@ def render_settings_view(
     col_cs, col_cl = st.columns(2)
     with col_cs:
         if st.button("Reset In-Memory Session", use_container_width=True):
-            st.session_state.chat_history = []
-            st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
-            st.session_state.failed_doc_ids = set()
+            reset_in_memory_session()
             st.toast("In-memory session state cleared.")
             st.rerun()
     with col_cl:

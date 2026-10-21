@@ -119,6 +119,18 @@ def test_uploader_key_increments_on_session_reset():
     assert len(st.session_state.failed_doc_ids) == 0
 
 
+def test_session_reset_clears_ai_model_turn_state():
+    """Clear Session must reset per-turn retrieval/citation state on the AiModel (P1)."""
+    from main import _reset_session_security_state
+
+    fake_model = MagicMock()
+    st.session_state.ai_model = fake_model
+
+    _reset_session_security_state()
+
+    fake_model.reset_turn_state.assert_called_once()
+
+
 def test_restart_recovery_hydration(tmp_path):
     """Verify documents stored on disk are hydrated into session_state on restart (P0-2)."""
     db_file = tmp_path / "smoke_docs.db"
