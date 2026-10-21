@@ -23,11 +23,23 @@ _HTML_A_PATTERN = re.compile(
 # Regex matching raw script tags
 _HTML_SCRIPT_PATTERN = re.compile(r"<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>", re.IGNORECASE)
 
-# Regex matching unsafe embedded HTML tags (iframe, object, embed, style, link)
+# Regex matching unsafe embedded HTML tags (iframe, object, embed, style, link,
+# media, forms, and document-level redirection tags)
+_UNSAFE_TAGS = "iframe|object|embed|style|link|video|audio|source|track|form|input|button|base|meta"
 _HTML_UNSAFE_EMBEDS = re.compile(
-    r"<(?:iframe|object|embed|style|link)\b[^<]*(?:(?!<\/(?:iframe|object|embed|style|link)>)<[^<]*)*<\/(?:iframe|object|embed|style|link)>|<(?:iframe|object|embed|style|link)\b[^>]*\/?>",
+    rf"<(?:{_UNSAFE_TAGS})\b[^<]*(?:(?!<\/(?:{_UNSAFE_TAGS})>)<[^<]*)*<\/(?:{_UNSAFE_TAGS})>"
+    rf"|<(?:{_UNSAFE_TAGS})\b[^>]*\/?>",
     re.IGNORECASE,
 )
+
+# Markdown autolinks: <https://example.com>
+_MD_AUTOLINK_PATTERN = re.compile(r"<(https?://[^>\s]+|//[^>\s]+)>", re.IGNORECASE)
+
+# Bare URLs (Streamlit/CommonMark may render these as clickable links)
+_BARE_URL_PATTERN = re.compile(r"(?<![\w`])(?:https?://|//)[^\s<>()\[\]`]+", re.IGNORECASE)
+
+# Reference-style link definitions: [id]: https://example.com
+_MD_REF_DEF_PATTERN = re.compile(r"^\s*\[[^\]]+\]:\s*(?:https?://|//)\S+.*$", re.MULTILINE | re.IGNORECASE)
 
 
 def sanitize_markdown_for_local(text: str, allow_external: bool = False) -> str:
@@ -74,6 +86,14 @@ def sanitize_markdown_for_local(text: str, allow_external: bool = False) -> str:
             return f"`{label}` *(external link blocked)*"
 
         sanitized = _HTML_A_PATTERN.sub(_replace_html_a, sanitized)
+
+        # Reference definitions would make `[text][id]` clickable.
+        sanitized = _MD_REF_DEF_PATTERN.sub("`[external link definition blocked]`", sanitized)
+
+        # Autolinks and bare URLs are clickable in CommonMark/Streamlit even without
+        # explicit Markdown link syntax.
+        sanitized = _MD_AUTOLINK_PATTERN.sub("`[external link blocked]`", sanitized)
+        sanitized = _BARE_URL_PATTERN.sub("`[external link blocked]`", sanitized)
 
     return sanitized
 
