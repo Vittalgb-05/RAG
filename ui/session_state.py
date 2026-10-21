@@ -6,7 +6,11 @@ cannot drift apart. Both must drop prior evidence, credentials, and hydration
 flags; a partial reset can leak retrieved document text into a new conversation.
 """
 
+import logging
+
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 
 def reset_in_memory_session() -> None:
@@ -21,14 +25,16 @@ def reset_in_memory_session() -> None:
     if ai_model is not None and hasattr(ai_model, "reset_turn_state"):
         try:
             ai_model.reset_turn_state()
-        except Exception:
-            pass
+        except Exception as reset_err:
+            # A failed reset leaves prior evidence/citation state reachable, so
+            # surface it rather than silently continuing with a partial reset.
+            logger.warning("Failed to reset AiModel turn state during session reset: %s", reset_err)
 
     if st.session_state.get("hybrid_retriever"):
         try:
             st.session_state.hybrid_retriever.close()
-        except Exception:
-            pass
+        except Exception as close_err:
+            logger.warning("Failed to close HybridRetriever during session reset: %s", close_err)
     st.session_state.hybrid_retriever = None
     st.session_state.chat_history = []
     st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
@@ -41,8 +47,8 @@ def reset_in_memory_session() -> None:
     if st.session_state.get("active_cloud_provider"):
         try:
             st.session_state.active_cloud_provider.close()
-        except Exception:
-            pass
+        except Exception as close_err:
+            logger.warning("Failed to close cloud provider during session reset: %s", close_err)
     st.session_state.active_cloud_provider = None
     st.session_state._cached_cloud_model = None
     st.session_state._cached_cloud_key = None

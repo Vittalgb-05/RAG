@@ -6,13 +6,39 @@ application restarts. Uses per-operation connection lifecycles to ensure compati
 with Windows file locks and Streamlit execution loops.
 """
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 import json
+import logging
 from pathlib import Path
+import random
 import sqlite3
-from typing import Any
+import time
+from typing import Any, TypeVar
 from core.models import BBox, Chunk, Document, EvidenceElement, Page, SummaryResult
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# Bounded retry policy for SQLite write transactions.  Streamlit reruns and
+# multi-tab use can produce transient SQLITE_BUSY/LOCKED errors; retrying a few
+# times with exponential backoff plus jitter resolves contention without
+# masking genuine failures (schema errors, constraint violations, disk errors).
+WRITE_MAX_ATTEMPTS = 3
+_WRITE_RETRY_BASE_DELAY = 0.05
+_WRITE_RETRY_JITTER = 0.05
+_SQLITE_BUSY_CODES = {5, 6}  # SQLITE_BUSY, SQLITE_LOCKED
+
+
+def _is_sqlite_busy(error: BaseException) -> bool:
+    """Return True only for transient SQLite lock/busy failures."""
+    code = getattr(error, "sqlite_errorcode", None)
+    if code in _SQLITE_BUSY_CODES:
+        return True
+    message = str(error).lower()
+    return "database is locked" in message or "database table is locked" in message or "sqlite_busy" in message
+
 
 SCHEMA_V1_DDL = [
     """
@@ -126,8 +152,7 @@ class DocStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize schema and verify user_version
-        with self._connect() as conn:
-            self._apply_migrations(conn)
+        self._execute_write(self._apply_migrations)
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -139,14 +164,57 @@ class DocStore:
             sqlite3.Connection: Configured SQLite connection.
         """
         conn = sqlite3.connect(str(self.db_path), timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
-        conn.execute("PRAGMA foreign_keys = ON;")
         try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout=5000;")
+            conn.execute("PRAGMA foreign_keys = ON;")
             yield conn
         finally:
+            # Also closes the connection when a PRAGMA raises SQLITE_BUSY during
+            # setup, so retries cannot leak connections.
             conn.close()
+
+    def _execute_write(self, operation: Callable[[sqlite3.Connection], T]) -> T:
+        """Run a write operation in its own connection, retrying transient locks.
+
+        SQLite raises ``OperationalError: database is locked`` when another
+        connection holds a write lock past the configured busy timeout.  Each
+        attempt uses a fresh connection because a rolled-back connection cannot
+        be reused safely.  Non-busy errors are re-raised immediately.
+
+        Args:
+            operation: Callable receiving a configured connection.  It must not
+                commit; the wrapper commits after the operation returns.
+
+        Returns:
+            The value returned by ``operation``.
+        """
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(1, WRITE_MAX_ATTEMPTS + 1):
+            try:
+                with self._connect() as conn:
+                    result = operation(conn)
+                    conn.commit()
+                    return result
+            except sqlite3.OperationalError as err:
+                if not _is_sqlite_busy(err) or attempt >= WRITE_MAX_ATTEMPTS:
+                    raise
+                last_error = err
+                delay = _WRITE_RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0.0, _WRITE_RETRY_JITTER)
+                logger.warning(
+                    "SQLite busy on %s (attempt %d/%d): %s. Retrying in %.3fs.",
+                    self.db_path.name,
+                    attempt,
+                    WRITE_MAX_ATTEMPTS,
+                    err,
+                    delay,
+                )
+                time.sleep(delay)
+
+        # Unreachable while WRITE_MAX_ATTEMPTS >= 1; keeps type checkers happy.
+        assert last_error is not None
+        raise last_error
 
     def _apply_migrations(self, conn: sqlite3.Connection) -> None:
         """
@@ -160,8 +228,7 @@ class DocStore:
                 for statement in statements:
                     conn.execute(statement)
                 conn.execute(f"PRAGMA user_version = {version};")
-                conn.commit()
-                print(f"[DocStore] Applied migration v{version} to {self.db_path.name}")
+                logger.info("Applied migration v%d to %s", version, self.db_path.name)
 
     def upsert_document(self, doc: Document) -> None:
         """
@@ -184,21 +251,17 @@ class DocStore:
             upload_time = excluded.upload_time,
             num_chunks = excluded.num_chunks;
         """
-        with self._connect() as conn:
-            conn.execute(
-                query,
-                (
-                    doc.doc_id,
-                    doc.filename,
-                    doc.sha256,
-                    doc.size_bytes,
-                    doc.num_pages,
-                    doc.status,
-                    doc.upload_time,
-                    doc.num_chunks,
-                ),
-            )
-            conn.commit()
+        params = (
+            doc.doc_id,
+            doc.filename,
+            doc.sha256,
+            doc.size_bytes,
+            doc.num_pages,
+            doc.status,
+            doc.upload_time,
+            doc.num_chunks,
+        )
+        self._execute_write(lambda conn: conn.execute(query, params))
 
     def get_document(self, doc_id: str) -> Document | None:
         """
@@ -284,9 +347,7 @@ class DocStore:
                     p.num_chunks,
                 )
             )
-        with self._connect() as conn:
-            conn.executemany(query, params)
-            conn.commit()
+        self._execute_write(lambda conn: conn.executemany(query, params))
 
     def record_ingestion(
         self,
@@ -363,7 +424,7 @@ class DocStore:
             for e in evidence
         ]
 
-        with self._connect() as conn:
+        def _write(conn: sqlite3.Connection) -> None:
             try:
                 conn.execute("DELETE FROM chunks WHERE doc_id = ?;", (doc.doc_id,))
                 conn.execute("DELETE FROM pages WHERE doc_id = ?;", (doc.doc_id,))
@@ -430,10 +491,11 @@ class DocStore:
                         """,
                         evidence_params,
                     )
-                conn.commit()
-            except Exception:
+            except sqlite3.Error:
                 conn.rollback()
                 raise
+
+        self._execute_write(_write)
 
     def record_page(self, page: Page) -> None:
         """
@@ -506,9 +568,7 @@ class DocStore:
                 )
             )
 
-        with self._connect() as conn:
-            conn.executemany(query, params)
-            conn.commit()
+        self._execute_write(lambda conn: conn.executemany(query, params))
 
     def get_chunks_for_doc(self, doc_id: str) -> list[Chunk]:
         """
@@ -576,9 +636,7 @@ class DocStore:
                 )
             )
 
-        with self._connect() as conn:
-            conn.executemany(query, params)
-            conn.commit()
+        self._execute_write(lambda conn: conn.executemany(query, params))
 
     def get_evidence_for_doc(self, doc_id: str) -> list[EvidenceElement]:
         """
@@ -631,21 +689,17 @@ class DocStore:
             created_at = excluded.created_at,
             model_version = excluded.model_version;
         """
-        with self._connect() as conn:
-            conn.execute(
-                query,
-                (
-                    summary.summary_id,
-                    summary.doc_id,
-                    summary.sha256,
-                    summary.profile,
-                    summary.summary_text,
-                    page_refs_json,
-                    summary.created_at,
-                    summary.model_version,
-                ),
-            )
-            conn.commit()
+        params = (
+            summary.summary_id,
+            summary.doc_id,
+            summary.sha256,
+            summary.profile,
+            summary.summary_text,
+            page_refs_json,
+            summary.created_at,
+            summary.model_version,
+        )
+        self._execute_write(lambda conn: conn.execute(query, params))
 
     def get_summary(
         self,
@@ -750,10 +804,11 @@ class DocStore:
         if not isinstance(doc_id, str):
             raise TypeError("doc_id must be a string")
 
-        with self._connect() as conn:
+        def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.execute("DELETE FROM document_summaries WHERE doc_id = ?;", (doc_id,))
-            conn.commit()
             return cursor.rowcount
+
+        return self._execute_write(_write)
 
     def delete_document(self, doc_id: str) -> bool:
         """
@@ -768,27 +823,32 @@ class DocStore:
         if not isinstance(doc_id, str):
             raise TypeError("doc_id must be a string")
 
-        with self._connect() as conn:
+        def _write(conn: sqlite3.Connection) -> bool:
             conn.execute("DELETE FROM chunks WHERE doc_id = ?;", (doc_id,))
             conn.execute("DELETE FROM pages WHERE doc_id = ?;", (doc_id,))
             conn.execute("DELETE FROM evidence_elements WHERE doc_id = ?;", (doc_id,))
             conn.execute("DELETE FROM document_summaries WHERE doc_id = ?;", (doc_id,))
             cursor = conn.execute("DELETE FROM documents WHERE doc_id = ?;", (doc_id,))
-            conn.commit()
             return cursor.rowcount > 0
+
+        return self._execute_write(_write)
 
     def purge_all(self) -> None:
         """
         Purge all document records, chunks, pages, evidence elements, and cached summaries from SQLite.
         """
-        with self._connect() as conn:
+
+        def _delete_all(conn: sqlite3.Connection) -> None:
             conn.execute("DELETE FROM chunks;")
             conn.execute("DELETE FROM pages;")
             conn.execute("DELETE FROM evidence_elements;")
             conn.execute("DELETE FROM document_summaries;")
             conn.execute("DELETE FROM documents;")
-            conn.commit()
-            conn.execute("VACUUM;")
+
+        self._execute_write(_delete_all)
+        # VACUUM cannot run inside a transaction, so it executes after the
+        # delete transaction commits (and gets its own retry policy).
+        self._execute_write(lambda conn: conn.execute("VACUUM;"))
 
     def count_documents(self) -> int:
         """Count total persisted documents in SQLite.

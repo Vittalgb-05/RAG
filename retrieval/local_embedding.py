@@ -9,9 +9,10 @@ import os
 from pathlib import Path
 import warnings
 
-os.environ["USE_TF"] = "0"
-os.environ["USE_TORCH"] = "1"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+# Default to the PyTorch backend without overriding an explicit operator choice.
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 from sentence_transformers import SentenceTransformer
 

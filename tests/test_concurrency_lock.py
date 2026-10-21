@@ -198,6 +198,35 @@ def test_ai_model_streaming_busy_yields_warning(monkeypatch: pytest.MonkeyPatch)
     assert "System is busy processing another inference request" in tokens[0]
 
 
+def test_streaming_generator_close_releases_gate() -> None:
+    """Closing a partially consumed stream must release InferenceGate (abandoned client)."""
+    provider = DummyProvider()
+    model = AiModel(provider=provider)
+
+    stream = model.ask_a_question_from_pdf_stream(prompt="hello")
+    assert next(stream) == "token1 "
+    assert InferenceGate.is_locked()
+
+    stream.close()
+
+    assert not InferenceGate.is_locked(), "Closing the generator must release the inference gate"
+
+
+def test_streaming_consumer_exception_releases_gate() -> None:
+    """An exception thrown into the stream must still run the release finally-block."""
+    provider = DummyProvider()
+    model = AiModel(provider=provider)
+
+    stream = model.ask_a_question_from_pdf_stream(prompt="hello")
+    assert next(stream) == "token1 "
+    assert InferenceGate.is_locked()
+
+    with pytest.raises(RuntimeError, match="consumer aborted"):
+        stream.throw(RuntimeError("consumer aborted"))
+
+    assert not InferenceGate.is_locked(), "Stream failure must release the inference gate"
+
+
 def test_summarizer_guarded_by_inference_gate() -> None:
     """Test Summarizer.summarize_document executes with InferenceGate locked."""
     from core.models import Page

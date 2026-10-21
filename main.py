@@ -24,7 +24,8 @@ import streamlit as st
 from core.doc_store import DocStore
 from providers.litellm_provider import LiteLLMProvider
 from core.local_llm import AiModel
-from core.logging_setup import suppress_torch_classes_scan_warning
+from core.logging_setup import configure_logging, suppress_torch_classes_scan_warning
+from providers.model_provider import HealthStatus, ProviderCapabilities
 from ui.components import render_brand_header, render_status_pill
 from ui.hydration import hydrate_startup_state
 from ui.session_state import reset_in_memory_session
@@ -36,6 +37,15 @@ from ui.views import (
     render_sidebar_documents,
     render_summarizer_view,
 )
+
+APP_DIR = Path(__file__).resolve().parent
+DOC_STORE_PATH = APP_DIR / "data" / "documents.db"
+LOG_DIR = APP_DIR / "data" / "logs"
+CACHE_DIR = APP_DIR / ".cache"
+
+# Install the single application logging configuration before any startup work so
+# an initialization failure is captured instead of printed to a blank page.
+configure_logging(log_dir=LOG_DIR)
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +60,18 @@ def safe_has_secret(key: str) -> bool:
     try:
         if hasattr(st, "secrets"):
             return key in st.secrets
-    except Exception:
+    except (FileNotFoundError, KeyError, AttributeError):
+        # Streamlit raises FileNotFoundError when no secrets.toml exists.
         return False
     return False
+
+
+def _render_startup_failure(title: str, detail: str, remediation: str) -> None:
+    """Render an actionable startup error instead of a blank Streamlit page."""
+    st.error(title)
+    st.markdown(f"**How to fix it:** {remediation}")
+    with st.expander("Technical details", expanded=False):
+        st.code(detail)
 
 
 def _reset_session_security_state() -> None:
@@ -105,13 +124,63 @@ for key, default in [
 # Persistent Storage & Hydration
 # ------------------------------------------------------------------
 
-APP_DIR = Path(__file__).resolve().parent
-DOC_STORE_PATH = APP_DIR / "data" / "documents.db"
-CACHE_DIR = APP_DIR / ".cache"
-doc_store = DocStore(DOC_STORE_PATH)
 
-# Hydrate documents and retriever from SQLite & LanceDB on initial connection (P0-2)
-hydrate_startup_state(doc_store)
+@st.cache_resource(show_spinner=False)
+def get_doc_store() -> DocStore:
+    """Return the process-wide SQLite document store shared across sessions.
+
+    Construction is cached so Streamlit reruns do not reopen/re-migrate the
+    database, and startup failures can be rendered with actionable guidance.
+    """
+    return DocStore(DOC_STORE_PATH)
+
+
+try:
+    doc_store = get_doc_store()
+except Exception as startup_err:
+    # Startup boundary: surface guidance instead of Streamlit's blank error page.
+    logger.exception("Failed to initialize the document store at %s", DOC_STORE_PATH)
+    _render_startup_failure(
+        "The document database could not be opened.",
+        f"{type(startup_err).__name__}: {startup_err}",
+        f"Ensure `{DOC_STORE_PATH.parent}` exists and is writable, then reload. "
+        "If the database file is corrupt, move it aside (a fresh empty store will be created) "
+        "and re-ingest your PDFs.",
+    )
+    st.stop()
+
+
+def _make_hydration_progress_reporter():
+    """Build a lazy progress reporter so the bar only appears when repair is needed."""
+    state = {"bar": None}
+
+    def report(completed: int, total: int, label: str) -> None:
+        try:
+            bar = state["bar"]
+            if bar is None:
+                bar = st.progress(0.0, text=label)
+                state["bar"] = bar
+            bar.progress(min(completed / max(total, 1), 1.0), text=label)
+        except Exception as progress_err:  # pragma: no cover - UI boundary
+            logger.debug("Could not render hydration progress: %s", progress_err)
+
+    def finish() -> None:
+        bar = state["bar"]
+        if bar is not None:
+            try:
+                bar.empty()
+            except Exception as progress_err:  # pragma: no cover - UI boundary
+                logger.debug("Could not clear hydration progress: %s", progress_err)
+
+    return report, finish
+
+
+_report_hydration, _finish_hydration = _make_hydration_progress_reporter()
+try:
+    # Hydrate documents and retriever from SQLite & LanceDB on initial connection (P0-2).
+    hydrate_startup_state(doc_store, progress_callback=_report_hydration)
+finally:
+    _finish_hydration()
 
 
 def get_session_ai_model() -> AiModel:
@@ -124,36 +193,56 @@ def get_session_ai_model() -> AiModel:
 
 load_ai_model = get_session_ai_model
 
-ai_model = load_ai_model()
+try:
+    ai_model = load_ai_model()
+except Exception as model_err:
+    logger.exception("Failed to initialize the inference model")
+    _render_startup_failure(
+        "The inference engine could not be initialized.",
+        f"{type(model_err).__name__}: {model_err}",
+        "Start the local llama-server (see the README) or check `LLAMA_SERVER_URL`. "
+        "Cloud mode requires a consented provider and a valid API key.",
+    )
+    st.stop()
 st.session_state.ai_model = ai_model
 
 # Synchronize cloud provider if enabled with user consent
-if st.session_state.cloud_mode and st.session_state.user_consented:
-    active_key = st.session_state.cloud_api_keys.get(st.session_state.cloud_provider, "")
-    cached_prov = getattr(st.session_state, "active_cloud_provider", None)
-    cached_model = getattr(st.session_state, "_cached_cloud_model", None)
-    cached_key = getattr(st.session_state, "_cached_cloud_key", None)
+try:
+    if st.session_state.cloud_mode and st.session_state.user_consented:
+        active_key = st.session_state.cloud_api_keys.get(st.session_state.cloud_provider, "")
+        cached_prov = getattr(st.session_state, "active_cloud_provider", None)
+        cached_model = getattr(st.session_state, "_cached_cloud_model", None)
+        cached_key = getattr(st.session_state, "_cached_cloud_key", None)
 
-    if cached_prov is None or cached_model != st.session_state.cloud_model or cached_key != active_key:
-        if cached_prov is not None and hasattr(cached_prov, "close"):
-            cached_prov.close()
-        cached_prov = LiteLLMProvider(
-            model_name=st.session_state.cloud_model,
-            api_key=active_key or None,
-            user_consented=True,
-        )
-        st.session_state.active_cloud_provider = cached_prov
-        st.session_state._cached_cloud_model = st.session_state.cloud_model
-        st.session_state._cached_cloud_key = active_key
+        if cached_prov is None or cached_model != st.session_state.cloud_model or cached_key != active_key:
+            if cached_prov is not None and hasattr(cached_prov, "close"):
+                cached_prov.close()
+            cached_prov = LiteLLMProvider(
+                model_name=st.session_state.cloud_model,
+                api_key=active_key or None,
+                user_consented=True,
+            )
+            st.session_state.active_cloud_provider = cached_prov
+            st.session_state._cached_cloud_model = st.session_state.cloud_model
+            st.session_state._cached_cloud_key = active_key
 
-    ai_model.set_cloud_mode(True, cloud_provider=cached_prov)
-else:
-    if hasattr(st.session_state, "active_cloud_provider") and st.session_state.active_cloud_provider is not None:
-        if hasattr(st.session_state.active_cloud_provider, "close"):
-            st.session_state.active_cloud_provider.close()
-        st.session_state.active_cloud_provider = None
-        st.session_state._cached_cloud_model = None
-        st.session_state._cached_cloud_key = None
+        ai_model.set_cloud_mode(True, cloud_provider=cached_prov)
+    else:
+        if hasattr(st.session_state, "active_cloud_provider") and st.session_state.active_cloud_provider is not None:
+            if hasattr(st.session_state.active_cloud_provider, "close"):
+                st.session_state.active_cloud_provider.close()
+            st.session_state.active_cloud_provider = None
+            st.session_state._cached_cloud_model = None
+            st.session_state._cached_cloud_key = None
+        ai_model.set_cloud_mode(False)
+except Exception as cloud_err:
+    # Never leave the user on a blank page because cloud state is malformed;
+    # fall back to strictly local inference and report the problem.
+    logger.exception("Cloud provider synchronization failed; falling back to local mode.")
+    st.session_state.cloud_mode = False
+    st.session_state.cloud_mode_toggle = False
+    st.session_state.user_consented = False
+    st.warning(f"Cloud mode could not be enabled: {cloud_err}. Continuing in local mode.")
     ai_model.set_cloud_mode(False)
 
 # Probe provider health at most once every 5 seconds.  Streamlit reruns this script
@@ -168,8 +257,24 @@ if (
     or _snapshot.get("provider") is not ai_model.provider
     or (_now - _last_probe) >= _HEALTH_TTL_SECONDS
 ):
-    health = ai_model.check_health()
-    caps = ai_model.get_capabilities()
+    try:
+        health = ai_model.check_health()
+        caps = ai_model.get_capabilities()
+    except Exception as health_err:
+        # Never let a provider probe blank the app; present an offline state with
+        # the underlying reason so the operator can act on it.
+        logger.exception("Provider health probe failed")
+        health = HealthStatus(
+            status="error",
+            message=f"Health probe failed: {health_err}",
+        )
+        caps = ProviderCapabilities(
+            model_name="unavailable",
+            context_window=4096,
+            supports_vision=False,
+            is_local=True,
+            supports_streaming=False,
+        )
     st.session_state._health_snapshot = {"health": health, "caps": caps, "provider": ai_model.provider}
     st.session_state._health_probe_ts = _now
 else:

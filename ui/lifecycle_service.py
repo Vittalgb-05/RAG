@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 import shutil
+import sqlite3
 from typing import Any
 
 from core.doc_store import DocStore
@@ -49,8 +50,16 @@ class LifecycleService:
             try:
                 self.retriever.delete_document(doc_id)
             except Exception as err:
-                logger.error("Vector deletion failed for %s; aborting delete: %s", doc_id, err)
+                # Re-raised: a partially deleted document is worse than a
+                # visible, retryable failure, so never swallow this boundary.
+                logger.error("Vector deletion failed for %s; aborting delete: %s", doc_id, err, exc_info=True)
                 raise
+        else:
+            logger.warning(
+                "No vector retriever available; deleting %s from SQLite only. "
+                "Existing vectors may be resurrected by hydration.",
+                doc_id,
+            )
 
         # 2. SQLite deletion (chunks, pages, evidence, summaries, doc)
         deleted = self.doc_store.delete_document(doc_id)
@@ -61,7 +70,8 @@ class LifecycleService:
                 c_dir = cache_dir_for(self.cache_dir, sha256)
                 if c_dir.exists():
                     shutil.rmtree(c_dir)
-            except Exception as cache_err:
+            except OSError as cache_err:
+                # Best-effort artifact cleanup: a leftover cache cannot serve answers.
                 logger.warning("Cache deletion notice for %s: %s", doc_id, cache_err)
 
         # 4. Session state synchronization
@@ -105,14 +115,16 @@ class LifecycleService:
             try:
                 self.retriever.purge_all()
             except Exception as err:
-                logger.error("LanceDB purge failed: %s", err)
+                logger.error("LanceDB purge failed: %s", err, exc_info=True)
                 failures.append(f"vector index: {err}")
+        else:
+            logger.warning("No vector retriever available; purging SQLite and disk cache only.")
 
         # 2. SQLite purge with VACUUM
         try:
             self.doc_store.purge_all()
-        except Exception as err:
-            logger.error("SQLite purge failed: %s", err)
+        except sqlite3.Error as err:
+            logger.error("SQLite purge failed: %s", err, exc_info=True)
             failures.append(f"SQLite: {err}")
 
         # 3. Full disk cache removal (best-effort artifact cleanup)
@@ -120,7 +132,7 @@ class LifecycleService:
             if self.cache_dir.exists():
                 shutil.rmtree(self.cache_dir)
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as cache_err:
+        except OSError as cache_err:
             logger.warning("Disk cache purge notice: %s", cache_err)
             failures.append(f"disk cache: {cache_err}")
 
@@ -155,7 +167,11 @@ class LifecycleService:
             True if document was successfully reindexed, False otherwise.
         """
         chunks = self.doc_store.get_chunks_for_doc(doc_id)
-        if not chunks or self.retriever is None:
+        if not chunks:
+            logger.warning("Cannot reindex %s: no stored chunks.", doc_id)
+            return False
+        if self.retriever is None:
+            logger.warning("Cannot reindex %s: no vector retriever available.", doc_id)
             return False
 
         if self.embedding is None:
@@ -183,6 +199,6 @@ class LifecycleService:
 
             logger.info("Successfully reindexed %d chunks for doc_id=%s", len(chunks), doc_id)
             return True
-        except Exception as err:
-            logger.error("Failed to reindex document %s: %s", doc_id, err)
+        except (OSError, RuntimeError, ValueError) as err:
+            logger.error("Failed to reindex document %s: %s", doc_id, err, exc_info=True)
             return False

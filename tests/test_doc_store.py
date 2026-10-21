@@ -667,3 +667,88 @@ def test_purge_all_empties_all_tables(tmp_path: Path):
     store.purge_all()
     assert store.count_documents() == 0
     assert store.list_documents() == []
+
+
+def _retry_test_document(doc_id: str = "doc_retry") -> Document:
+    return Document(
+        doc_id=doc_id,
+        filename="retry.pdf",
+        sha256="9" * 64,
+        size_bytes=100,
+        num_pages=1,
+        status="indexed",
+        upload_time="2026-10-22T00:00:00Z",
+    )
+
+
+def test_write_retries_busy_then_succeeds(tmp_path: Path, monkeypatch):
+    """A transient 'database is locked' error must be retried transparently."""
+    from contextlib import contextmanager
+    import core.doc_store as doc_store_module
+
+    store = DocStore(tmp_path / "retry.db")
+    real_connect = store._connect
+    attempts = {"count": 0}
+
+    @contextmanager
+    def flaky_connect():
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        with real_connect() as conn:
+            yield conn
+
+    monkeypatch.setattr(store, "_connect", flaky_connect)
+    monkeypatch.setattr(doc_store_module, "_WRITE_RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(doc_store_module, "_WRITE_RETRY_JITTER", 0.0)
+
+    doc = _retry_test_document()
+    store.upsert_document(doc)
+
+    assert attempts["count"] == 2, "Write should have been attempted twice"
+    assert store.get_document(doc.doc_id) == doc
+
+
+def test_write_does_not_retry_non_busy_errors(tmp_path: Path, monkeypatch):
+    """Schema/query errors must surface immediately rather than being masked."""
+    from contextlib import contextmanager
+
+    store = DocStore(tmp_path / "no_retry.db")
+    attempts = {"count": 0}
+
+    @contextmanager
+    def failing_connect():
+        attempts["count"] += 1
+        raise sqlite3.OperationalError("no such table: documents")
+        yield  # pragma: no cover - unreachable, makes this a generator
+
+    monkeypatch.setattr(store, "_connect", failing_connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        store.upsert_document(_retry_test_document())
+
+    assert attempts["count"] == 1, "Non-busy OperationalError must not be retried"
+
+
+def test_write_retry_is_bounded(tmp_path: Path, monkeypatch):
+    """Persistent lock contention must raise after the bounded attempt count."""
+    from contextlib import contextmanager
+    import core.doc_store as doc_store_module
+
+    store = DocStore(tmp_path / "exhausted.db")
+    attempts = {"count": 0}
+
+    @contextmanager
+    def always_busy():
+        attempts["count"] += 1
+        raise sqlite3.OperationalError("database is locked")
+        yield  # pragma: no cover - unreachable, makes this a generator
+
+    monkeypatch.setattr(store, "_connect", always_busy)
+    monkeypatch.setattr(doc_store_module, "_WRITE_RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(doc_store_module, "_WRITE_RETRY_JITTER", 0.0)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        store.upsert_document(_retry_test_document())
+
+    assert attempts["count"] == doc_store_module.WRITE_MAX_ATTEMPTS

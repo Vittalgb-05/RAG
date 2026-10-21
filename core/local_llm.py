@@ -53,14 +53,24 @@ class InferenceGate:
 
     @classmethod
     def release(cls) -> None:
-        """Release previously acquired inference access."""
+        """Release previously acquired inference access.
+
+        A foreign thread cannot release an ``RLock`` it does not own.  That case
+        is logged rather than silently ignored, and the active counter is left
+        untouched because the owning thread still holds the gate.
+        """
         try:
             cls._lock.release()
-            with cls._state_lock:
-                if cls._active_threads > 0:
-                    cls._active_threads -= 1
         except RuntimeError:
-            pass
+            logger.warning(
+                "InferenceGate.release() ignored: thread %s does not own the gate.",
+                threading.get_ident(),
+            )
+            return
+
+        with cls._state_lock:
+            if cls._active_threads > 0:
+                cls._active_threads -= 1
 
     @classmethod
     def is_locked(cls) -> bool:
@@ -329,6 +339,9 @@ class AiModel:
                 max_tokens=1024,
             )
         finally:
+            # Guarantees the gate is released when the stream finishes normally,
+            # when the provider raises, and when a consumer abandons the
+            # generator and it is closed (GeneratorExit).
             InferenceGate.release()
 
     def generate_text(
