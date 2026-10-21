@@ -11,6 +11,7 @@ import logging
 import math
 from pathlib import Path
 import re
+import shutil
 from typing import Any
 import warnings
 
@@ -55,8 +56,58 @@ def _escape_sql_literal(value: str) -> str:
     return str(value).replace("'", "''")
 
 
-DEFAULT_DB_URI = Path(__file__).resolve().parent / "data" / "lancedb"
+# Canonical index location: <repo_root>/data/lancedb.  Older revisions resolved
+# this relative to the package directory (retrieval/data/lancedb), which split the
+# index from SQLite and made persisted vectors invisible after restart.
+DEFAULT_DB_URI = Path(__file__).resolve().parent.parent / "data" / "lancedb"
+LEGACY_DB_URI = Path(__file__).resolve().parent / "data" / "lancedb"
 DEFAULT_RRF_K = 60
+
+
+class VectorIndexError(RuntimeError):
+    """Raised when vectors could not be written to the active persistent backend.
+
+    Callers must treat this as a failed ingestion/re-index rather than a success,
+    otherwise the SQLite catalog reports documents as indexed while they are not
+    retrievable (silent vector loss).
+    """
+
+
+def _migrate_legacy_index(target: Path, legacy: Path | None = None) -> bool:
+    """Copy a pre-0.2 index from the legacy package-relative location.
+
+    The copy is non-destructive: the legacy directory is left untouched so a
+    failed copy cannot lose the only existing vectors.  Only performed when the
+    target has no table data yet.
+
+    Args:
+        target: Canonical LanceDB directory (``<repo_root>/data/lancedb``).
+        legacy: Legacy package-relative directory (``retrieval/data/lancedb``).
+
+    Returns:
+        True if a migration copy was performed.
+    """
+    legacy = LEGACY_DB_URI if legacy is None else legacy
+    if target.resolve() == legacy.resolve() or not legacy.exists():
+        return False
+    if any(target.glob("*.lance")):
+        return False
+    legacy_files = [p for p in legacy.rglob("*") if p.is_file()]
+    if not legacy_files:
+        return False
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(legacy, target, dirs_exist_ok=True)
+        logger.warning(
+            "Migrated legacy LanceDB index from %s to %s (source left intact).",
+            legacy,
+            target,
+        )
+        return True
+    except OSError as err:
+        logger.error("Failed to migrate legacy LanceDB index from %s: %s", legacy, err)
+        return False
 
 
 def compute_rrf(
@@ -124,7 +175,10 @@ class HybridRetriever:
             embedding_fn: Optional callable to embed a query string into a vector.
             vector_dim: Dimensionality of dense embedding vectors (384 for all-MiniLM-L6-v2).
         """
+        using_default_uri = db_uri is None
         self.db_uri = Path(db_uri) if db_uri is not None else DEFAULT_DB_URI
+        if using_default_uri:
+            _migrate_legacy_index(self.db_uri)
         self.embedding_fn = embedding_fn
         self.vector_dim = vector_dim
 
@@ -261,7 +315,8 @@ class HybridRetriever:
                     self._db.drop_table("chunks")
                     logger.info("Dropped LanceDB 'chunks' table.")
             except Exception as err:
-                logger.warning("Error dropping LanceDB 'chunks' table: %s", err)
+                logger.error("Error dropping LanceDB 'chunks' table: %s", err)
+                raise VectorIndexError(f"Failed to drop LanceDB table at {self.db_uri}: {err}") from err
             self._table = None
 
         self._fallback_store = VectorIndex(
@@ -412,7 +467,14 @@ class HybridRetriever:
                     except Exception as fts_err:
                         logger.debug("FTS index refresh notice: %s", fts_err)
             except Exception as err:
-                logger.error("Failed to persist chunks to LanceDB: %s. Chunks stored in fallback.", err)
+                # Keep a durable fallback copy for recovery, but never report success:
+                # the caller must surface a failed ingestion instead of a document that
+                # claims to be indexed while its vectors are absent.
+                logger.error("Failed to persist chunks to LanceDB: %s", err)
+                self._save_fallback_store()
+                raise VectorIndexError(
+                    f"Failed to persist {len(raw_chunks)} chunks to LanceDB at {self.db_uri}: {err}"
+                ) from err
         else:
             self._save_fallback_store()
 
@@ -463,13 +525,17 @@ class HybridRetriever:
             del self._fallback_store.vectors[idx]
 
         # Remove from LanceDB
-        if self._has_lancedb and self._table is not None:
-            try:
-                safe_doc_id = _escape_sql_literal(doc_id)
-                self._table.delete(f"doc_id = '{safe_doc_id}'")
-                logger.info("Deleted chunks for doc_id=%s from LanceDB.", doc_id)
-            except Exception as err:
-                logger.error("Failed to delete doc_id=%s from LanceDB: %s", doc_id, err)
+        if self._has_lancedb and self._db is not None:
+            if self._table is None:
+                self._init_table()
+            if self._table is not None:
+                try:
+                    safe_doc_id = _escape_sql_literal(doc_id)
+                    self._table.delete(f"doc_id = '{safe_doc_id}'")
+                    logger.info("Deleted chunks for doc_id=%s from LanceDB.", doc_id)
+                except Exception as err:
+                    logger.error("Failed to delete doc_id=%s from LanceDB: %s", doc_id, err)
+                    raise VectorIndexError(f"Failed to delete vectors for {doc_id} from {self.db_uri}: {err}") from err
         else:
             self._save_fallback_store()
 

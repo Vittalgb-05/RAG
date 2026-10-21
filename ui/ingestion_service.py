@@ -121,6 +121,8 @@ class IngestionService:
                         embs = self.embedding.get_embeddings([c.content for c in persisted_chunks])
                         chunk_dicts = [c.model_dump() for c in persisted_chunks]
                         self.retriever.index_chunks(chunk_dicts, embeddings=embs.tolist())
+                        if not self.retriever.has_document(existing_doc.doc_id):
+                            raise RuntimeError("Repair wrote no retrievable vectors.")
                         return IngestionResult(
                             success=True,
                             doc_id=doc_id,
@@ -210,7 +212,7 @@ class IngestionService:
         # 6. Guard against 0 chunks (CONCERNS P1 audit)
         if not paragraphs and not evidence_elements:
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            self.doc_store.upsert_document(
+            self.doc_store.record_ingestion(
                 Document(
                     doc_id=doc_id,
                     filename=filename,
@@ -220,7 +222,9 @@ class IngestionService:
                     status="failed",
                     upload_time=now_iso,
                     num_chunks=0,
-                )
+                ),
+                pages=[],
+                chunks=[],
             )
             return IngestionResult(
                 success=False,
@@ -246,13 +250,13 @@ class IngestionService:
         )
 
         try:
-            self.doc_store.upsert_document(doc_model)
-            if evidence_elements:
-                self.doc_store.record_evidence_elements(evidence_elements)
-            self.doc_store.record_pages_batch(page_records)
-
             chunk_models = [Chunk.model_validate(p) for p in paragraphs]
-            self.doc_store.record_chunks(chunk_models)
+            self.doc_store.record_ingestion(
+                doc_model,
+                pages=page_records,
+                chunks=chunk_models,
+                evidence=evidence_elements,
+            )
         except Exception as db_err:
             logger.error("SQLite write failed for %s: %s", doc_id, db_err)
             return IngestionResult(
@@ -274,15 +278,29 @@ class IngestionService:
             if self.retriever is None:
                 self.retriever = HybridRetriever(embedding_fn=self.embedding._embed_one)
 
+            # Drop any vectors left by a previous failed attempt for this document so
+            # stale chunk IDs cannot survive a re-ingestion with a different chunk set.
+            self.retriever.delete_document(doc_id)
+
             embeddings = self.embedding.get_embeddings([p["content"] for p in paragraphs])
             self.retriever.index_chunks(paragraphs, embeddings=embeddings.tolist())
 
-            # Index visual evidence elements with real filename attribution
+            # Verify the write actually landed before declaring ingestion successful.
+            if not self.retriever.has_document(doc_id):
+                raise RuntimeError("Vector write completed but no chunks are retrievable for the document.")
+
+            # Index visual evidence elements with real filename attribution.  Text
+            # vectors are already verified; a visual-index failure is reported but
+            # does not discard the successfully indexed document text.
             if evidence_elements and hasattr(self.retriever, "index_evidence_elements"):
-                self.retriever.index_evidence_elements(evidence_elements, filename=filename)
+                try:
+                    self.retriever.index_evidence_elements(evidence_elements, filename=filename)
+                except Exception as vis_idx_err:
+                    logger.error("Visual evidence indexing failed for %s: %s", doc_id, vis_idx_err)
         except Exception as idx_err:
             logger.error("LanceDB vector indexing error for %s: %s", doc_id, idx_err)
-            # Revert document status to partial/failed
+            # Mark the document failed so hydration offers repair instead of claiming
+            # it is indexed.  Extracted rows are retained for diagnosis/repair.
             try:
                 self.doc_store.upsert_document(
                     Document(
@@ -296,8 +314,8 @@ class IngestionService:
                         num_chunks=0,
                     )
                 )
-            except Exception:
-                pass
+            except Exception as mark_err:
+                logger.error("Failed to mark %s as failed after indexing error: %s", doc_id, mark_err)
             return IngestionResult(
                 success=False,
                 doc_id=doc_id,

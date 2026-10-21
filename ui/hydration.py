@@ -19,11 +19,11 @@ def hydrate_startup_state(doc_store: DocStore) -> None:
     if st.session_state.get("_startup_hydrated", False):
         return
 
-    st.session_state._startup_hydrated = True
-
     try:
         docs = doc_store.list_documents()
     except Exception as e:
+        # Leave the flag unset so the next rerun can retry instead of permanently
+        # presenting an empty library for the rest of the session.
         logger.warning("Could not query documents for hydration: %s", e)
         return
 
@@ -33,6 +33,7 @@ def hydrate_startup_state(doc_store: DocStore) -> None:
 
     indexed_docs = [d for d in docs if d.status == "indexed"]
     if not indexed_docs:
+        st.session_state._startup_hydrated = True
         return
 
     for doc in indexed_docs:
@@ -49,6 +50,7 @@ def hydrate_startup_state(doc_store: DocStore) -> None:
         }
 
     # Hydrate and verify hybrid retriever state against SQLite records
+    retriever_ready = False
     try:
         if st.session_state.hybrid_retriever is None:
             retriever = HybridRetriever()
@@ -59,16 +61,32 @@ def hydrate_startup_state(doc_store: DocStore) -> None:
         else:
             retriever = st.session_state.hybrid_retriever
 
-        # Verify each document's presence in the vector store and repair if missing
+        # Verify each document's presence in the vector store and repair if missing.
+        # Each document is isolated so one corrupt document cannot prevent the rest
+        # of the library from hydrating.
         for doc in indexed_docs:
-            if not retriever.has_document(doc.doc_id):
-                chunks = doc_store.get_chunks_for_doc(doc.doc_id)
-                if chunks:
-                    logger.info("Auto-repairing missing vector index for %s (%s)", doc.filename, doc.doc_id)
-                    embs = st.session_state.local_embedding.get_embeddings([c.content for c in chunks])
-                    retriever.index_chunks([c.model_dump() for c in chunks], embeddings=embs.tolist())
-                    st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = False
-                else:
-                    st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = True
+            if retriever.has_document(doc.doc_id):
+                continue
+            chunks = doc_store.get_chunks_for_doc(doc.doc_id)
+            if not chunks:
+                logger.warning("Indexed document %s has no stored chunks; marking for re-index.", doc.doc_id)
+                st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = True
+                continue
+            try:
+                logger.info("Auto-repairing missing vector index for %s (%s)", doc.filename, doc.doc_id)
+                embs = st.session_state.local_embedding.get_embeddings([c.content for c in chunks])
+                retriever.index_chunks([c.model_dump() for c in chunks], embeddings=embs.tolist())
+                if not retriever.has_document(doc.doc_id):
+                    raise RuntimeError("repair write did not produce retrievable vectors")
+                st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = False
+            except Exception as repair_err:
+                logger.error("Vector repair failed for %s: %s", doc.doc_id, repair_err)
+                st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = True
+        retriever_ready = True
     except Exception as err:
-        logger.warning("Retriever auto-hydration on startup failed: %s", err)
+        logger.error("Retriever auto-hydration on startup failed: %s", err)
+    finally:
+        # Mark hydrated only when retriever discovery/repair completed.  A hard
+        # failure leaves the flag unset so the next rerun can retry.
+        if retriever_ready:
+            st.session_state._startup_hydrated = True
