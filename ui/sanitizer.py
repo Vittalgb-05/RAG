@@ -41,6 +41,34 @@ _BARE_URL_PATTERN = re.compile(r"(?<![\w`])(?:https?://|//)[^\s<>()\[\]`]+", re.
 # Reference-style link definitions: [id]: https://example.com
 _MD_REF_DEF_PATTERN = re.compile(r"^\s*\[[^\]]+\]:\s*(?:https?://|//)\S+.*$", re.MULTILINE | re.IGNORECASE)
 
+# Executable/data URL schemes in Markdown links and images
+_MD_DANGEROUS_LINK_PATTERN = re.compile(
+    r"!?\[([^\]]*)\]\(\s*(?:javascript|data|vbscript|file):[^)]*\)",
+    re.IGNORECASE,
+)
+
+# Autolinks / raw text using an executable or data scheme
+_DANGEROUS_AUTOLINK_PATTERN = re.compile(r"<(?:javascript|data|vbscript|file):[^>\s]*>", re.IGNORECASE)
+
+# Raw HTML href/src/xlink:href with an executable or data scheme
+_HTML_DANGEROUS_ATTR_PATTERN = re.compile(
+    r"\s+(?:href|src|xlink:href)\s*=\s*(?=[\"']?\s*(?:javascript|data|vbscript|file):)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
+    re.IGNORECASE,
+)
+
+# srcset can trigger external fetches without a src= attribute
+_HTML_SRCSET_ATTR_PATTERN = re.compile(r"\s+srcset\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
+
+# Inline CSS url(...) can trigger external fetches without an href/src attribute
+_HTML_STYLE_URL_ATTR_PATTERN = re.compile(
+    r"\s+style\s*=\s*(?:\"[^\"]*url\s*\([^\"]*\"|'[^']*url\s*\([^']*')",
+    re.IGNORECASE,
+)
+
+# SVG <use>/<image> can dereference external resources via href/xlink:href
+_HTML_SVG_HREF_PATTERN = re.compile(r"<(?:use|image)\b[^>]*>", re.IGNORECASE)
+
 
 def sanitize_markdown_for_local(text: str, allow_external: bool = False) -> str:
     """Sanitize Markdown and HTML content to prevent browser-triggered network requests.
@@ -62,7 +90,17 @@ def sanitize_markdown_for_local(text: str, allow_external: bool = False) -> str:
     sanitized = _HTML_SCRIPT_PATTERN.sub("[Script removed]", sanitized)
     sanitized = _HTML_UNSAFE_EMBEDS.sub("[Embedded element removed]", sanitized)
 
+    # Executable and data schemes are never safe in rendered document output.
+    sanitized = _MD_DANGEROUS_LINK_PATTERN.sub("`[blocked link]`", sanitized)
+    sanitized = _DANGEROUS_AUTOLINK_PATTERN.sub("`[external link blocked]`", sanitized)
+    sanitized = _HTML_DANGEROUS_ATTR_PATTERN.sub("", sanitized)
+
     if not allow_external:
+        # Attributes that can initiate network requests without a standard href/src
+        sanitized = _HTML_SRCSET_ATTR_PATTERN.sub("", sanitized)
+        sanitized = _HTML_STYLE_URL_ATTR_PATTERN.sub("", sanitized)
+        sanitized = _HTML_SVG_HREF_PATTERN.sub("[Embedded element removed]", sanitized)
+
         # Replace external Markdown images with a clean text placeholder
         def _replace_md_img(match: re.Match[str]) -> str:
             alt = match.group(1).strip() or "image"

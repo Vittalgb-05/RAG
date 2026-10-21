@@ -52,3 +52,29 @@ def test_sanitize_strips_unsafe_embeds() -> None:
     assert "<iframe" not in sanitized
     assert "<style" not in sanitized
     assert "Content" in sanitized
+
+
+def test_sanitize_blocks_dangerous_markdown_schemes() -> None:
+    raw = "[click](javascript:alert(1)) and ![x](data:image/png;base64,AAAA)"
+    sanitized = sanitize_markdown_for_local(raw, allow_external=False)
+    assert "javascript:" not in sanitized
+    assert "data:" not in sanitized
+    assert "[blocked link]" in sanitized
+
+
+def test_sanitize_strips_srcset_and_inline_style_urls() -> None:
+    raw = (
+        '<img src="local.png" srcset="https://evil.example/a.png 1x">'
+        '<div style="background:url(https://evil.example/b.png)">x</div>'
+    )
+    sanitized = sanitize_markdown_for_local(raw, allow_external=False)
+    assert "evil.example" not in sanitized
+    assert "srcset" not in sanitized.lower()
+    assert "url(" not in sanitized.lower()
+
+
+def test_sanitize_removes_svg_use_href() -> None:
+    raw = '<svg><use href="https://evil.example/icon.svg#x"></use></svg>'
+    sanitized = sanitize_markdown_for_local(raw, allow_external=False)
+    assert "evil.example" not in sanitized
+    assert "<use" not in sanitized.lower()
