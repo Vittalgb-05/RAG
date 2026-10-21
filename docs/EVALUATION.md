@@ -107,7 +107,7 @@ Testing was conducted on an NVIDIA GeForce RTX 3050 Laptop GPU (4096 MB physical
 | Subsystem Component                | Allocated VRAM    | Percentage of VRAM |
 +====================================+===================+====================+
 | Windows DWM & Desktop Overhead     | ~512 MB           | 12.5%              |
-| Qwen3-VL 2B Q4_K_M Weights (28 lyr)| ~1420 MB          | 34.7%              |
+| Qwen2-VL 2B Q4_K_M Weights (28 lyr)| ~1420 MB          | 34.7%              |
 | Multimodal Projector (mmproj-f16)  | ~600 MB           | 14.6%              |
 | KV-Cache (4096 Context, fp16)      | ~380 MB           | 9.3%               |
 +------------------------------------+-------------------+--------------------+

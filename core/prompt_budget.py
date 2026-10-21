@@ -1,6 +1,6 @@
 """Bounded context token budgeting and prompt injection defense.
 
-Enforces strict context window limits (e.g., 4,096 tokens for Qwen3-VL 2B GGUF),
+Enforces strict context window limits (e.g., 4,096 tokens for Qwen2-VL 2B GGUF),
 reserving output tokens for generation, wrapping document context inside
 XML isolation tags (<document_context>) to neutralize injection attempts, and
 truncating conversation history oldest-first when budget is exceeded.

@@ -293,7 +293,7 @@ def run_resource_profile() -> dict:
                 dwm_overhead_mb + model_weights_mb + vision_proj_mb + kv_cache_4k_mb + cuda_scratch_mb, 1
             )
             print(f"  - Windows DWM / Driver Overhead: {dwm_overhead_mb:.1f} MB")
-            print(f"  - Model Weights (Qwen3-VL 2B Q4_K_M): {model_weights_mb:.1f} MB")
+            print(f"  - Model Weights (Qwen2-VL 2B Q4_K_M): {model_weights_mb:.1f} MB")
             print(f"  - Multimodal Projector (mmproj-f16): {vision_proj_mb:.1f} MB")
             print(f"  - KV Cache (4K FP16 Bounded): {kv_cache_4k_mb:.1f} MB")
             print(f"  - CUDA Workspace & Scratch Buffers: {cuda_scratch_mb:.1f} MB")

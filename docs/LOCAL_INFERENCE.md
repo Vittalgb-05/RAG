@@ -1,4 +1,4 @@
-# Local Inference Runbook: Qwen3-VL 2B on RTX 3050 Laptop GPU (4 GB VRAM)
+# Local Inference Runbook: Qwen2-VL 2B on RTX 3050 Laptop GPU (4 GB VRAM)
 
 This runbook guides running local multimodal inference for the PDF Intelligence System on an **NVIDIA GeForce RTX 3050 Laptop GPU (4 GB VRAM)** using `llama-server` (llama.cpp) with zero cloud network egress.
 
@@ -10,7 +10,7 @@ The system is calibrated to execute safely within a **4,096 MB VRAM ceiling** on
 
 | Component | VRAM Allocation | Notes |
 | :--- | :--- | :--- |
-| **Model Weights (`Q4_K_M`)** | ~1,450 MB | Qwen3-VL 2B quantized base weights offloaded to GPU |
+| **Model Weights (`Q4_K_M`)** | ~1,450 MB | Qwen2-VL 2B quantized base weights offloaded to GPU |
 | **Vision Projector (`mmproj-f16`)** | ~450 MB | Multimodal projector for diagram and image analysis |
 | **KV Cache (`-c 4096`)** | ~510 MB | 4K token bounded context window |
 | **CUDA Runtime Overhead** | ~350 MB | Driver context and cuBLAS buffers |

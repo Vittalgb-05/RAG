@@ -14,8 +14,8 @@
 ## Highlights
 
 - **Local-first privacy (zero data egress by default).** Ingestion, OCR, embeddings, vector search, and inference all run on your hardware. No document text, embeddings, or queries leave the machine unless you explicitly enable Cloud Mode.
-- **Multimodal document intelligence.** Parses digital text and tables with Docling, conditionally invokes RapidOCR on low-text pages, crops visual figures and charts, and describes them with the Qwen3-VL 2B vision-language model.
-- **Tuned for 4 GB VRAM (RTX 3050).** Quantized `qwen3-vl-2b-instruct-q4_k_m.gguf` with `mmproj-f16` profiles at ~3.45 GB projected peak VRAM with ~646 MB headroom, under the 3.8 GB safety target.
+- **Multimodal document intelligence.** Parses digital text and tables with Docling, conditionally invokes RapidOCR on low-text pages, crops visual figures and charts, and describes them with the Qwen2-VL 2B vision-language model.
+- **Tuned for 4 GB VRAM (RTX 3050).** Quantized Qwen2-VL 2B weights (kept under the legacy `qwen3-vl-2b-instruct-q4_k_m.gguf` filename) with `mmproj-f16` profile at ~3.45 GB projected peak VRAM with ~646 MB headroom, under the 3.8 GB safety target.
 - **Hybrid dense + lexical retrieval.** Semantic embeddings (`all-MiniLM-L6-v2`, 384-dim, CPU-pinned) combined with BM25 keyword search via Reciprocal Rank Fusion (RRF), persisted in LanceDB with SQLite metadata.
 - **Verifiable page citations.** XML-framed grounded prompts with an automated citation validator (precision gate) and abstention behavior for unanswerable questions. The UI renders citation badges, source chips, and an evidence drawer.
 - **Multi-profile summarization.** Five profiles — Overview, Detailed, Study Notes, Tables & Figures, Findings — generated via single-pass or map-reduce paths with SHA-256 content-hash caching in SQLite.
@@ -40,7 +40,7 @@ flowchart TD
         Hash --> Docling["Docling Layout and Table Parsing"]
         Docling -->|Low-text pages| OCR["RapidOCR Conditional Fallback"]
         Docling -->|Visual figures and charts| Crop["Visual Element Cropper"]
-        Crop --> VLM["Qwen3-VL 2B Image Analysis"]
+        Crop --> VLM["Qwen2-VL 2B Image Analysis"]
         Docling & OCR & VLM --> Chunks["Structured Chunks and Bounding Boxes"]
     end
 
@@ -59,7 +59,7 @@ flowchart TD
 
     subgraph Generation ["Local and Cloud Inference"]
         Context --> Prompt["XML Prompt Assembly and Token Budgeting"]
-        Prompt -->|Default: local| LlamaServer["llama-server (Qwen3-VL 2B GGUF)"]
+        Prompt -->|Default: local| LlamaServer["llama-server (Qwen2-VL 2B GGUF)"]
         Prompt -->|Consented cloud| LiteLLM["LiteLLM (Groq / OpenAI / Anthropic)"]
         LlamaServer & LiteLLM --> Stream["Streaming SSE Response"]
         Stream --> Verify["Citation Validator and Page Tagging"]
@@ -150,7 +150,8 @@ Download the GGUF model and multimodal projector into a `models/` directory:
 ```bash
 mkdir models
 
-# Download Qwen3-VL 2B Instruct GGUF (~1.4 GB)
+# Download Qwen2-VL 2B Instruct GGUF (~1.4 GB; saved under the legacy filename
+# the app expects)
 curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/qwen2-vl-2b-instruct-q4_k_m.gguf
 
 # Download Multimodal Projector mmproj-f16 (~600 MB)
