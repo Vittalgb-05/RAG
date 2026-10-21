@@ -496,3 +496,87 @@ def test_index_evidence_elements(tmp_path):
 
     # Verify failed analysis was never indexed
     assert retriever.search_fts("InferenceGate timeout", k=1) == []
+
+
+def test_delete_document_rewrites_fallback_mirror(tmp_path):
+    """Deleting a document must rewrite fallback_store.json so it cannot resurrect."""
+    db_dir = tmp_path / "mirror_lancedb"
+    retriever = HybridRetriever(db_uri=db_dir)
+
+    v1 = _make_unit_vector(11)
+    v2 = _make_unit_vector(22)
+    chunks = [
+        Chunk(content="Doc A content", filename="doc_a.pdf", page=1, chunk_id="chk_a1", doc_id="doc_a"),
+        Chunk(content="Doc B content", filename="doc_b.pdf", page=1, chunk_id="chk_b1", doc_id="doc_b"),
+    ]
+    retriever.index_chunks(chunks, embeddings=[v1, v2])
+
+    fallback_file = db_dir / "fallback_store.json"
+    assert fallback_file.exists()
+    assert "doc_a" in fallback_file.read_text(encoding="utf-8")
+
+    retriever.delete_document("doc_a")
+
+    persisted = fallback_file.read_text(encoding="utf-8")
+    assert "doc_a" not in persisted
+    assert "doc_b" in persisted
+
+
+def test_deleted_document_does_not_resurrect_from_fallback(tmp_path, monkeypatch):
+    """A later run without LanceDB must not reload a deleted document from disk."""
+    db_dir = tmp_path / "resurrect_lancedb"
+    retriever = HybridRetriever(db_uri=db_dir)
+
+    chunks = [
+        Chunk(content="Alpha content", filename="a.pdf", page=1, chunk_id="chk_a1", doc_id="doc_a"),
+        Chunk(content="Beta content", filename="b.pdf", page=1, chunk_id="chk_b1", doc_id="doc_b"),
+    ]
+    retriever.index_chunks(chunks, embeddings=[_make_unit_vector(11), _make_unit_vector(22)])
+    retriever.delete_document("doc_a")
+
+    monkeypatch.setattr("retrieval.hybrid_retriever.lancedb", None)
+    recovered = HybridRetriever(db_uri=db_dir)
+
+    assert not recovered.is_persistent()
+    assert not recovered.has_document("doc_a")
+    assert recovered.has_document("doc_b")
+
+
+def test_scoped_search_is_not_crowded_out_in_fallback(tmp_path, monkeypatch):
+    """Document-scoped retrieval must filter before ranking, not after a global top-K."""
+    monkeypatch.setattr("retrieval.hybrid_retriever.lancedb", None)
+
+    db_dir = tmp_path / "scoped_fallback"
+    retriever = HybridRetriever(db_uri=db_dir)
+    query_vec = _make_unit_vector(5)
+    retriever.set_embedding_fn(lambda _q: query_vec)
+
+    other_chunks = [
+        Chunk(
+            content=f"Unrelated boilerplate chunk {i}",
+            filename="other.pdf",
+            page=1,
+            chunk_id=f"other_{i}",
+            doc_id="doc_other",
+        )
+        for i in range(40)
+    ]
+    retriever.index_chunks(other_chunks, embeddings=[query_vec] * len(other_chunks))
+    retriever.index_chunks(
+        [
+            Chunk(
+                content="Unique target evidence about the selected document.",
+                filename="target.pdf",
+                page=1,
+                chunk_id="target_1",
+                doc_id="doc_target",
+            )
+        ],
+        embeddings=[query_vec],
+    )
+
+    result = retriever.search_hybrid("target evidence", k=3, doc_id="doc_target")
+
+    assert result.snippets
+    assert all(snippet.doc_id == "doc_target" for snippet in result.snippets)
+    assert any(snippet.chunk_id == "target_1" for snippet in result.snippets)

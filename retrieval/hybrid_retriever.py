@@ -56,6 +56,13 @@ def _escape_sql_literal(value: str) -> str:
     return str(value).replace("'", "''")
 
 
+def _doc_filter_clause(doc_id: str | list[str]) -> str:
+    """Build a safe LanceDB SQL predicate restricting rows to the given document IDs."""
+    allowed = {doc_id} if isinstance(doc_id, str) else set(doc_id)
+    quoted = ", ".join(f"'{_escape_sql_literal(d)}'" for d in sorted(allowed))
+    return f"doc_id IN ({quoted})"
+
+
 # Canonical index location: <repo_root>/data/lancedb.  Older revisions resolved
 # this relative to the package directory (retrieval/data/lancedb), which split the
 # index from SQLite and made persisted vectors invisible after restart.
@@ -475,8 +482,12 @@ class HybridRetriever:
                 raise VectorIndexError(
                     f"Failed to persist {len(raw_chunks)} chunks to LanceDB at {self.db_uri}: {err}"
                 ) from err
-        else:
-            self._save_fallback_store()
+
+        # Keep the durable fallback mirror in sync with the active backend. Without
+        # this, fallback_store.json retains chunks that were later deleted or
+        # re-indexed and can resurrect removed documents if LanceDB is unavailable
+        # on a later run.
+        self._save_fallback_store()
 
         return len(raw_chunks)
 
@@ -518,13 +529,8 @@ class HybridRetriever:
 
     def delete_document(self, doc_id: str) -> None:
         """Remove all chunks associated with doc_id from persistent and fallback storage."""
-        # Remove from fallback store
-        indices_to_remove = [i for i, d in enumerate(self._fallback_store.documents) if d.get("doc_id") == doc_id]
-        for idx in reversed(indices_to_remove):
-            del self._fallback_store.documents[idx]
-            del self._fallback_store.vectors[idx]
-
-        # Remove from LanceDB
+        # Remove from LanceDB first: if this fails, abort without mutating the
+        # in-memory mirror so the fallback and persistent views stay consistent.
         if self._has_lancedb and self._db is not None:
             if self._table is None:
                 self._init_table()
@@ -536,15 +542,29 @@ class HybridRetriever:
                 except Exception as err:
                     logger.error("Failed to delete doc_id=%s from LanceDB: %s", doc_id, err)
                     raise VectorIndexError(f"Failed to delete vectors for {doc_id} from {self.db_uri}: {err}") from err
-        else:
-            self._save_fallback_store()
 
-    def search_dense(self, query_vector: list[float], k: int = 5) -> list[dict[str, Any]]:
+        # Remove from the in-memory fallback store.
+        indices_to_remove = [i for i, d in enumerate(self._fallback_store.documents) if d.get("doc_id") == doc_id]
+        for idx in reversed(indices_to_remove):
+            del self._fallback_store.documents[idx]
+            del self._fallback_store.vectors[idx]
+
+        # Always persist the post-delete mirror. Otherwise a stale on-disk JSON can
+        # resurrect deleted documents the next time LanceDB is unavailable.
+        self._save_fallback_store()
+
+    def search_dense(
+        self,
+        query_vector: list[float],
+        k: int = 5,
+        doc_id: str | list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Perform nearest-neighbor vector search using cosine similarity.
 
         Args:
             query_vector: Dense embedding vector for the query.
             k: Maximum number of top candidates to return.
+            doc_id: Optional document ID or list of IDs to filter in the backend.
 
         Returns:
             List of matching chunk dictionaries with 'score' key (higher is more similar).
@@ -560,6 +580,10 @@ class HybridRetriever:
                         query_builder = query_builder.metric("cosine")
                     except Exception:
                         pass
+                if doc_id:
+                    clause = _doc_filter_clause(doc_id)
+                    if hasattr(query_builder, "where"):
+                        query_builder = query_builder.where(clause)
                 results = query_builder.limit(k).to_list()
                 formatted_results: list[dict[str, Any]] = []
                 for row in results:
@@ -574,12 +598,17 @@ class HybridRetriever:
 
         # Fallback in-memory search
         try:
-            raw_results = self._fallback_store.search(query_vector, k=k)
+            raw_results = self._fallback_store.search(query_vector, k=k if not doc_id else max(k, 10000))
             formatted: list[dict[str, Any]] = []
+            allowed = {doc_id} if isinstance(doc_id, str) else (set(doc_id) if doc_id else None)
             for doc, dist in raw_results:
                 d = dict(doc)
+                if allowed is not None and d.get("doc_id") not in allowed:
+                    continue
                 d["score"] = max(0.0, 1.0 - float(dist))
                 formatted.append(d)
+                if len(formatted) >= k:
+                    break
             return formatted
         except Exception as err:
             logger.warning("Fallback search error: %s", err)
@@ -595,7 +624,12 @@ class HybridRetriever:
             except Exception as err:
                 logger.debug("LanceDB create_fts_index notice: %s", err)
 
-    def _bm25_search_fallback(self, query: str, k: int = 5) -> list[dict[str, Any]]:
+    def _bm25_search_fallback(
+        self,
+        query: str,
+        k: int = 5,
+        doc_id: str | list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Pure-Python BM25 keyword search across stored chunks (RETR-03)."""
         query_terms = [w.lower() for w in re.findall(r"\w+", query) if len(w) > 1]
         if not query_terms:
@@ -609,6 +643,10 @@ class HybridRetriever:
             except Exception as err:
                 logger.debug("Could not read docs from LanceDB for BM25 fallback: %s", err)
                 docs = []
+
+        if doc_id:
+            allowed = {doc_id} if isinstance(doc_id, str) else set(doc_id)
+            docs = [d for d in docs if d.get("doc_id") in allowed]
 
         if not docs:
             return []
@@ -657,12 +695,18 @@ class HybridRetriever:
         scores.sort(key=lambda x: x[0], reverse=True)
         return [d for _, d in scores[:k]]
 
-    def search_fts(self, query: str, k: int = 5) -> list[dict[str, Any]]:
+    def search_fts(
+        self,
+        query: str,
+        k: int = 5,
+        doc_id: str | list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Perform full-text keyword search across indexed chunks.
 
         Args:
             query: Natural language query or exact keyword search term.
             k: Maximum number of top candidates to return.
+            doc_id: Optional document ID or list of IDs to filter in the backend.
 
         Returns:
             List of matching chunk dictionaries with 'score' key.
@@ -672,7 +716,12 @@ class HybridRetriever:
 
         if self._has_lancedb and self._table is not None:
             try:
-                results = self._table.search(query, query_type="fts").limit(k).to_list()
+                query_builder = self._table.search(query, query_type="fts")
+                if doc_id:
+                    clause = _doc_filter_clause(doc_id)
+                    if hasattr(query_builder, "where"):
+                        query_builder = query_builder.where(clause)
+                results = query_builder.limit(k).to_list()
                 formatted_results: list[dict[str, Any]] = []
                 for row in results:
                     r = dict(row)
@@ -684,7 +733,7 @@ class HybridRetriever:
             except Exception as err:
                 logger.debug("LanceDB FTS search notice: %s. Using BM25 fallback.", err)
 
-        return self._bm25_search_fallback(query, k=k)
+        return self._bm25_search_fallback(query, k=k, doc_id=doc_id)
 
     def search_hybrid(
         self,
@@ -714,19 +763,21 @@ class HybridRetriever:
 
         candidate_pool = max(k * 5 if doc_id else k * 4, 30)
 
-        # 1. Dense vector search
+        # 1. Dense vector search (push document scope into the backend so the
+        # selected document cannot be crowded out of a global top-K pool).
         dense_matches: list[dict[str, Any]] = []
         if self.embedding_fn is not None:
             try:
                 q_vec = self.embedding_fn(query)
-                dense_matches = self.search_dense(q_vec, k=candidate_pool)
+                dense_matches = self.search_dense(q_vec, k=candidate_pool, doc_id=doc_id)
             except Exception as err:
                 logger.warning("Dense search failed during hybrid retrieval: %s", err)
 
         # 2. Full-text search
-        fts_matches = self.search_fts(query, k=candidate_pool)
+        fts_matches = self.search_fts(query, k=candidate_pool, doc_id=doc_id)
 
-        # 3. Filter by doc_id if specified
+        # 3. Filter by doc_id again as defense-in-depth for backends that ignore
+        # the pushed-down predicate.
         if doc_id:
             allowed_docs = {doc_id} if isinstance(doc_id, str) else set(doc_id)
             dense_matches = [d for d in dense_matches if d.get("doc_id") in allowed_docs]
