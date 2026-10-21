@@ -23,9 +23,31 @@ logger = logging.getLogger(__name__)
 try:
     import lancedb
     import pyarrow as pa
+
+    # Explicit schema prevents PyArrow from inferring nullable columns as `null` type
+    # when the first batch contains only None values for char_start/char_end/bbox_json.
+    def _build_chunks_schema(vector_dim: int = 384) -> "pa.Schema":
+        return pa.schema(
+            [
+                pa.field("chunk_id", pa.string(), nullable=False),
+                pa.field("doc_id", pa.string(), nullable=False),
+                pa.field("filename", pa.string(), nullable=False),
+                pa.field("page", pa.int64(), nullable=False),
+                pa.field("content", pa.string(), nullable=False),
+                pa.field("vector", pa.list_(pa.float32(), vector_dim), nullable=False),
+                pa.field("extraction", pa.string(), nullable=False),
+                pa.field("char_start", pa.int64(), nullable=True),
+                pa.field("char_end", pa.int64(), nullable=True),
+                pa.field("bbox_json", pa.string(), nullable=True),
+            ]
+        )
+
 except ImportError:
     lancedb = None  # type: ignore[assignment]
     pa = None  # type: ignore[assignment]
+
+    def _build_chunks_schema(vector_dim: int = 384):  # type: ignore[misc]
+        return None
 
 
 def _escape_sql_literal(value: str) -> str:
@@ -321,6 +343,20 @@ class HybridRetriever:
                     elif isinstance(bbox, dict):
                         bbox_json = json.dumps(bbox)
 
+                # Coerce nullable int fields — keep None as None (not a string)
+                char_start = doc.get("char_start")
+                char_end = doc.get("char_end")
+                if char_start is not None:
+                    try:
+                        char_start = int(char_start)
+                    except (TypeError, ValueError):
+                        char_start = None
+                if char_end is not None:
+                    try:
+                        char_end = int(char_end)
+                    except (TypeError, ValueError):
+                        char_end = None
+
                 records.append(
                     {
                         "chunk_id": str(doc.get("chunk_id", "")),
@@ -330,16 +366,23 @@ class HybridRetriever:
                         "content": str(doc.get("content", "")),
                         "vector": [float(v) for v in emb],
                         "extraction": str(doc.get("extraction", "docling")),
-                        "char_start": doc.get("char_start"),
-                        "char_end": doc.get("char_end"),
-                        "bbox_json": bbox_json,
+                        "char_start": char_start,
+                        "char_end": char_end,
+                        "bbox_json": bbox_json if bbox_json is None else str(bbox_json),
                     }
                 )
 
             try:
                 if self._table is None:
-                    # Create new table
-                    self._table = self._db.create_table("chunks", data=records, mode="create")
+                    # Create new table with an explicit schema so nullable columns
+                    # (char_start, char_end, bbox_json) are typed correctly even when
+                    # the first batch contains only None values for those fields.
+                    schema = _build_chunks_schema(self.vector_dim)
+                    if schema is not None:
+                        pa_table = pa.Table.from_pylist(records, schema=schema)
+                        self._table = self._db.create_table("chunks", data=pa_table, mode="create")
+                    else:
+                        self._table = self._db.create_table("chunks", data=records, mode="create")
                     logger.info("Created new LanceDB 'chunks' table with %d records.", len(records))
                     try:
                         self.create_fts_index()
