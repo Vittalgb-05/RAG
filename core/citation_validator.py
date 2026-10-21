@@ -112,6 +112,24 @@ def is_abstention(text: str) -> bool:
     return any(marker in lower for marker in CANONICAL_ABSTENTION_MARKERS)
 
 
+def should_withhold_answer(verification: CitationVerificationResult) -> bool:
+    """Return True when a generated answer must not be rendered as a normal answer.
+
+    A response is withheld when it fails grounding (no citations), when citations
+    are invalid/out-of-range, or when an injection directive was echoed. Explicit
+    abstentions remain valid answers and are never withheld.
+
+    Args:
+        verification: Citation verification result for the generated response.
+
+    Returns:
+        True if the UI should reject/withhold the draft answer.
+    """
+    if verification.abstention_detected:
+        return False
+    return not verification.is_valid
+
+
 def validate_citations(
     response_text: str,
     retrieval_result: RetrievalResult | None = None,

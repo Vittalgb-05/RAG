@@ -10,9 +10,11 @@ import streamlit as st
 
 from core.doc_store import DocStore
 from retrieval.hybrid_retriever import HybridRetriever
+from core.citation_validator import should_withhold_answer
 from core.local_llm import AiModel
 from core.models import CONFIG_VERSION
 from core.prompt_budget import bound_chat_history
+from core.query_intent import contextualize_query, resolve_retrieval, whole_document_char_budget
 from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from core.summarizer import Summarizer
 from ui.components import (
@@ -282,7 +284,17 @@ def render_chat_view(
             allow_ext = bool(
                 st.session_state.get("cloud_mode", False) and st.session_state.get("user_consented", False)
             )
-            st.markdown(sanitize_display_markdown(raw_content, allow_external=allow_ext))
+            if role == "assistant" and message.get("rejected"):
+                st.warning(
+                    "Response withheld — grounding check failed. The draft did not cite retrieved evidence "
+                    "with [E#], cited invalid evidence, or echoed a prompt-injection directive."
+                )
+                with st.expander("Rejected draft (not accepted as an answer)", expanded=False):
+                    st.markdown(
+                        sanitize_display_markdown(message.get("rejected_draft") or "", allow_external=allow_ext)
+                    )
+            else:
+                st.markdown(sanitize_display_markdown(raw_content, allow_external=allow_ext))
 
             if role == "assistant":
                 if message.get("is_cloud"):
@@ -292,7 +304,7 @@ def render_chat_view(
                     st.caption("Generated locally on-device (zero network egress).")
 
                 v_data = message.get("verification")
-                if v_data:
+                if v_data and not message.get("rejected"):
                     if v_data.get("abstention_detected"):
                         st.caption("Explicit abstention — no document evidence found.")
                     elif v_data.get("total_citations", 0) == 0:
@@ -306,24 +318,33 @@ def render_chat_view(
 
                 snippets = message.get("snippets", [])
                 if snippets:
-                    chips = [
-                        render_citation_chip(
-                            doc_id=s.get("doc_id", ""),
-                            page=s.get("page", 1),
-                            filename=s.get("filename", "doc"),
-                            rank=s.get("rank"),
-                        )
-                        for s in snippets
-                    ]
-                    chip_html = " ".join(chips)
-                    if hasattr(st, "html"):
-                        st.html(chip_html)
+                    cited_ranks = set((v_data or {}).get("cited_ranks") or [])
+                    if cited_ranks:
+                        chips = [
+                            render_citation_chip(
+                                doc_id=s.get("doc_id", ""),
+                                page=s.get("page", 1),
+                                filename=s.get("filename", "doc"),
+                                rank=s.get("rank"),
+                            )
+                            for s in snippets
+                            if s.get("rank") in cited_ranks
+                        ]
+                        chip_html = " ".join(chips)
+                        if hasattr(st, "html"):
+                            st.html(chip_html)
+                        else:
+                            st.markdown(chip_html, unsafe_allow_html=True)
+                        expander_label = "Cited Evidence & Source Context"
                     else:
-                        st.markdown(chip_html, unsafe_allow_html=True)
+                        expander_label = "Retrieved Candidate Context (Uncited)"
 
-                    with st.expander("Cited Evidence & Source Context", expanded=False):
+                    with st.expander(expander_label, expanded=False):
                         for s in snippets:
+                            is_cited = s.get("rank") in cited_ranks
                             header = f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
+                            if is_cited:
+                                header += " — *Cited in response*"
                             st.markdown(header)
                             snippet_text = sanitize_display_markdown(
                                 s.get("content", "").strip(), allow_external=allow_ext
@@ -361,21 +382,8 @@ def render_chat_view(
             st.markdown(effective_prompt)
 
         history_to_pass = st.session_state.chat_history[:-1][-10:]
-        search_query = effective_prompt
-        # Contextualize search query ONLY if current prompt is an ambiguous short follow-up
-        tokens = effective_prompt.strip().lower().split()
-        is_short_followup = len(tokens) <= 4 and any(
-            t in {"it", "that", "this", "these", "those", "they", "them", "why", "how", "more", "elaborate", "details"}
-            for t in tokens
-        )
-        if is_short_followup and history_to_pass:
-            last_user_msgs = [
-                m["content"]
-                for m in history_to_pass
-                if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
-            ]
-            if last_user_msgs:
-                search_query = f"{last_user_msgs[-1]} {effective_prompt}"
+        # Single shared follow-up heuristic (no drift with AiModel's internal path).
+        search_query = contextualize_query(effective_prompt, history_to_pass)
 
         # Target document: explicit filter or auto-detected from query
         doc_filter = None if selected_filter == "all" else selected_filter
@@ -392,9 +400,21 @@ def render_chat_view(
         retrieval_res = None
         active_retriever = st.session_state.get("hybrid_retriever") or st.session_state.local_embedding
 
+        # Whole-document inventory questions need an explicit document scope. When the
+        # filter is "all" but only one document is indexed, that scope is unambiguous.
+        retrieval_scope = doc_filter
+        if retrieval_scope is None and len(st.session_state.document_metadata) == 1:
+            retrieval_scope = next(iter(st.session_state.document_metadata))
+
         if active_retriever is not None:
             if hasattr(active_retriever, "search_hybrid"):
-                retrieval_res = active_retriever.search_hybrid(search_query, k=8, doc_id=doc_filter)
+                retrieval_res = resolve_retrieval(
+                    active_retriever,
+                    search_query,
+                    doc_id=retrieval_scope,
+                    k=8,
+                    max_context_chars=whole_document_char_budget(caps.context_window),
+                )
                 sources = retrieval_res.source_labels()
             else:
                 results = active_retriever.search(search_query, k=10)
@@ -417,16 +437,30 @@ def render_chat_view(
                     local_embedding=active_retriever,
                     chat_history=history_to_pass,
                     retrieval_result=retrieval_res,
+                    doc_id=doc_filter,
                 )
-                full_response = st.write_stream(response_stream)
-
-                if not caps.is_local:
-                    st.caption(f"Generated via external cloud provider ({caps.model_name}) with user consent.")
-                else:
-                    st.caption("Generated locally on-device (zero network egress).")
+                # Buffer the stream so an ungrounded draft is never left on screen
+                # as if it were an accepted answer.
+                stream_placeholder = st.empty()
+                response_chunks: list[str] = []
+                for token in response_stream:
+                    response_chunks.append(token)
+                    stream_placeholder.markdown("".join(response_chunks) + "▌")
+                full_response = "".join(response_chunks)
+                stream_placeholder.markdown(full_response)
 
                 verification = ai_model.validate_response(full_response, retrieval_res)
-                if verification.abstention_detected:
+                withheld = should_withhold_answer(verification)
+
+                if withheld:
+                    stream_placeholder.empty()
+                    st.warning(
+                        "Response withheld — grounding check failed. The draft did not cite retrieved "
+                        "evidence with [E#], cited invalid evidence, or echoed a prompt-injection directive."
+                    )
+                    with st.expander("Rejected draft (not accepted as an answer)", expanded=False):
+                        st.markdown(sanitize_display_markdown(full_response))
+                elif verification.abstention_detected:
                     st.caption("Explicit abstention — no document evidence found.")
                 elif verification.total_citations == 0:
                     st.caption("Ungrounded response — no evidence citations ([E#]) were included in the answer.")
@@ -437,27 +471,34 @@ def render_chat_view(
                     precision = verification.precision
                     st.caption(f"Unverified Citations ({precision:.0%} citation precision)")
 
-                if snippets_data:
-                    cited_ranks = set(verification.cited_ranks) if verification.cited_ranks else set()
-                    chips = [
-                        render_citation_chip(
-                            doc_id=s.get("doc_id", ""),
-                            page=s.get("page", 1),
-                            filename=s.get("filename", "doc"),
-                            rank=s.get("rank"),
-                        )
-                        for s in snippets_data
-                        if (not cited_ranks or s.get("rank") in cited_ranks)
-                    ]
-                    chip_html = " ".join(chips)
-                    if hasattr(st, "html"):
-                        st.html(chip_html)
-                    else:
-                        st.markdown(chip_html, unsafe_allow_html=True)
+                if not caps.is_local:
+                    st.caption(f"Generated via external cloud provider ({caps.model_name}) with user consent.")
+                else:
+                    st.caption("Generated locally on-device (zero network egress).")
 
-                    expander_label = (
-                        "Cited Evidence & Source Context" if cited_ranks else "Retrieved Candidate Context (Uncited)"
-                    )
+                if snippets_data:
+                    cited_ranks = set(verification.cited_ranks or [])
+                    if cited_ranks:
+                        chips = [
+                            render_citation_chip(
+                                doc_id=s.get("doc_id", ""),
+                                page=s.get("page", 1),
+                                filename=s.get("filename", "doc"),
+                                rank=s.get("rank"),
+                            )
+                            for s in snippets_data
+                            if s.get("rank") in cited_ranks
+                        ]
+                        chip_html = " ".join(chips)
+                        if hasattr(st, "html"):
+                            st.html(chip_html)
+                        else:
+                            st.markdown(chip_html, unsafe_allow_html=True)
+                        expander_label = "Cited Evidence & Source Context"
+                    else:
+                        st.caption("No retrieved candidate was cited by the answer.")
+                        expander_label = "Retrieved Candidate Context (Uncited)"
+
                     with st.expander(expander_label, expanded=False):
                         for s in snippets_data:
                             is_cited = s.get("rank") in cited_ranks
@@ -473,7 +514,10 @@ def render_chat_view(
                 append_chat_turn(
                     {
                         "role": "assistant",
-                        "content": full_response,
+                        # Withheld drafts must not re-enter model history as if accepted.
+                        "content": "[Response withheld: grounding check failed.]" if withheld else full_response,
+                        "rejected": withheld,
+                        "rejected_draft": full_response if withheld else None,
                         "sources": list(sources),
                         "verification": verification.model_dump(),
                         "snippets": snippets_data,
@@ -487,6 +531,7 @@ def render_chat_view(
                     {
                         "role": "assistant",
                         "content": f"*[Response generation interrupted: {err}]*",
+                        "rejected": False,
                         "sources": list(sources),
                         "verification": None,
                         "snippets": snippets_data,

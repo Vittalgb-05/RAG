@@ -12,6 +12,7 @@ import threading
 import warnings
 
 from core.citation_validator import CitationVerificationResult, validate_citations
+from core.query_intent import contextualize_query, resolve_retrieval, whole_document_char_budget
 from retrieval.hybrid_retriever import HybridRetriever
 from providers.llama_cpp_provider import LlamaCppProvider
 from retrieval.local_embedding import LocalEmbedding
@@ -240,6 +241,7 @@ class AiModel:
         local_embedding: LocalEmbedding | HybridRetriever | None = None,
         chat_history: list[dict[str, str]] | None = None,
         retrieval_result: RetrievalResult | None = None,
+        doc_id: str | None = None,
     ) -> Generator[str, None, None]:
         """Stream answer tokens grounded in retrieved document context.
 
@@ -249,10 +251,12 @@ class AiModel:
             local_embedding: Existing vector index or hybrid retriever instance.
             chat_history: Prior conversation turns.
             retrieval_result: Optional pre-computed canonical RetrievalResult (RETR-04).
+            doc_id: Optional document scope used when retrieving internally.
 
         Yields:
             Token text chunks as generated.
         """
+        caps = self.provider.get_capabilities()
         if retrieval_result is not None:
             relevant_sections = retrieval_result.formatted_evidence()
         else:
@@ -268,39 +272,19 @@ class AiModel:
                     "Please provide an indexed retriever (LocalEmbedding or HybridRetriever) or explicit RetrievalResult."
                 )
 
-            # Contextualize search query ONLY if current prompt is an ambiguous short follow-up
-            search_query = prompt
-            tokens = prompt.strip().lower().split()
-            is_short_followup = len(tokens) <= 4 and any(
-                t
-                in {
-                    "it",
-                    "that",
-                    "this",
-                    "these",
-                    "those",
-                    "they",
-                    "them",
-                    "why",
-                    "how",
-                    "more",
-                    "elaborate",
-                    "details",
-                }
-                for t in tokens
-            )
-            if is_short_followup and chat_history:
-                last_user_msgs = [
-                    m["content"]
-                    for m in chat_history
-                    if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
-                ]
-                if last_user_msgs:
-                    search_query = f"{last_user_msgs[-1]} {prompt}"
+            # Contextualize the search query only when the prompt is a short follow-up.
+            # Shared helper keeps the UI and AiModel paths from drifting (CONCERNS.md).
+            search_query = contextualize_query(prompt, chat_history)
 
             if local_embedding:
                 if isinstance(local_embedding, HybridRetriever):
-                    retrieval_result = local_embedding.search_hybrid(search_query, k=10)
+                    retrieval_result = resolve_retrieval(
+                        local_embedding,
+                        search_query,
+                        doc_id=doc_id,
+                        k=10,
+                        max_context_chars=whole_document_char_budget(caps.context_window),
+                    )
                     relevant_sections = retrieval_result.formatted_evidence()
                 elif hasattr(local_embedding, "get_context"):
                     relevant_sections = local_embedding.get_context(search_query, k=10)
@@ -320,7 +304,6 @@ class AiModel:
 
         self.last_retrieval_result = retrieval_result
 
-        caps = self.provider.get_capabilities()
         messages = assemble_grounded_messages(
             prompt=prompt,
             context_text=relevant_sections,

@@ -178,7 +178,7 @@ class RetrievalResult(BaseModel):
     query: str = Field(..., description="User search query or question.")
     snippets: list[EvidenceSnippet] = Field(default_factory=list, description="Ranked list of evidence snippets.")
     total_candidates: int = Field(default=0, ge=0, description="Total candidates examined across modalities.")
-    search_mode: Literal["hybrid", "dense", "fts", "fallback"] = Field(
+    search_mode: Literal["hybrid", "dense", "fts", "fallback", "document"] = Field(
         default="hybrid", description="Retrieval execution mode."
     )
 

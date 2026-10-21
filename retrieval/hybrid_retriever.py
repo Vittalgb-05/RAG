@@ -553,6 +553,82 @@ class HybridRetriever:
         # resurrect deleted documents the next time LanceDB is unavailable.
         self._save_fallback_store()
 
+    def fetch_document_chunks(self, doc_id: str, limit: int = 500) -> RetrievalResult:
+        """Return every indexed chunk for a document in page order.
+
+        Whole-document questions (e.g. "What are the questions?") must not be
+        answered from a similarity-ranked sample, which silently omits later
+        pages. This provides a deterministic, page-ordered inventory that callers
+        can budget down while preserving page coverage.
+
+        Args:
+            doc_id: Document identifier to scope the read.
+            limit: Safety ceiling on rows read from the backend.
+
+        Returns:
+            RetrievalResult with page-ordered snippets ranked from 1, or empty.
+        """
+        if not doc_id or limit <= 0:
+            return RetrievalResult(query="", snippets=[], total_candidates=0, search_mode="document")
+
+        rows: dict[str, dict[str, Any]] = {}
+
+        if self._has_lancedb and self._table is not None:
+            try:
+                safe_doc_id = _escape_sql_literal(doc_id)
+                raw_rows = self._table.search().where(f"doc_id = '{safe_doc_id}'").limit(limit).to_list()
+                for row in raw_rows:
+                    record = dict(row)
+                    chunk_id = record.get("chunk_id")
+                    if chunk_id:
+                        rows[str(chunk_id)] = record
+            except Exception as err:
+                logger.warning("LanceDB whole-document read failed for %s: %s", doc_id, err)
+
+        if not rows:
+            for document in self._fallback_store.documents:
+                if document.get("doc_id") != doc_id:
+                    continue
+                chunk_id = document.get("chunk_id")
+                if chunk_id:
+                    rows[str(chunk_id)] = dict(document)
+
+        ordered = sorted(
+            rows.values(),
+            key=lambda record: (int(record.get("page", 1)), str(record.get("chunk_id", ""))),
+        )
+        snippets: list[EvidenceSnippet] = []
+        for rank, raw in enumerate(ordered, start=1):
+            bbox = raw.get("bbox")
+            bbox_json = raw.get("bbox_json")
+            if bbox is None and bbox_json:
+                try:
+                    bbox = BBox.model_validate_json(bbox_json)
+                except Exception:
+                    pass
+            snippets.append(
+                EvidenceSnippet(
+                    content=str(raw.get("content", "")),
+                    doc_id=str(raw.get("doc_id", doc_id)),
+                    filename=str(raw.get("filename", "")),
+                    page=int(raw.get("page", 1)),
+                    chunk_id=str(raw.get("chunk_id", f"{doc_id}_{rank}")),
+                    score=0.0,
+                    rank=rank,
+                    extraction=str(raw.get("extraction", "docling")),
+                    char_start=raw.get("char_start"),
+                    char_end=raw.get("char_end"),
+                    bbox=bbox,
+                )
+            )
+
+        return RetrievalResult(
+            query="",
+            snippets=snippets,
+            total_candidates=len(rows),
+            search_mode="document",
+        )
+
     def search_dense(
         self,
         query_vector: list[float],
