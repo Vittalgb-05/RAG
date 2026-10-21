@@ -23,6 +23,7 @@ class GroqProvider(BaseModelProvider):
         api_key: str | None = None,
         model_name: str = "openai/gpt-oss-20b",
         context_window: int = 8192,
+        user_consented: bool = False,
     ) -> None:
         """Initialize the Groq provider.
 
@@ -30,9 +31,12 @@ class GroqProvider(BaseModelProvider):
             api_key: Optional explicit Groq API key.
             model_name: Cloud model identifier.
             context_window: Maximum token window.
+            user_consented: Explicit consent to transmit content to Groq.  Generation
+                and image analysis refuse to run until this is True (INF-04, UI-04).
         """
         self.model_name = model_name
         self.context_window = context_window
+        self.user_consented = bool(user_consented)
 
         if api_key is None:
             # Check Streamlit secrets if present, then environment
@@ -50,6 +54,18 @@ class GroqProvider(BaseModelProvider):
         self._client: Any = None
         if Groq is not None and self.api_key:
             self._client = Groq(api_key=self.api_key)
+
+    def set_consent(self, consented: bool) -> None:
+        """Update explicit user consent state."""
+        self.user_consented = bool(consented)
+
+    def _assert_consent(self) -> None:
+        """Block transmission until the user has explicitly consented."""
+        if not self.user_consented:
+            raise PermissionError(
+                "Cloud transmission blocked: explicit user consent is required before transmitting "
+                "document data to cloud providers (INF-04, UI-04)."
+            )
 
     def close(self) -> None:
         """Close underlying Groq client resources."""
@@ -104,6 +120,7 @@ class GroqProvider(BaseModelProvider):
         temperature: float = 0.2,
     ) -> str:
         """Generate text synchronously via Groq."""
+        self._assert_consent()
         if not self._client:
             raise RuntimeError("Groq client is not configured or missing API key.")
 
@@ -134,6 +151,7 @@ class GroqProvider(BaseModelProvider):
         temperature: float = 0.2,
     ) -> Generator[str, None, None]:
         """Stream text tokens incrementally via Groq."""
+        self._assert_consent()
         if not self._client:
             raise RuntimeError("Groq client is not configured or missing API key.")
 
@@ -167,4 +185,5 @@ class GroqProvider(BaseModelProvider):
         max_tokens: int = 512,
     ) -> str:
         """Multimodal image analysis is not supported on standard Groq text models."""
+        self._assert_consent()
         raise NotImplementedError("Groq text model does not support image analysis.")

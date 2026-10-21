@@ -242,6 +242,14 @@ def test_session_isolation_posture():
         def analyze_image(self, *args, **kwargs):
             return "image"
 
+    class DummyConsentedCloudProvider(DummyLocalProvider):
+        user_consented = True
+
+        def get_capabilities(self):
+            return ProviderCapabilities(
+                model_name="cloud-model", context_window=8192, supports_vision=False, is_local=False
+            )
+
     shared_provider = DummyLocalProvider()
 
     # Session A creates its model
@@ -252,8 +260,8 @@ def test_session_isolation_posture():
     assert session_a_model.cloud_mode is False
     assert session_b_model.cloud_mode is False
 
-    # Session A enables cloud mode
-    session_a_model.set_cloud_mode(True)
+    # Session A enables cloud mode with an explicitly consented provider
+    session_a_model.set_cloud_mode(True, cloud_provider=DummyConsentedCloudProvider())
     assert session_a_model.cloud_mode is True
 
     # Session B MUST remain strictly in local mode (zero cross-session leakage)

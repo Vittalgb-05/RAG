@@ -34,7 +34,7 @@ def test_groq_health_with_key():
     """Verify healthy status when API key and mock client are initialized."""
     mock_client = MagicMock()
     with patch("providers.groq_provider.Groq", return_value=mock_client):
-        provider = GroqProvider(api_key="gsk_test_mock")
+        provider = GroqProvider(api_key="gsk_test_mock", user_consented=True)
         health = provider.check_health()
         assert health.status == "healthy"
         assert "ready" in health.message
@@ -48,7 +48,7 @@ def test_groq_generate_text_success():
     mock_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
 
     with patch("providers.groq_provider.Groq", return_value=mock_client):
-        provider = GroqProvider(api_key="gsk_test_mock")
+        provider = GroqProvider(api_key="gsk_test_mock", user_consented=True)
         res = provider.generate_text("Explain quantum computing.", system_prompt="You are a physicist.")
 
         assert res == "Groq generated answer."
@@ -67,7 +67,7 @@ def test_groq_stream_text_success():
     mock_client.chat.completions.create.return_value = iter([chunk1, chunk2])
 
     with patch("providers.groq_provider.Groq", return_value=mock_client):
-        provider = GroqProvider(api_key="gsk_test_mock")
+        provider = GroqProvider(api_key="gsk_test_mock", user_consented=True)
         tokens = list(provider.stream_text("Say hello"))
 
         assert tokens == ["Hello ", "world!"]
@@ -76,7 +76,7 @@ def test_groq_stream_text_success():
 def test_groq_uninitialized_client_raises():
     """Verify that generate and stream raise RuntimeError if client is not configured."""
     with patch.dict("os.environ", {}, clear=True):
-        provider = GroqProvider(api_key=None)
+        provider = GroqProvider(api_key=None, user_consented=True)
         with pytest.raises(RuntimeError, match="Groq client is not configured"):
             provider.generate_text("Hello")
 
@@ -86,6 +86,6 @@ def test_groq_uninitialized_client_raises():
 
 def test_groq_analyze_image_unsupported():
     """Verify that multimodal image analysis raises NotImplementedError on text models."""
-    provider = GroqProvider(api_key="gsk_mock")
+    provider = GroqProvider(api_key="gsk_mock", user_consented=True)
     with pytest.raises(NotImplementedError, match="does not support image analysis"):
         provider.analyze_image(b"fake_image_bytes", prompt="Describe this image")

@@ -2,7 +2,7 @@
 
 Provides unified streaming response generation, bounded context budgeting,
 prompt injection isolation (<document_context>), and resilient fallback between
-local llama-server (Qwen3-VL 2B GGUF) and cloud Groq inference.
+local llama-server (Qwen2-VL 2B GGUF) and cloud Groq inference.
 """
 
 from collections.abc import Generator
@@ -12,7 +12,6 @@ import threading
 import warnings
 
 from core.citation_validator import CitationVerificationResult, validate_citations
-from providers.groq_provider import GroqProvider
 from retrieval.hybrid_retriever import HybridRetriever
 from providers.llama_cpp_provider import LlamaCppProvider
 from retrieval.local_embedding import LocalEmbedding
@@ -117,6 +116,15 @@ class AiModel:
         """
         self.cloud_mode = bool(cloud_mode)
         self.cloud_provider = cloud_provider
+
+        if self.cloud_mode:
+            active_cloud = cloud_provider if cloud_provider is not None else provider
+            if active_cloud is None or not getattr(active_cloud, "user_consented", False):
+                raise PermissionError(
+                    "Cloud mode requires an explicitly consented cloud provider "
+                    "(user_consented=True). Refusing to route document content externally."
+                )
+
         if provider is not None:
             self.provider = provider
         else:
@@ -150,6 +158,13 @@ class AiModel:
             cloud_provider: Optional consented cloud provider instance (e.g. LiteLLMProvider).
         """
         target_mode = bool(enabled)
+        if target_mode:
+            active_cloud = cloud_provider if cloud_provider is not None else self.cloud_provider
+            if active_cloud is None or not getattr(active_cloud, "user_consented", False):
+                raise PermissionError(
+                    "Cloud mode requires an explicitly consented cloud provider "
+                    "(user_consented=True). Refusing to route document content externally."
+                )
         # Avoid unnecessary reconnection / recreation if state has not changed (WR-02)
         if self.cloud_mode == target_mode:
             if not target_mode and self.provider is not None and self.provider.get_capabilities().is_local:
@@ -173,38 +188,28 @@ class AiModel:
         """
         # 1. If Cloud Mode is explicitly enabled, route through cloud provider
         if self.cloud_mode:
-            if self.cloud_provider is not None:
-                return self.cloud_provider
-            groq_provider = GroqProvider()
-            if groq_provider.check_health().status == "healthy":
-                return groq_provider
-            groq_provider.close()
+            if self.cloud_provider is None:
+                raise PermissionError(
+                    "Cloud mode is active without a consented provider; refusing to infer externally."
+                )
+            return self.cloud_provider
 
         # 2. Local mode: probe local llama-server
         local = LlamaCppProvider()
         return local
 
     def check_health(self) -> HealthStatus:
-        """Check operational status of the active provider, re-probing if unhealthy.
+        """Probe the active provider once.
+
+        The previous implementation probed the active provider and, when unhealthy,
+        constructed a second identical provider and probed again — doubling the
+        latency of every Streamlit rerun while llama-server was offline. Callers that
+        render frequently should throttle this call; the UI does so per session.
 
         Returns:
             HealthStatus schema from active provider.
         """
-        current_status = self.provider.check_health()
-        if current_status.status != "healthy":
-            # Re-probe providers dynamically to recover if llama-server was started
-            # or Groq credentials were added after initial startup
-            new_provider = self._detect_provider()
-            new_status = new_provider.check_health()
-            if new_status.status == "healthy":
-                self.close()
-                self.provider = new_provider
-                self.model_name = new_provider.get_capabilities().model_name
-                return new_status
-            else:
-                new_provider.close()
-
-        return current_status
+        return self.provider.check_health()
 
     def get_capabilities(self) -> ProviderCapabilities:
         """Inspect capabilities of the active provider.

@@ -11,6 +11,7 @@ Provides a unified chatbot-first document workspace:
 import logging
 import os
 from pathlib import Path
+import time
 
 # Enforce PyTorch backend and suppress Keras 3 / TensorFlow integrations
 os.environ.setdefault("USE_TF", "0")
@@ -187,8 +188,25 @@ else:
         st.session_state._cached_cloud_key = None
     ai_model.set_cloud_mode(False)
 
-health = ai_model.check_health()
-caps = ai_model.get_capabilities()
+# Probe provider health at most once every 5 seconds.  Streamlit reruns this script
+# on every interaction; probing an offline llama-server on each rerun adds seconds of
+# latency.  The snapshot lives in session state so it survives reruns.
+_HEALTH_TTL_SECONDS = 5.0
+_now = time.monotonic()
+_snapshot = st.session_state.get("_health_snapshot")
+_last_probe = float(st.session_state.get("_health_probe_ts", 0.0))
+if (
+    _snapshot is None
+    or _snapshot.get("provider") is not ai_model.provider
+    or (_now - _last_probe) >= _HEALTH_TTL_SECONDS
+):
+    health = ai_model.check_health()
+    caps = ai_model.get_capabilities()
+    st.session_state._health_snapshot = {"health": health, "caps": caps, "provider": ai_model.provider}
+    st.session_state._health_probe_ts = _now
+else:
+    health = _snapshot["health"]
+    caps = _snapshot["caps"]
 is_healthy = bool(health.status == "healthy")
 
 
@@ -320,7 +338,7 @@ with st.sidebar:
 
     footer_html = (
         "<div style='font-size: 0.72rem; color: #9693A6; margin-top: 0.75rem; text-align: center; line-height: 1.4;'>"
-        "100% Offline Local Pipeline<br>Qwen3-VL · LanceDB · MiniLM</div>"
+        "100% Offline Local Pipeline<br>Qwen2-VL · LanceDB · MiniLM</div>"
     )
     if hasattr(st.sidebar, "html"):
         st.sidebar.html(footer_html)

@@ -108,23 +108,19 @@ def test_ai_model_auto_detects_healthy_local_llama(monkeypatch) -> None:
     assert model.check_health().status == "healthy"
 
 
-def test_ai_model_falls_back_to_groq_when_cloud_mode_enabled_and_local_offline(monkeypatch) -> None:
-    """Verify AiModel routes to Groq Cloud when cloud_mode=True and local llama-server is unreachable."""
-    unreachable_status = HealthStatus(
-        status="unreachable",
-        message="Cannot connect to llama-server",
+def test_ai_model_refuses_cloud_mode_without_consented_provider(monkeypatch) -> None:
+    """Verify cloud_mode=True cannot silently construct/route to Groq without consent."""
+    monkeypatch.setattr(
+        LlamaCppProvider,
+        "check_health",
+        lambda self: HealthStatus(status="unreachable", message="Cannot connect to llama-server"),
     )
-    monkeypatch.setattr(LlamaCppProvider, "check_health", lambda self: unreachable_status)
+    with pytest.raises(PermissionError, match="consented cloud provider"):
+        AiModel(cloud_mode=True)
 
-    groq_healthy_status = HealthStatus(
-        status="healthy",
-        message="Groq Cloud ready (openai/gpt-oss-20b).",
-    )
-    monkeypatch.setattr(GroqProvider, "check_health", lambda self: groq_healthy_status)
-
-    model = AiModel(cloud_mode=True)
+    consented = GroqProvider(api_key="gsk_test_mock", user_consented=True)
+    model = AiModel(cloud_mode=True, cloud_provider=consented)
     assert model.provider.get_capabilities().is_local is False
-    assert model.check_health().status == "healthy"
     model.close()
 
 
@@ -202,7 +198,7 @@ def test_groq_provider_error_encapsulation() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.side_effect = Exception("API rate limited")
 
-    provider = GroqProvider(api_key="mock-key")
+    provider = GroqProvider(api_key="mock-key", user_consented=True)
     provider._client = mock_client
 
     import pytest
