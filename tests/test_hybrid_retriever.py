@@ -1,5 +1,7 @@
 """Unit tests for HybridRetriever persistent vector storage and CPU embedding pipeline (RETR-01, RETR-02)."""
 
+import json
+import logging
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -580,3 +582,157 @@ def test_scoped_search_is_not_crowded_out_in_fallback(tmp_path, monkeypatch):
     assert result.snippets
     assert all(snippet.doc_id == "doc_target" for snippet in result.snippets)
     assert any(snippet.chunk_id == "target_1" for snippet in result.snippets)
+
+
+def _fail_lancedb_connect(monkeypatch):
+    """Make the next HybridRetriever fail to open LanceDB."""
+    import retrieval.hybrid_retriever as hr
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated LanceDB open failure")
+
+    monkeypatch.setattr(hr.lancedb, "connect", _boom)
+
+
+def test_fallback_mirror_keeps_all_documents_after_lancedb_open_failure(tmp_path, monkeypatch):
+    """Every document indexed while LanceDB was healthy remains searchable later.
+
+    Regression for CONCERNS "Fallback vector mirror is clobbered whenever
+    LanceDB is available": the mirror must be merged write-through, not
+    overwritten with current-session chunks.
+    """
+    db_dir = tmp_path / "mirror_open_failure"
+    retriever = HybridRetriever(db_uri=db_dir)
+
+    vec_a = _make_unit_vector(31)
+    vec_b = _make_unit_vector(32)
+    retriever.index_chunks(
+        [Chunk(content="Doc A content", filename="a.pdf", page=1, chunk_id="chk_a1", doc_id="doc_a")],
+        embeddings=[vec_a],
+    )
+    retriever.index_chunks(
+        [Chunk(content="Doc B content", filename="b.pdf", page=1, chunk_id="chk_b1", doc_id="doc_b")],
+        embeddings=[vec_b],
+    )
+    retriever.close()
+
+    _fail_lancedb_connect(monkeypatch)
+    recovered = HybridRetriever(db_uri=db_dir)
+
+    assert not recovered.is_persistent()
+    assert recovered.has_document("doc_a")
+    assert recovered.has_document("doc_b")
+    assert recovered.count_chunks() == 2
+
+    results = recovered.search_dense(vec_a, k=2)
+    assert {result["doc_id"] for result in results} == {"doc_a", "doc_b"}
+
+
+def test_deleted_document_stays_deleted_after_lancedb_open_failure(tmp_path, monkeypatch):
+    """Deleting a document removes it from the mirror without harming the others."""
+    db_dir = tmp_path / "mirror_delete_open_failure"
+    retriever = HybridRetriever(db_uri=db_dir)
+
+    vec_a = _make_unit_vector(41)
+    vec_b = _make_unit_vector(42)
+    retriever.index_chunks(
+        [
+            Chunk(content="Doc A content", filename="a.pdf", page=1, chunk_id="chk_a1", doc_id="doc_a"),
+            Chunk(content="Doc B content", filename="b.pdf", page=1, chunk_id="chk_b1", doc_id="doc_b"),
+        ],
+        embeddings=[vec_a, vec_b],
+    )
+    retriever.delete_document("doc_a")
+    retriever.close()
+
+    _fail_lancedb_connect(monkeypatch)
+    recovered = HybridRetriever(db_uri=db_dir)
+
+    assert not recovered.has_document("doc_a")
+    assert recovered.has_document("doc_b")
+    results = recovered.search_dense(vec_b, k=5)
+    assert [result["doc_id"] for result in results] == ["doc_b"]
+
+
+def test_mirror_is_not_truncated_to_current_session_chunks(tmp_path):
+    """A new healthy session must append to the mirror, never replace it."""
+    db_dir = tmp_path / "mirror_accumulates"
+
+    first = HybridRetriever(db_uri=db_dir)
+    first.index_chunks(
+        [Chunk(content="Doc A content", filename="a.pdf", page=1, chunk_id="chk_a1", doc_id="doc_a")],
+        embeddings=[_make_unit_vector(51)],
+    )
+    first.close()
+
+    second = HybridRetriever(db_uri=db_dir)
+    # Healthy LanceDB sessions keep the mirror on disk only (no duplicate RAM copy).
+    assert second._fallback_loaded is False
+    second.index_chunks(
+        [Chunk(content="Doc B content", filename="b.pdf", page=1, chunk_id="chk_b1", doc_id="doc_b")],
+        embeddings=[_make_unit_vector(52)],
+    )
+    second.close()
+
+    payload = json.loads((db_dir / "fallback_store.json").read_text(encoding="utf-8"))
+    persisted_ids = {doc["chunk_id"] for doc in payload["documents"]}
+    assert {"chk_a1", "chk_b1"} <= persisted_ids
+    assert len(payload["vectors"]) == len(payload["documents"])
+
+
+def test_scoped_fallback_dense_search_not_capped_at_10000(tmp_path, monkeypatch):
+    """A document-scoped fallback search must reach chunks beyond the first 10k."""
+    monkeypatch.setattr("retrieval.hybrid_retriever.lancedb", None)
+
+    retriever = HybridRetriever(db_uri=tmp_path / "scoped_10k", vector_dim=8)
+    query_vec = [1.0] + [0.0] * 7
+
+    filler = [
+        Chunk(
+            content=f"Unrelated filler chunk {i}",
+            filename="filler.pdf",
+            page=1,
+            chunk_id=f"filler_{i}",
+            doc_id="doc_filler",
+        )
+        for i in range(10_000)
+    ]
+    target = Chunk(
+        content="Unique target evidence outside the global top ten thousand.",
+        filename="target.pdf",
+        page=1,
+        chunk_id="target_1",
+        doc_id="doc_target",
+    )
+    retriever.index_chunks(filler + [target], embeddings=[list(query_vec)] * (len(filler) + 1))
+    retriever.set_embedding_fn(lambda _query: query_vec)
+
+    results = retriever.search_dense(query_vec, k=3, doc_id="doc_target")
+
+    assert [result["chunk_id"] for result in results] == ["target_1"]
+
+
+def test_fts_status_reports_degradation_and_warns_once(tmp_path, caplog):
+    """FTS failures are recorded on the retriever and warned about exactly once."""
+    retriever = HybridRetriever(db_uri=tmp_path / "fts_status")
+
+    class _BadFtsTable:
+        def create_fts_index(self, *args, **kwargs):
+            raise RuntimeError("fts unavailable")
+
+    retriever._has_lancedb = True
+    retriever._db = object()
+    retriever._table = _BadFtsTable()
+
+    with caplog.at_level(logging.WARNING, logger="retrieval.hybrid_retriever"):
+        retriever.create_fts_index()
+        retriever.create_fts_index()
+
+    status = retriever.fts_status()
+    assert status["available"] is False
+    assert status["degraded"] is True
+    assert status["mode"] == "bm25-fallback"
+    assert "fts unavailable" in status["last_error"]
+
+    warnings = [r for r in caplog.records if "full-text search unavailable" in r.getMessage()]
+    assert len(warnings) == 1

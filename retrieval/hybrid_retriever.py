@@ -193,13 +193,21 @@ class HybridRetriever:
         self._db: Any = None
         self._table: Any = None
 
-        # Pure-Python in-memory fallback store
+        # Pure-Python fallback store. It is loaded from the durable mirror only
+        # when LanceDB is unavailable or a query actually falls through to the
+        # fallback path, so a healthy LanceDB session does not hold a duplicate
+        # copy of every vector in RAM.
         self._fallback_store = VectorIndex(
             distance_metric="cosine",
             embedding_fn=self.embedding_fn,
         )
-
+        self._fallback_loaded = False
         self._fallback_file = self.db_uri / "fallback_store.json"
+
+        # Keyword-search health (surfaced to Settings via fts_status()).
+        self.fts_available: bool | None = None
+        self.fts_last_error: str | None = None
+        self._fts_warning_logged = False
 
         if self._has_lancedb:
             try:
@@ -216,19 +224,144 @@ class HybridRetriever:
             self._load_fallback_store()
 
     def _load_fallback_store(self) -> None:
-        """Load stored vectors and documents from disk when LanceDB is unavailable."""
+        """Load the durable fallback mirror into memory (idempotent, lazy).
+
+        Loading is deferred until LanceDB is unavailable or a query falls
+        through to the fallback path, so a healthy LanceDB session never holds
+        a second copy of every embedding. The mirror file is *never* cleared
+        here; writes go through :meth:`_mirror_upsert`.
+        """
+        if self._fallback_loaded:
+            return
+        self._fallback_loaded = True
         if not self._fallback_file.exists():
             return
         try:
-            with open(self._fallback_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            docs = data.get("documents", [])
-            vecs = data.get("vectors", [])
-            for doc, vec in zip(docs, vecs):
+            docs, vectors = self._read_mirror()
+            self._fallback_store = VectorIndex(
+                distance_metric="cosine",
+                embedding_fn=self.embedding_fn,
+            )
+            for doc, vec in zip(docs, vectors):
                 self._fallback_store.add_vector(vec, doc)
             logger.info("Loaded %d chunks from fallback persistent store at %s", len(docs), self._fallback_file)
         except Exception as err:
             logger.warning("Failed to load fallback store: %s", err)
+
+    def _read_mirror(self) -> tuple[list[dict[str, Any]], list[list[float]]]:
+        """Read raw documents/vectors from the durable mirror file."""
+        if not self._fallback_file.exists():
+            return [], []
+        try:
+            with open(self._fallback_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            docs = data.get("documents", []) or []
+            vectors = data.get("vectors", []) or []
+            # Keep the two lists aligned even if a previous write was truncated.
+            usable = min(len(docs), len(vectors))
+            return [dict(d) for d in docs[:usable]], [list(v) for v in vectors[:usable]]
+        except Exception as err:
+            logger.warning("Failed to read fallback store %s: %s", self._fallback_file, err)
+            return [], []
+
+    @staticmethod
+    def _serialize_document(doc: dict[str, Any]) -> dict[str, Any]:
+        """Return a JSON-safe copy of a chunk document."""
+        doc_copy = dict(doc)
+        bbox = doc_copy.get("bbox")
+        if isinstance(bbox, BBox):
+            doc_copy["bbox"] = bbox.model_dump()
+        elif hasattr(bbox, "model_dump"):
+            doc_copy["bbox"] = bbox.model_dump()
+        return doc_copy
+
+    def _write_mirror(self, docs: list[dict[str, Any]], vectors: list[list[float]]) -> None:
+        """Atomically write the durable fallback mirror."""
+        try:
+            self.db_uri.mkdir(parents=True, exist_ok=True)
+            serializable_docs = [self._serialize_document(d) for d in docs]
+            serializable_vectors = [[float(x) for x in vec] for vec in vectors]
+            tmp_path = self._fallback_file.with_name(self._fallback_file.name + ".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump({"documents": serializable_docs, "vectors": serializable_vectors}, f)
+            tmp_path.replace(self._fallback_file)
+        except Exception as err:
+            logger.warning("Failed to save fallback store: %s", err)
+
+    def _save_fallback_store(self) -> None:
+        """Persist the in-memory fallback store (only when it is loaded)."""
+        if not self._fallback_loaded:
+            return
+        self._write_mirror(self._fallback_store.documents, self._fallback_store.vectors)
+
+    def _fallback_upsert(self, docs: list[dict[str, Any]], vectors: list[list[float]]) -> None:
+        """Merge documents into the in-memory fallback store by chunk_id."""
+        existing_indices = {
+            d.get("chunk_id"): i for i, d in enumerate(self._fallback_store.documents) if d.get("chunk_id")
+        }
+        for doc, emb in zip(docs, vectors):
+            cid = doc.get("chunk_id")
+            if cid and cid in existing_indices:
+                idx = existing_indices[cid]
+                self._fallback_store.documents[idx] = doc
+                self._fallback_store.vectors[idx] = emb
+            else:
+                self._fallback_store.add_vector(emb, doc)
+                if cid:
+                    existing_indices[cid] = len(self._fallback_store.documents) - 1
+
+    def _mirror_upsert(self, docs: list[dict[str, Any]], vectors: list[list[float]]) -> None:
+        """Write-through merge new chunks into the durable mirror.
+
+        While LanceDB is healthy the mirror is updated on disk only, so no
+        duplicate vectors are retained in RAM. The merge is keyed by
+        ``chunk_id``: re-indexing replaces rows in place and new documents are
+        appended, so a later session's chunks never truncate the durable
+        mirror. Merging keyed by ``doc_id`` instead would drop a document's
+        text chunks when visual evidence is indexed in a second call for the
+        same document. Document removal is handled explicitly by
+        :meth:`delete_document`.
+
+        Tradeoff: the mirror is a single JSON file, so each ingestion
+        transaction reads and rewrites it (O(N) I/O). That keeps recovery
+        simple and crash-safe while avoiding in-RAM duplication; a per-document
+        file layout would avoid the rewrite at the cost of extra moving parts.
+        """
+        if self._fallback_loaded:
+            self._fallback_upsert(docs, vectors)
+            self._save_fallback_store()
+            return
+
+        existing_docs, existing_vectors = self._read_mirror()
+        new_chunk_ids = {d.get("chunk_id") for d in docs if d.get("chunk_id")}
+        merged_docs: list[dict[str, Any]] = []
+        merged_vectors: list[list[float]] = []
+        for doc, vec in zip(existing_docs, existing_vectors):
+            cid = doc.get("chunk_id")
+            if cid and cid in new_chunk_ids:
+                continue
+            merged_docs.append(doc)
+            merged_vectors.append(vec)
+        for doc, vec in zip(docs, vectors):
+            merged_docs.append(self._serialize_document(doc))
+            merged_vectors.append([float(x) for x in vec])
+        self._write_mirror(merged_docs, merged_vectors)
+
+    def _mirror_delete_document(self, doc_id: str) -> None:
+        """Remove every chunk for ``doc_id`` from the durable mirror."""
+        if self._fallback_loaded:
+            indices = [i for i, d in enumerate(self._fallback_store.documents) if d.get("doc_id") == doc_id]
+            for idx in reversed(indices):
+                del self._fallback_store.documents[idx]
+                del self._fallback_store.vectors[idx]
+            self._save_fallback_store()
+            return
+
+        if not self._fallback_file.exists():
+            return
+        existing_docs, existing_vectors = self._read_mirror()
+        kept = [(doc, vec) for doc, vec in zip(existing_docs, existing_vectors) if doc.get("doc_id") != doc_id]
+        self._write_mirror([doc for doc, _ in kept], [vec for _, vec in kept])
 
     def set_embedding_fn(self, embedding_fn: Callable[[str], list[float]]) -> None:
         """Set or update the embedding function used for query vectorization."""
@@ -238,7 +371,7 @@ class HybridRetriever:
 
     def close(self) -> None:
         """Flush fallback persistence and release database handles."""
-        if not self._has_lancedb or self._db is None:
+        if self._fallback_loaded:
             self._save_fallback_store()
         self._table = None
         self._db = None
@@ -248,31 +381,6 @@ class HybridRetriever:
 
     def __exit__(self, *args: object) -> None:
         self.close()
-
-    def _save_fallback_store(self) -> None:
-        """Persist fallback store to disk."""
-        try:
-            self.db_uri.mkdir(parents=True, exist_ok=True)
-            serializable_docs = []
-            for d in self._fallback_store.documents:
-                doc_copy = dict(d)
-                bbox = doc_copy.get("bbox")
-                if isinstance(bbox, BBox):
-                    doc_copy["bbox"] = bbox.model_dump()
-                elif hasattr(bbox, "model_dump"):
-                    doc_copy["bbox"] = bbox.model_dump()
-                serializable_docs.append(doc_copy)
-
-            with open(self._fallback_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "documents": serializable_docs,
-                        "vectors": self._fallback_store.vectors,
-                    },
-                    f,
-                )
-        except Exception as err:
-            logger.warning("Failed to save fallback store: %s", err)
 
     def _init_table(self) -> None:
         """Connect to existing 'chunks' table if present."""
@@ -298,6 +406,7 @@ class HybridRetriever:
                 return len(self._table)
             except Exception:
                 pass
+        self._load_fallback_store()
         return len(self._fallback_store.documents)
 
     def has_document(self, doc_id: str) -> bool:
@@ -309,6 +418,7 @@ class HybridRetriever:
                 return len(results) > 0
             except Exception:
                 pass
+        self._load_fallback_store()
         return any(d.get("doc_id") == doc_id for d in self._fallback_store.documents)
 
     contains_document = has_document
@@ -330,6 +440,7 @@ class HybridRetriever:
             distance_metric="cosine",
             embedding_fn=self.embedding_fn,
         )
+        self._fallback_loaded = True
         if self._fallback_file.exists():
             try:
                 self._fallback_file.unlink(missing_ok=True)
@@ -378,22 +489,7 @@ class HybridRetriever:
                 f"Mismatch: {len(raw_chunks)} chunks provided but {len(computed_embeddings)} embeddings provided."
             )
 
-        # 1. Update in-memory fallback index with chunk deduplication
-        existing_indices = {
-            d.get("chunk_id"): i for i, d in enumerate(self._fallback_store.documents) if d.get("chunk_id")
-        }
-        for doc, emb in zip(raw_chunks, computed_embeddings):
-            cid = doc.get("chunk_id")
-            if cid and cid in existing_indices:
-                idx = existing_indices[cid]
-                self._fallback_store.documents[idx] = doc
-                self._fallback_store.vectors[idx] = emb
-            else:
-                self._fallback_store.add_vector(emb, doc)
-                if cid:
-                    existing_indices[cid] = len(self._fallback_store.documents) - 1
-
-        # 2. Update persistent LanceDB table
+        # 1. Persist to the active backend (LanceDB when healthy).
         if self._has_lancedb and self._db is not None:
             records: list[dict[str, Any]] = []
             for doc, emb in zip(raw_chunks, computed_embeddings):
@@ -478,16 +574,15 @@ class HybridRetriever:
                 # the caller must surface a failed ingestion instead of a document that
                 # claims to be indexed while its vectors are absent.
                 logger.error("Failed to persist chunks to LanceDB: %s", err)
-                self._save_fallback_store()
+                self._mirror_upsert(raw_chunks, computed_embeddings)
                 raise VectorIndexError(
                     f"Failed to persist {len(raw_chunks)} chunks to LanceDB at {self.db_uri}: {err}"
                 ) from err
 
-        # Keep the durable fallback mirror in sync with the active backend. Without
-        # this, fallback_store.json retains chunks that were later deleted or
-        # re-indexed and can resurrect removed documents if LanceDB is unavailable
-        # on a later run.
-        self._save_fallback_store()
+        # 2. Write-through the durable fallback mirror. While LanceDB is healthy
+        # this updates disk only (no duplicate in-RAM vectors); a later session
+        # without LanceDB can still serve every document.
+        self._mirror_upsert(raw_chunks, computed_embeddings)
 
         return len(raw_chunks)
 
@@ -543,15 +638,10 @@ class HybridRetriever:
                     logger.error("Failed to delete doc_id=%s from LanceDB: %s", doc_id, err)
                     raise VectorIndexError(f"Failed to delete vectors for {doc_id} from {self.db_uri}: {err}") from err
 
-        # Remove from the in-memory fallback store.
-        indices_to_remove = [i for i, d in enumerate(self._fallback_store.documents) if d.get("doc_id") == doc_id]
-        for idx in reversed(indices_to_remove):
-            del self._fallback_store.documents[idx]
-            del self._fallback_store.vectors[idx]
-
-        # Always persist the post-delete mirror. Otherwise a stale on-disk JSON can
-        # resurrect deleted documents the next time LanceDB is unavailable.
-        self._save_fallback_store()
+        # Remove from the durable mirror (and the in-memory copy if loaded).
+        # Otherwise a stale on-disk JSON can resurrect deleted documents the next
+        # time LanceDB is unavailable.
+        self._mirror_delete_document(doc_id)
 
     def fetch_document_chunks(self, doc_id: str, limit: int = 500) -> RetrievalResult:
         """Return every indexed chunk for a document in page order.
@@ -586,6 +676,7 @@ class HybridRetriever:
                 logger.warning("LanceDB whole-document read failed for %s: %s", doc_id, err)
 
         if not rows:
+            self._load_fallback_store()
             for document in self._fallback_store.documents:
                 if document.get("doc_id") != doc_id:
                     continue
@@ -672,9 +763,15 @@ class HybridRetriever:
             except Exception as err:
                 logger.warning("LanceDB vector search failed: %s. Falling back to in-memory search.", err)
 
-        # Fallback in-memory search
+        # Fallback in-memory search. Score the full store, then apply the
+        # document scope before limiting to k — a hard candidate cap here would
+        # silently drop documents whose chunks fall outside it.
         try:
-            raw_results = self._fallback_store.search(query_vector, k=k if not doc_id else max(k, 10000))
+            self._load_fallback_store()
+            total = len(self._fallback_store.documents)
+            if total == 0:
+                return []
+            raw_results = self._fallback_store.search(query_vector, k=total)
             formatted: list[dict[str, Any]] = []
             allowed = {doc_id} if isinstance(doc_id, str) else (set(doc_id) if doc_id else None)
             for doc, dist in raw_results:
@@ -690,15 +787,81 @@ class HybridRetriever:
             logger.warning("Fallback search error: %s", err)
             return []
 
+    def _set_fts_available(self) -> None:
+        """Record that LanceDB full-text search is healthy."""
+        self.fts_available = True
+        self.fts_last_error = None
+
+    def _set_fts_degraded(self, err: Exception) -> None:
+        """Record a degraded FTS state and warn once per retriever instance."""
+        self.fts_available = False
+        self.fts_last_error = str(err)
+        if not self._fts_warning_logged:
+            logger.warning(
+                "LanceDB full-text search unavailable; keyword search will use the in-Python BM25 fallback: %s",
+                err,
+            )
+            self._fts_warning_logged = True
+        else:
+            logger.debug("LanceDB FTS still degraded: %s", err)
+
+    def fts_status(self) -> dict[str, Any]:
+        """Return keyword-search health for display in Settings.
+
+        Returns:
+            Dict with ``available`` (True/False/None when untested),
+            ``degraded`` flag, ``last_error`` string, and active ``mode``.
+        """
+        if self.fts_available is True:
+            mode = "lancedb-fts"
+        elif self.fts_available is False:
+            mode = "bm25-fallback"
+        else:
+            mode = "unknown"
+        return {
+            "available": self.fts_available,
+            "degraded": self.fts_available is False,
+            "last_error": self.fts_last_error,
+            "mode": mode,
+        }
+
     def create_fts_index(self) -> None:
         """Create full-text search index on 'content' column in LanceDB if supported."""
         if self._has_lancedb and self._table is not None:
             try:
                 if hasattr(self._table, "create_fts_index"):
                     self._table.create_fts_index("content", replace=True)
+                    self._set_fts_available()
                     logger.info("Created LanceDB full-text search index on 'content'.")
             except Exception as err:
-                logger.debug("LanceDB create_fts_index notice: %s", err)
+                self._set_fts_degraded(err)
+
+    def _bm25_candidate_docs(self, doc_id: str | list[str] | None = None) -> list[dict[str, Any]]:
+        """Return every candidate document for BM25 scoring.
+
+        Document scope is pushed into LanceDB before the row limit so a scoped
+        search never truncates at a fixed global cap. Without LanceDB the
+        complete durable mirror is scored.
+        """
+        if self._has_lancedb and self._table is not None:
+            try:
+                query_builder = self._table.search()
+                if doc_id:
+                    clause = _doc_filter_clause(doc_id)
+                    if hasattr(query_builder, "where"):
+                        query_builder = query_builder.where(clause)
+                total = len(self._table)
+                if total > 0:
+                    return [dict(row) for row in query_builder.limit(total).to_list()]
+            except Exception as err:
+                logger.warning("Could not read LanceDB rows for BM25 fallback: %s", err)
+
+        self._load_fallback_store()
+        docs = self._fallback_store.documents
+        if doc_id:
+            allowed = {doc_id} if isinstance(doc_id, str) else set(doc_id)
+            docs = [d for d in docs if d.get("doc_id") in allowed]
+        return docs
 
     def _bm25_search_fallback(
         self,
@@ -711,19 +874,7 @@ class HybridRetriever:
         if not query_terms:
             return []
 
-        docs = self._fallback_store.documents
-        if not docs and self._has_lancedb and self._table is not None:
-            try:
-                table_rows = self._table.search().limit(10000).to_list()
-                docs = [dict(r) for r in table_rows]
-            except Exception as err:
-                logger.debug("Could not read docs from LanceDB for BM25 fallback: %s", err)
-                docs = []
-
-        if doc_id:
-            allowed = {doc_id} if isinstance(doc_id, str) else set(doc_id)
-            docs = [d for d in docs if d.get("doc_id") in allowed]
-
+        docs = self._bm25_candidate_docs(doc_id)
         if not docs:
             return []
 
@@ -804,10 +955,11 @@ class HybridRetriever:
                     score = float(r.get("_score", r.get("score", 1.0)))
                     r["score"] = score
                     formatted_results.append(r)
+                self._set_fts_available()
                 if formatted_results:
                     return formatted_results
             except Exception as err:
-                logger.debug("LanceDB FTS search notice: %s. Using BM25 fallback.", err)
+                self._set_fts_degraded(err)
 
         return self._bm25_search_fallback(query, k=k, doc_id=doc_id)
 
