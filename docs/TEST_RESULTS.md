@@ -9,7 +9,7 @@
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit/contract suite | `python -m pytest -q --no-header` | **309 passed**, 0 failed, 0 skipped, 0 errors, **39.68 s** |
+| Unit/contract suite | `python -m pytest -q --no-header` | **309 passed**, 0 failed, 0 skipped, 0 errors, **44.42 s** (re-run; 39.68 s on the immediately preceding run of the same tree) |
 | Lint | `python -m ruff check .` | **All checks passed** |
 | Format | `python -m ruff format --check .` | **72 files already formatted** |
 | Collection | `python -m pytest --collect-only -q` | 309 tests collected |

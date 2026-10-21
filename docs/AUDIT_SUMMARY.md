@@ -86,7 +86,7 @@ Eight atomic commits (plus this documentation and regression tests), summarized 
 
 | Gate | Result |
 |---|---|
-| `python -m pytest -q --no-header` | **309 passed**, 0 failed, 0 skipped, 41.44 s |
+| `python -m pytest -q --no-header` | **309 passed**, 0 failed, 0 skipped (39.7–44.4 s across final runs) |
 | `python -m ruff check .` | All checks passed |
 | `python -m ruff format --check .` | 72 files already formatted |
 | GGUF identity | `qwen2vl` LM + `qwen2vl_merger` projector; verifier returns `[]` |
