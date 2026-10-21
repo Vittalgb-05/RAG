@@ -1,4 +1,4 @@
-"""Local inference provider for llama-server (llama.cpp) supporting Qwen3-VL 2B GGUF.
+"""Local inference provider for llama-server (llama.cpp) supporting Qwen2-VL 2B GGUF.
 
 Communicates with llama-server over local HTTP REST endpoints, offering
 text generation, incremental SSE streaming, multimodal image analysis,
@@ -20,6 +20,12 @@ import httpx
 
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
+# The on-disk filename is a legacy artifact name from earlier releases.  Its GGUF
+# metadata identifies the checkpoint as Qwen2-VL-2B-Instruct ("qwen2vl").
+LOCAL_GGUF_FILENAME = "qwen3-vl-2b-instruct-q4_k_m.gguf"
+LOCAL_MMPROJ_FILENAME = "mmproj-f16.gguf"
+LOCAL_MODEL_ID = "qwen2-vl-2b"
+
 
 class LlamaCppProvider(BaseModelProvider):
     """Client for local llama-server implementing the BaseModelProvider interface."""
@@ -27,7 +33,7 @@ class LlamaCppProvider(BaseModelProvider):
     def __init__(
         self,
         base_url: str | None = None,
-        model_name: str = "qwen3-vl-2b",
+        model_name: str = LOCAL_MODEL_ID,
         context_window: int = 4096,
         transport: httpx.BaseTransport | None = None,
         allow_remote: bool = False,
@@ -124,8 +130,8 @@ class LlamaCppProvider(BaseModelProvider):
             )
             bin_cmd = str(local_bin) if local_bin.exists() and not shutil.which("llama-server") else "llama-server"
             setup_cmd = (
-                f"{bin_cmd} -m models/{self.model_name}-instruct-q4_k_m.gguf "
-                f"--mmproj models/mmproj-f16.gguf -c {self.context_window} -ngl 28 --port 8080"
+                f"{bin_cmd} -m models/{LOCAL_GGUF_FILENAME} "
+                f"--mmproj models/{LOCAL_MMPROJ_FILENAME} -c {self.context_window} -ngl 28 --port 8080"
             )
             return HealthStatus(
                 status="unreachable",
@@ -144,7 +150,7 @@ class LlamaCppProvider(BaseModelProvider):
         """Inspect provider capabilities.
 
         Returns:
-            ProviderCapabilities for local Qwen3-VL 2B.
+            ProviderCapabilities for local Qwen2-VL 2B.
         """
         return ProviderCapabilities(
             model_name=self.model_name,

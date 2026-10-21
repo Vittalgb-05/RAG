@@ -12,11 +12,11 @@ def test_capabilities() -> None:
     """Test get_capabilities returns expected local VLM specifications."""
     provider = LlamaCppProvider(
         base_url="http://127.0.0.1:8080",
-        model_name="qwen3-vl-2b",
+        model_name="qwen2-vl-2b",
         context_window=4096,
     )
     caps = provider.get_capabilities()
-    assert caps.model_name == "qwen3-vl-2b"
+    assert caps.model_name == "qwen2-vl-2b"
     assert caps.context_window == 4096
     assert caps.supports_vision is True
     assert caps.is_local is True
@@ -106,7 +106,7 @@ def test_generate_text_success() -> None:
         temperature=0.3,
     )
     assert result == "Generated reply."
-    assert captured_payload["model"] == "qwen3-vl-2b"
+    assert captured_payload["model"] == "qwen2-vl-2b"
     assert captured_payload["max_tokens"] == 256
     assert captured_payload["temperature"] == 0.3
     assert captured_payload["stream"] is False

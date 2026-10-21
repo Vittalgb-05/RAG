@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -91,6 +92,59 @@ def ensure_project_directories() -> None:
     print("✓ Project directories initialized (models/, data/, .cache/, tools/)")
 
 
+def _safe_destination(dest_dir: Path, member_name: str) -> Path:
+    """Resolve an archive member path, rejecting traversal outside dest_dir."""
+    target = (dest_dir / member_name).resolve()
+    root = dest_dir.resolve()
+    if target != root and root not in target.parents:
+        raise ValueError(f"Archive member escapes destination: {member_name!r}")
+    return target
+
+
+def safe_extract_archive(archive_path: Path, dest_dir: Path) -> None:
+    """Extract a zip/tar archive without allowing path traversal or symlink escapes.
+
+    Args:
+        archive_path: Path to a ``.zip``, ``.tar.gz``, or ``.tgz`` archive.
+        dest_dir: Destination directory.
+
+    Raises:
+        ValueError: If any member would be written outside *dest_dir*.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if archive_path.name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for info in zf.infolist():
+                _safe_destination(dest_dir, info.filename)
+            zf.extractall(dest_dir)
+        return
+
+    with tarfile.open(archive_path, "r:*") as tf:
+        for member in tf.getmembers():
+            if member.issym() or member.islnk():
+                # Links could point outside the extraction root; skip them.
+                continue
+            if member.isfile() or member.isdir():
+                _safe_destination(dest_dir, member.name)
+        tf.extractall(dest_dir, members=[m for m in tf.getmembers() if not (m.issym() or m.islnk())])
+
+
+def validate_gguf_file(path: Path) -> bool:
+    """Verify a downloaded file starts with the GGUF magic bytes.
+
+    Args:
+        path: Model artifact path.
+
+    Returns:
+        True if the file is a GGUF container.
+    """
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"GGUF"
+    except OSError:
+        return False
+
+
 def format_bytes(size: int | float) -> str:
     """Format bytes into human-readable size string."""
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -105,6 +159,7 @@ def download_file_with_progress(
     dest_path: Path,
     min_size_bytes: int = 1_000_000,
     force: bool = False,
+    expected_sha256: str | None = None,
 ) -> bool:
     """Download a remote file with streaming progress bar and fallback mirrors.
 
@@ -113,6 +168,8 @@ def download_file_with_progress(
         dest_path: Destination file path on local filesystem.
         min_size_bytes: Minimum expected file size for integrity verification.
         force: If True, re-download even if a valid file exists.
+        expected_sha256: Optional pinned SHA-256 digest. When supplied, a download is
+            rejected unless the digest matches exactly.
 
     Returns:
         True if successfully downloaded or already present, False otherwise.
@@ -175,6 +232,13 @@ def download_file_with_progress(
                 print(f"  ⚠️ Warning: Downloaded file size ({temp_path.stat().st_size} bytes) below threshold.")
                 temp_path.unlink(missing_ok=True)
                 continue
+
+            if expected_sha256:
+                digest = hashlib.sha256(temp_path.read_bytes()).hexdigest()
+                if digest.lower() != expected_sha256.lower():
+                    print(f"  ❌ Checksum mismatch for {dest_path.name}: expected {expected_sha256}, got {digest}.")
+                    temp_path.unlink(missing_ok=True)
+                    continue
 
             # Atomically replace destination
             if dest_path.exists():
@@ -265,11 +329,33 @@ def download_all_models(
                 dest_path=dest,
                 min_size_bytes=model["min_size_bytes"],
                 force=force,
+                expected_sha256=model.get("sha256"),
             )
-            if not ok:
+            if ok and not validate_gguf_file(dest):
+                print(f"  ❌ {dest.name} is not a valid GGUF file (bad magic bytes).")
+                all_ok = False
+            elif not ok:
                 all_ok = False
     else:
         print("  ℹ️ Skipping large VLM GGUF model download as requested (--skip-vlm).")
+
+    if not skip_vlm and all_ok:
+        try:
+            from core.model_identity import verify_local_model_pair
+
+            problems = verify_local_model_pair(
+                target_dir / MODEL_REGISTRY[0]["name"],
+                target_dir / MODEL_REGISTRY[1]["name"],
+            )
+            for problem in problems:
+                print(f"  ⚠️ Model identity: {problem}")
+            if problems:
+                all_ok = False
+            else:
+                print("  ✓ GGUF identities verified (language model + vision projector are compatible).")
+        except Exception as err:
+            print(f"  ⚠️ Could not verify GGUF identities: {err}")
+            all_ok = False
 
     # Pre-cache embedding and OCR models
     precache_embedding_model()
@@ -338,12 +424,8 @@ def download_and_extract_archive(
 
     print(f"  📦 Extracting {archive_name} to {dest_dir.name}...")
     try:
-        if archive_name.endswith(".zip"):
-            with zipfile.ZipFile(temp_archive, "r") as z:
-                z.extractall(dest_dir)
-        elif archive_name.endswith((".tar.gz", ".tgz")):
-            with tarfile.open(temp_archive, "r:gz") as t:
-                t.extractall(dest_dir)
+        if archive_name.endswith((".zip", ".tar.gz", ".tgz")):
+            safe_extract_archive(temp_archive, dest_dir)
         else:
             print(f"  ⚠️ Unsupported archive format: {archive_name}")
             return False

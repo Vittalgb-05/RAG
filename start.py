@@ -42,7 +42,7 @@ def print_banner() -> None:
     """Print ASCII startup banner."""
     print("=" * 68)
     print("  📄 Local-First Multimodal PDF Intelligence System")
-    print("  Hybrid Search • RapidOCR • Docling • Qwen3-VL 2B • Verifiable Citations")
+    print("  Hybrid Search • RapidOCR • Docling • Qwen2-VL 2B • Verifiable Citations")
     print("=" * 68)
 
 
@@ -124,12 +124,28 @@ def start_llama_server_process(
         print("   Run 'python setup.py --llama-server' to install it automatically.", file=sys.stderr)
         return None
 
+    # Legacy artifact filename; GGUF metadata reports Qwen2-VL-2B-Instruct.
     model_path = REPO_ROOT / "models" / "qwen3-vl-2b-instruct-q4_k_m.gguf"
     mmproj_path = REPO_ROOT / "models" / "mmproj-f16.gguf"
 
     if not model_path.exists():
         print(f"⚠️ Warning: Model weights not found at {model_path}.", file=sys.stderr)
         print("   Run 'python setup.py download_models' to download weights.", file=sys.stderr)
+        return None
+    if not mmproj_path.exists():
+        print(f"⚠️ Warning: Vision projector not found at {mmproj_path}.", file=sys.stderr)
+        print("   Run 'python setup.py download_models' to download the projector.", file=sys.stderr)
+        return None
+
+    # Verify what the artifacts actually are instead of trusting filenames.
+    from core.model_identity import verify_local_model_pair
+
+    identity_problems = verify_local_model_pair(model_path, mmproj_path)
+    if identity_problems:
+        print("❌ Model identity verification failed:", file=sys.stderr)
+        for problem in identity_problems:
+            print(f"   - {problem}", file=sys.stderr)
+        print("   Refusing to launch llama-server with an incompatible model pair.", file=sys.stderr)
         return None
 
     cmd = [
