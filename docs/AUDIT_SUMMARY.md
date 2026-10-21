@@ -80,15 +80,15 @@ Eight atomic commits (plus this documentation and regression tests), summarized 
 5. Local-mode egress hardening in the sanitizer.
 6. Download/extraction hardening and GGUF identity verification.
 7. Model identity documentation corrections.
-8. Thirteen regression tests spanning all repaired root causes.
+8. Twenty-two regression tests spanning all repaired root causes (13 in the first batch, 9 in the second).
 
 ## 5. Evidence
 
 | Gate | Result |
 |---|---|
-| `python -m pytest -q --no-header` | **309 passed**, 0 failed, 0 skipped (39.7–44.4 s across final runs) |
+| `python -m pytest -q --no-header` | **318 passed**, 0 failed, 0 skipped (42.76 s final run) |
 | `python -m ruff check .` | All checks passed |
-| `python -m ruff format --check .` | 72 files already formatted |
+| `python -m ruff format --check .` | 73 files already formatted |
 | GGUF identity | `qwen2vl` LM + `qwen2vl_merger` projector; verifier returns `[]` |
 | Default index path | `C:\Users\OM Prakash\Documents\RAG\data\lancedb` (test-asserted) |
 | Live `/health` | **UNTESTED** — connection timeout |

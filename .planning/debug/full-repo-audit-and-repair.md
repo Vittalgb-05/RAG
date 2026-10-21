@@ -67,6 +67,7 @@ next_action: none — audit repaired, verified statically, and documented; live 
 - timestamp: 2026-10-21 — GGUF metadata: LM `qwen2vl` / `Qwen2 VL 2B Instruct`; projector `qwen2vl_merger`; filename `qwen3-...` is a legacy label.
 - timestamp: 2026-10-21 — root causes confirmed in retrieval path, silent vector writes, non-atomic ingestion, lifecycle failure handling, consent, prompt budgets, table chunking, hydration, setup extraction, health probing, sanitizer, and model identity.
 - timestamp: 2026-10-21 — eight atomic repair commits `a6dc76a`…`90e22a9` plus documentation; final `python -m pytest -q --no-header` → 309 passed in 39.68s; `ruff check` clean; `ruff format --check` 72 files clean.
+- timestamp: 2026-10-21 — second repair batch `4b0d685`…`0f7b994` (Docling offsets, scoped retrieval + fallback mirror, sanitizer schemes/attributes, session reset); `python -m pytest -q --no-header` → 318 passed in 42.76s; `ruff check` clean; `ruff format --check` 73 files clean; `.planning/codebase/CONCERNS.md` refreshed to open concerns only.
 - timestamp: 2026-10-21 — deliverables written under `docs/`: AUDIT_SUMMARY, REQUIREMENTS_TRACEABILITY, FILE_CALLER_TEST_MAP, ENDPOINT_INTEGRATION_MATRIX, CODE_QUALITY_REPORT, TEST_RESULTS, REPAIR_LOG.
 
 ## Eliminated
@@ -91,6 +92,8 @@ next_action: none — audit repaired, verified statically, and documented; live 
 9. Health probing doubled per rerun; hydration marked success too early.
 10. Setup used unsafe archive extraction and did not verify GGUF identity/checksums.
 
-**Verification:** 309 tests pass, Ruff clean, format clean, GGUF identity verifier returns `[]`. Live llama-server, GPU VRAM, OCR/VLM quality, and real-document restart checks are explicitly UNTESTED and listed with manual commands in `docs/TEST_RESULTS.md` and `docs/AUDIT_SUMMARY.md`.
+**Verification:** 318 tests pass, Ruff clean, format clean, GGUF identity verifier returns `[]`. Live llama-server, GPU VRAM, OCR/VLM quality, and real-document restart checks are explicitly UNTESTED and listed with manual commands in `docs/TEST_RESULTS.md` and `docs/AUDIT_SUMMARY.md`.
+
+**Remaining non-blocking concerns:** extraction cache is write-only, three library `print()` calls, monolithic `setup.py`, duplicated follow-up rewriting, deprecated retrieval facades, minimal Ruff rules, and README count drift. See the refreshed `.planning/codebase/CONCERNS.md`.
 
 **Data safety:** no runtime data or model files were deleted; legacy index migration is copy-only.

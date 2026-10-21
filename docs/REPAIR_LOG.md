@@ -16,6 +16,10 @@
 | `e75733c` | `fix(setup): harden downloads and verify GGUF identity` | `extractall` traversal risk; no checksum/GGUF validation; labels claimed Qwen3 | Safe archive extraction; optional SHA-256; GGUF magic + metadata parser; launch refusal on mismatch; `qwen2-vl-2b` provider id | Setup, launcher, provider, identity tests |
 | `f33a6dc` | `docs: correct model identity to Qwen2-VL 2B` | Filename/labels/docstrings claimed Qwen3-VL while weights are Qwen2-VL | Corrected prose labels; retained legacy filename with explanation | GGUF metadata + grep review |
 | `90e22a9` | `test: cover audit regressions across storage, privacy, and identity` | Repairs lacked durable regression coverage | 13 targeted tests | 309 passed |
+| `4b0d685` | `fix(ingestion): map prose chunk offsets to block positions` | Per-chunk offset mapping used a flat page cursor, so overlapping chunks landed on the wrong spans | Block-relative `block_start` plus local cursor; monotonic grounded-offset test | Docling suite; 318-suite green |
+| `5e9aad8` | `fix(retrieval): scope ranking per document and sync fallback mirror` | Scoped search filtered after a global top-K and deleted docs could return from a stale fallback file | Push `doc_id` into dense/FTS backends; rewrite fallback store on every index/delete | Retriever and audit tests |
+| `828e8a3` | `fix(privacy): block data/javascript schemes and fetch-capable attributes` | Sanitizer missed dangerous URL schemes, `srcset`, inline style `url()`, and SVG `<use>` | Strip dangerous schemes always; remove fetch-capable attributes in local mode | Sanitizer tests |
+| `0f7b994` | `fix(ui): reset per-turn model and session state on clear` | Clear Session left prior retrieval/citation state and provider handles alive | `AiModel.reset_turn_state()`; shared `reset_in_memory_session()` used by main and Settings | Local-LLM and UI smoke tests |
 | pending docs commit | Audit deliverables and setup/architecture notes | Audit evidence was not recorded in-repo | Added audit docs, updated README/runbooks/requirements | Markdown review |
 
 ## Detailed root causes
@@ -86,6 +90,33 @@
 
 - Safe zip/tar extraction (no traversal, no links); optional SHA-256; GGUF magic check; GGUF metadata parser; launcher refuses mismatched LM/projector.
 - **Evidence:** setup tests, launcher tests, identity test on installed artifacts.
+
+### 12. Docling prose chunk offsets (P1)
+
+- **Symptom:** `char_start`/`char_end` could point at the wrong page span, especially in overlapping later chunks.
+- **Cause:** The block offset was derived from the last splitter fragment instead of the block's position in the page text.
+- **Repair:** Track `block_start` from the page cursor and map each fragment with a local cursor; clamp the page cursor to the block end.
+- **Evidence:** `test_docling_prose_chunk_offsets_are_monotonic_and_grounded` asserts every chunk round-trips to page text.
+
+### 13. Document-scoped retrieval and fallback mirror (P1)
+
+- **Symptom:** Selecting one document could return no snippets when other documents filled the global top-K; deleted content could reappear when LanceDB failed to initialize.
+- **Cause:** Scope filtering happened only after a global top-K, and the disk fallback mirror was not rewritten when LanceDB writes/deletes succeeded.
+- **Repair:** Pass `doc_id` into dense and FTS backends (`where` clause; filtered BM25/VectorIndex pools), keep a post-filter as defense, and rewrite `fallback_store.json` on every index and delete.
+- **Evidence:** `test_delete_document_rewrites_fallback_mirror`, `test_deleted_document_does_not_resurrect_from_fallback`, `test_scoped_search_is_not_crowded_out_in_fallback`.
+
+### 14. Sanitizer scheme and fetch-attribute gaps (P1)
+
+- **Symptom:** `javascript:`/`data:` links, `srcset`, inline style `url(...)`, and SVG `<use href>` could still reach the browser.
+- **Repair:** Dangerous schemes are stripped regardless of mode; `srcset`, inline style URLs, and `<use>`/`<image>` are removed in local mode.
+- **Note:** Document content is rendered without `unsafe_allow_html`; the sanitizer remains defense-in-depth, not the only barrier.
+- **Evidence:** sanitizer suite tests for dangerous schemes, `srcset`/style URLs, and SVG `<use>`.
+
+### 15. Session reset leaked per-turn state (P1)
+
+- **Symptom:** After Clear Session, the previous retrieval result, citation verification, and truncation flags could still be read.
+- **Repair:** `AiModel.reset_turn_state()` clears those fields; `ui/session_state.reset_in_memory_session()` tears down models/providers/consent/keys and both `main.py` and Settings call it.
+- **Evidence:** `test_reset_turn_state_clears_prior_retrieval_and_verification`, `test_session_reset_clears_ai_model_turn_state`.
 
 ## Data safety
 

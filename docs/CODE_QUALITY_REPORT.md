@@ -24,8 +24,8 @@ Roughly 10k lines of production code against 7.7k lines of tests. The modular-mo
 | Gate | Command | Result |
 |---|---|---|
 | Lint | `python -m ruff check .` | All checks passed |
-| Format | `python -m ruff format --check .` | 72 files already formatted |
-| Tests | `python -m pytest -q --no-header` | 309 passed in 41.44 s |
+| Format | `python -m ruff format --check .` | 73 files already formatted |
+| Tests | `python -m pytest -q --no-header` | 318 passed in 42.76 s |
 | Import smoke | exercised by tests and audit scripts | No import errors |
 
 No type checker is configured. PEP 604 annotations and Pydantic models are used consistently on public boundaries, but mypy/pyright would still add value.
