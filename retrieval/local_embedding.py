@@ -101,7 +101,7 @@ class LocalEmbedding:
             docs = chunks
 
         embeddings = self.get_embeddings(texts)
-        for doc, embedding in zip(docs, embeddings):
+        for doc, embedding in zip(docs, embeddings, strict=True):
             self.store.add_vector(embedding.tolist(), doc)
         logger.info("Indexed %d chunks.", len(chunks))
 

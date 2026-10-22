@@ -156,9 +156,8 @@ def test_inference_gate_hold_raises_timeout_error() -> None:
     t.start()
     gate_held.wait(timeout=2.0)
 
-    with pytest.raises(TimeoutError, match="InferenceGate acquisition timed out"):
-        with InferenceGate.hold(timeout=0.05):
-            pass
+    with pytest.raises(TimeoutError, match="InferenceGate acquisition timed out"), InferenceGate.hold(timeout=0.05):
+        pass
 
     release_gate.set()
     t.join(timeout=3.0)

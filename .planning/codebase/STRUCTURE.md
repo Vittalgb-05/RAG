@@ -38,7 +38,7 @@ RAG/
 
 **`core/`:**
 - Purpose: Framework-independent domain logic and persistence.
-- Contains: Pydantic schemas, SQLite repository, inference facade + `InferenceGate`, summarizer, citation validator, prompt budgeting, hardware telemetry, GGUF identity verification, logging filter.
+- Contains: Pydantic schemas, SQLite repository, inference facade + `InferenceGate`, summarizer, citation validator + lexical auto-attribution (`auto_attribute_citations`), prompt budgeting, hardware telemetry, GGUF identity verification, logging filter.
 - Key files: `core/models.py`, `core/doc_store.py`, `core/local_llm.py`, `core/summarizer.py`, `core/citation_validator.py`, `core/prompt_budget.py`, `core/resource_telemetry.py`.
 
 **`ingestion/`:**
@@ -59,12 +59,12 @@ RAG/
 
 **`ui/`:**
 - Purpose: Streamlit presentation plus workflow orchestration.
-- Contains: four workspace renderers and sidebar (views), reusable AMOLED components/theme, markdown sanitizer, `IngestionService`, `LifecycleService`, hydration, session reset.
+- Contains: consolidated primary view renderers (`Chat` and `Document Library`), single-button file inserter (`render_file_upload_button`), reusable AMOLED components/theme, markdown sanitizer, `IngestionService`, `LifecycleService`, hydration, session reset.
 - Key files: `ui/views.py`, `ui/ingestion_service.py`, `ui/lifecycle_service.py`, `ui/hydration.py`, `ui/session_state.py`, `ui/components.py`, `ui/theme.py`, `ui/sanitizer.py`.
 
 **`tests/`:**
 - Purpose: Fully offline unit/integration coverage with mocked models and a generated PDF corpus.
-- Contains: 29 `test_*.py` suites, `conftest.py` fixtures, `tests/data/corpus/` synthetic PDFs and generator.
+- Contains: 32 `test_*.py` suites (392 tests), `conftest.py` fixtures, `tests/data/corpus/` synthetic PDFs and generator.
 - Key files: `tests/conftest.py` (mock provider, mock MiniLM, fake Groq, corpus path), `tests/data/corpus/generate_corpus.py`.
 
 **`scripts/`:**
@@ -106,8 +106,8 @@ RAG/
 - `core/doc_store.py:105`: migration registry; `core/doc_store.py:291`: atomic `record_ingestion`.
 - `retrieval/hybrid_retriever.py:738`: `search_hybrid`; `core/models.py:171`: `RetrievalResult`.
 - `ingestion/upload_validation.py:15`: `MAX_FILE_MB=50`, `MAX_PAGES=500`.
-- `ui/views.py:51/186/504/621/732`: the five render entry points.
-- `main.py:277-298`: workspace list and navigation; `main.py:321-349`: dispatch.
+- `ui/views.py`: `render_chat_view`, `render_library_view`, `render_file_upload_button`.
+- `main.py`: consolidated 2-view navigation (`Chat` and `Document Library`); dispatch in lines 270–320.
 
 **Testing:**
 - `tests/conftest.py`: shared fixtures (`mock_llama_provider`, `mock_sentence_transformer`, `mock_groq_client`, `sample_pdf_path`).
@@ -130,7 +130,7 @@ RAG/
 
 **Functions / methods:**
 - `snake_case`, verb-first for actions (`ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`, `search_hybrid`, `index_chunks`).
-- UI renderers: `render_<area>` returning `None` (`render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents`).
+- UI renderers: `render_<area>` returning `None` (`render_chat_view`, `render_library_view`, `render_file_upload_button`, `render_sidebar_documents`).
 - Boolean predicates: `is_*`, `has_*`, `should_*` (`is_persistent`, `has_document`, `should_ocr_page`, `is_abstention`).
 
 **Variables / constants:**
@@ -147,7 +147,7 @@ RAG/
 
 **New Feature (user-visible workspace or capability):**
 - Primary code: add the workflow to a service first — `ui/ingestion_service.py` / `ui/lifecycle_service.py` for storage-touching flows, or a new `ui/<feature>_service.py` following the constructor pattern `(doc_store, hybrid_retriever, local_embedding, cache_dir)`.
-- Presentation: add `render_<feature>_view(...)` in `ui/views.py`; import it in `main.py:32-38`; add the label to `WORKSPACES` (`main.py:277-282`) and a branch to the dispatch chain (`main.py:321-349`).
+- Presentation: add `render_<feature>_view(...)` in `ui/views.py`; import it in `main.py`; add the label to `WORKSPACES` in `main.py` and a branch to the dispatch chain.
 - Tests: `tests/test_<feature>.py` + fixture additions in `tests/conftest.py` if a new external dependency is mocked.
 
 **New Inference Provider:**

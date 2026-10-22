@@ -1,6 +1,6 @@
 """Unit tests for multi-tier cache invalidation, session memory bounding, and telemetry (QUAL-01)."""
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 import tempfile
 
@@ -51,7 +51,7 @@ def test_doc_store_count_helpers() -> None:
         assert store.count_documents() == 0
         assert store.count_summaries() == 0
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         doc1 = Document(
             doc_id="doc_1",
             filename="a.pdf",
@@ -140,7 +140,7 @@ def test_tier_3_sqlite_summary_version_invalidation() -> None:
         db_path = Path(tmp_dir) / "test.db"
         store = DocStore(db_path=str(db_path))
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         doc = Document(
             doc_id="doc_inv",
             filename="inv.pdf",

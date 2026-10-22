@@ -6,7 +6,7 @@ Outputs structured metrics to .planning/research/MULTIMODAL_BENCHMARK.json.
 """
 
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 import json
 import logging
 from pathlib import Path
@@ -251,7 +251,7 @@ def run_benchmark(live_model: bool = False) -> dict[str, Any]:
     avg_latency_s = sum(latencies) / max(1, len(latencies))
 
     summary = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "provider": provider.get_capabilities().model_name,
         "is_live_server": live_model and provider.get_capabilities().is_local,
         "metrics": {

@@ -158,8 +158,7 @@ def mock_llama_provider():
                     "temperature": temperature,
                 }
             )
-            for token in self._tokens:
-                yield token
+            yield from self._tokens
 
         def analyze_image(
             self,

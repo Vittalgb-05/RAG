@@ -17,6 +17,7 @@ import warnings
 
 from core.models import BBox, Chunk, EvidenceElement, EvidenceSnippet, RetrievalResult
 from retrieval.vector_index import VectorIndex
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +243,7 @@ class HybridRetriever:
                 distance_metric="cosine",
                 embedding_fn=self.embedding_fn,
             )
-            for doc, vec in zip(docs, vectors):
+            for doc, vec in zip(docs, vectors, strict=True):
                 self._fallback_store.add_vector(vec, doc)
             logger.info("Loaded %d chunks from fallback persistent store at %s", len(docs), self._fallback_file)
         except Exception as err:
@@ -253,7 +254,7 @@ class HybridRetriever:
         if not self._fallback_file.exists():
             return [], []
         try:
-            with open(self._fallback_file, "r", encoding="utf-8") as f:
+            with open(self._fallback_file, encoding="utf-8") as f:
                 data = json.load(f)
             docs = data.get("documents", []) or []
             vectors = data.get("vectors", []) or []
@@ -269,9 +270,7 @@ class HybridRetriever:
         """Return a JSON-safe copy of a chunk document."""
         doc_copy = dict(doc)
         bbox = doc_copy.get("bbox")
-        if isinstance(bbox, BBox):
-            doc_copy["bbox"] = bbox.model_dump()
-        elif hasattr(bbox, "model_dump"):
+        if isinstance(bbox, BBox) or hasattr(bbox, "model_dump"):
             doc_copy["bbox"] = bbox.model_dump()
         return doc_copy
 
@@ -299,7 +298,7 @@ class HybridRetriever:
         existing_indices = {
             d.get("chunk_id"): i for i, d in enumerate(self._fallback_store.documents) if d.get("chunk_id")
         }
-        for doc, emb in zip(docs, vectors):
+        for doc, emb in zip(docs, vectors, strict=True):
             cid = doc.get("chunk_id")
             if cid and cid in existing_indices:
                 idx = existing_indices[cid]
@@ -336,13 +335,13 @@ class HybridRetriever:
         new_chunk_ids = {d.get("chunk_id") for d in docs if d.get("chunk_id")}
         merged_docs: list[dict[str, Any]] = []
         merged_vectors: list[list[float]] = []
-        for doc, vec in zip(existing_docs, existing_vectors):
+        for doc, vec in zip(existing_docs, existing_vectors, strict=True):
             cid = doc.get("chunk_id")
             if cid and cid in new_chunk_ids:
                 continue
             merged_docs.append(doc)
             merged_vectors.append(vec)
-        for doc, vec in zip(docs, vectors):
+        for doc, vec in zip(docs, vectors, strict=True):
             merged_docs.append(self._serialize_document(doc))
             merged_vectors.append([float(x) for x in vec])
         self._write_mirror(merged_docs, merged_vectors)
@@ -360,7 +359,9 @@ class HybridRetriever:
         if not self._fallback_file.exists():
             return
         existing_docs, existing_vectors = self._read_mirror()
-        kept = [(doc, vec) for doc, vec in zip(existing_docs, existing_vectors) if doc.get("doc_id") != doc_id]
+        kept = [
+            (doc, vec) for doc, vec in zip(existing_docs, existing_vectors, strict=True) if doc.get("doc_id") != doc_id
+        ]
         self._write_mirror([doc for doc, _ in kept], [vec for _, vec in kept])
 
     def set_embedding_fn(self, embedding_fn: Callable[[str], list[float]]) -> None:
@@ -492,7 +493,7 @@ class HybridRetriever:
         # 1. Persist to the active backend (LanceDB when healthy).
         if self._has_lancedb and self._db is not None:
             records: list[dict[str, Any]] = []
-            for doc, emb in zip(raw_chunks, computed_embeddings):
+            for doc, emb in zip(raw_chunks, computed_embeddings, strict=True):
                 bbox = doc.get("bbox")
                 bbox_json = doc.get("bbox_json")
                 if bbox_json is None and bbox is not None:
@@ -560,10 +561,8 @@ class HybridRetriever:
                         if chunk_ids:
                             safe_ids = [_escape_sql_literal(cid) for cid in chunk_ids]
                             quoted_ids = ", ".join(f"'{cid}'" for cid in safe_ids)
-                            try:
+                            with contextlib.suppress(Exception):
                                 self._table.delete(f"chunk_id IN ({quoted_ids})")
-                            except Exception:
-                                pass
                         self._table.add(records)
                     try:
                         self.create_fts_index()
@@ -617,10 +616,6 @@ class HybridRetriever:
         if chunks:
             return self.index_chunks(chunks, embeddings=embeddings)
         return 0
-
-    def add_vector(self, vector: list[float], document: dict[str, Any]) -> None:
-        """Compatibility method matching VectorIndex.add_vector interface."""
-        self.index_chunks([document], embeddings=[vector])
 
     def delete_document(self, doc_id: str) -> None:
         """Remove all chunks associated with doc_id from persistent and fallback storage."""
@@ -693,10 +688,8 @@ class HybridRetriever:
             bbox = raw.get("bbox")
             bbox_json = raw.get("bbox_json")
             if bbox is None and bbox_json:
-                try:
+                with contextlib.suppress(Exception):
                     bbox = BBox.model_validate_json(bbox_json)
-                except Exception:
-                    pass
             snippets.append(
                 EvidenceSnippet(
                     content=str(raw.get("content", "")),
@@ -743,10 +736,8 @@ class HybridRetriever:
             try:
                 query_builder = self._table.search(query_vector)
                 if hasattr(query_builder, "metric"):
-                    try:
+                    with contextlib.suppress(Exception):
                         query_builder = query_builder.metric("cosine")
-                    except Exception:
-                        pass
                 if doc_id:
                     clause = _doc_filter_clause(doc_id)
                     if hasattr(query_builder, "where"):
@@ -899,7 +890,7 @@ class HybridRetriever:
             df_map[qt] = sum(1 for dtoks in doc_tokens if qt in dtoks)
 
         scores: list[tuple[float, dict[str, Any]]] = []
-        for doc, tokens, dl in zip(docs, doc_tokens, doc_lens):
+        for doc, tokens, dl in zip(docs, doc_tokens, doc_lens, strict=True):
             token_counts: dict[str, int] = {}
             for t in tokens:
                 token_counts[t] = token_counts.get(t, 0) + 1
@@ -1051,10 +1042,8 @@ class HybridRetriever:
             bbox = raw.get("bbox")
             bbox_json = raw.get("bbox_json")
             if bbox is None and bbox_json:
-                try:
+                with contextlib.suppress(Exception):
                     bbox = BBox.model_validate_json(bbox_json)
-                except Exception:
-                    pass
 
             snippet = EvidenceSnippet(
                 content=str(raw.get("content", "")),

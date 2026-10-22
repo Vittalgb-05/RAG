@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from pathlib import Path
 import re
 import pypdf
@@ -6,6 +7,8 @@ import pypdf
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from core.models import Chunk, Page
+
+logger = logging.getLogger(__name__)
 
 
 class PdfReader:
@@ -128,7 +131,7 @@ class PdfReader:
 
         # Join the text from all pages for backward compatibility
         self.pages_text = "\n".join(all_pages_text)
-        print(f"Successfully extracted text from {self.filename}. Total characters: {len(self.pages_text)}")
+        logger.info("Extracted text from %s (%d characters)", self.filename, len(self.pages_text))
         return self.pages_text
 
     def extract_small_portion_of_the_pdf(self, min=0, max=None):

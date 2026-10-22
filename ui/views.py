@@ -10,7 +10,7 @@ import streamlit as st
 
 from core.doc_store import DocStore
 from retrieval.hybrid_retriever import HybridRetriever
-from core.citation_validator import should_withhold_answer
+from core.citation_validator import auto_attribute_citations, should_withhold_answer
 from core.local_llm import AiModel
 from core.models import CONFIG_VERSION
 from core.prompt_budget import bound_chat_history
@@ -284,6 +284,114 @@ def append_chat_turn(turn: dict[str, Any]) -> None:
 # =====================================================================
 
 
+def process_uploaded_files(
+    uploaded_files: list[Any],
+    doc_store: DocStore,
+    ai_model: AiModel,
+    cache_dir: Path,
+) -> int:
+    """Ingest uploaded PDF files with live status and session metadata binding."""
+    if not uploaded_files:
+        return 0
+
+    with st.status("Processing uploads…", expanded=True) as status_widget:
+        ingestion_service = IngestionService(
+            doc_store=doc_store,
+            hybrid_retriever=st.session_state.get("hybrid_retriever"),
+            local_embedding=st.session_state.get("local_embedding"),
+            cache_dir=cache_dir,
+        )
+
+        new_docs_indexed = 0
+        failures = []
+
+        for f in uploaded_files:
+            if hasattr(f, "size") and f.size and f.size > MAX_FILE_MB * 1024 * 1024:
+                failures.append(f"{f.name} exceeds {MAX_FILE_MB} MB cap")
+                continue
+
+            raw_bytes = f.getvalue()
+            active_prov = ai_model.provider if ai_model is not None else None
+            vlm = active_prov if (active_prov and active_prov.get_capabilities().is_local) else None
+
+            res = ingestion_service.ingest_pdf(
+                raw_bytes=raw_bytes,
+                filename=f.name,
+                vlm_provider=vlm,
+                progress_callback=lambda msg: status_widget.write(msg),
+            )
+
+            st.session_state.local_embedding = ingestion_service.embedding
+            st.session_state.hybrid_retriever = ingestion_service.retriever
+
+            if res.success:
+                st.session_state.doc_ids.add(res.doc_id)
+                st.session_state.indexed_files.add(res.filename)
+                st.session_state.document_metadata[res.doc_id] = {
+                    "doc_id": res.doc_id,
+                    "filename": res.filename,
+                    "sha256": res.sha256,
+                    "upload_time": res.upload_time,
+                    "pages": res.num_pages,
+                    "chunks": res.num_chunks,
+                }
+                if not getattr(res, "already_indexed", False):
+                    new_docs_indexed += 1
+            else:
+                failures.append(f"{f.name}: {res.error}")
+                if res.doc_id:
+                    st.session_state.failed_doc_ids.add(res.doc_id)
+
+        if failures:
+            suffix = "s" if len(failures) > 1 else ""
+            status_widget.update(
+                label=f"Ingestion notice ({len(failures)} issue{suffix})",
+                state="error",
+                expanded=True,
+            )
+            for fail_msg in failures:
+                st.error(fail_msg)
+        else:
+            status_widget.update(
+                label=f"Ready! Indexed {new_docs_indexed} file(s)",
+                state="complete",
+                expanded=False,
+            )
+
+        if new_docs_indexed > 0:
+            st.rerun()
+
+    return new_docs_indexed
+
+
+def render_file_upload_button(
+    doc_store: DocStore,
+    ai_model: AiModel,
+    cache_dir: Path,
+    label: str = "➕ Insert Document",
+    key_suffix: str = "sidebar",
+    use_container_width: bool = True,
+) -> None:
+    """Render a clean popover button to insert and index PDF files."""
+    uploader_key = st.session_state.get(f"uploader_key_{key_suffix}", 0)
+    with st.popover(label, use_container_width=use_container_width):
+        st.markdown(
+            "<div style='font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem;'>Select PDF Documents</div>"
+            f"<div style='font-size: 0.75rem; color: #9693A6; margin-bottom: 0.5rem;'>Max {MAX_FILE_MB} MB. Processed on-device with OCR and layout parsing.</div>",
+            unsafe_allow_html=True,
+        )
+        uploaded = st.file_uploader(
+            "Upload PDFs",
+            type=["pdf"],
+            key=f"pdf_uploader_{key_suffix}_{uploader_key}",
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+        )
+        if uploaded:
+            st.session_state[f"uploader_key_{key_suffix}"] = uploader_key + 1
+            process_uploaded_files(uploaded, doc_store, ai_model, cache_dir)
+
+
 def render_sidebar_documents(
     doc_store: DocStore,
     ai_model: AiModel,
@@ -292,92 +400,19 @@ def render_sidebar_documents(
     """Render document uploader and active document list in the left sidebar."""
     st.sidebar.markdown(
         "<div style='font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; "
-        "color: #9693A6; font-weight: 700; margin-top: 0.5rem; margin-bottom: 0.25rem;'>"
+        "color: #9693A6; font-weight: 700; margin-top: 0.5rem; margin-bottom: 0.35rem;'>"
         "Documents</div>",
         unsafe_allow_html=True,
     )
 
-    uploader_key = st.session_state.get("uploader_key", 0)
-    uploaded_files = st.sidebar.file_uploader(
-        "Upload PDFs",
-        type=["pdf"],
-        help=f"Max file size: {MAX_FILE_MB} MB. Processed on-device with OCR and layout parsing.",
-        key=f"pdf_uploader_{uploader_key}",
-        accept_multiple_files=True,
-        label_visibility="collapsed",
+    render_file_upload_button(
+        doc_store=doc_store,
+        ai_model=ai_model,
+        cache_dir=cache_dir,
+        label="➕ Insert Document",
+        key_suffix="sidebar",
+        use_container_width=True,
     )
-
-    if uploaded_files:
-        with st.sidebar.status("Processing uploads…", expanded=True) as status_widget:
-            ingestion_service = IngestionService(
-                doc_store=doc_store,
-                hybrid_retriever=st.session_state.get("hybrid_retriever"),
-                local_embedding=st.session_state.get("local_embedding"),
-                cache_dir=cache_dir,
-            )
-
-            new_docs_indexed = 0
-            failures = []
-
-            for f in uploaded_files:
-                if hasattr(f, "size") and f.size and f.size > MAX_FILE_MB * 1024 * 1024:
-                    failures.append(f"{f.name} exceeds {MAX_FILE_MB} MB cap")
-                    continue
-
-                raw_bytes = f.getvalue()
-                active_prov = ai_model.provider if ai_model is not None else None
-                vlm = active_prov if (active_prov and active_prov.get_capabilities().is_local) else None
-
-                res = ingestion_service.ingest_pdf(
-                    raw_bytes=raw_bytes,
-                    filename=f.name,
-                    vlm_provider=vlm,
-                    progress_callback=lambda msg: status_widget.write(msg),
-                )
-
-                # Keep retriever and embedding bound to session
-                st.session_state.local_embedding = ingestion_service.embedding
-                st.session_state.hybrid_retriever = ingestion_service.retriever
-
-                if res.success:
-                    st.session_state.doc_ids.add(res.doc_id)
-                    st.session_state.indexed_files.add(res.filename)
-                    st.session_state.document_metadata[res.doc_id] = {
-                        "doc_id": res.doc_id,
-                        "filename": res.filename,
-                        "sha256": res.sha256,
-                        "upload_time": res.upload_time,
-                        "pages": res.num_pages,
-                        "chunks": res.num_chunks,
-                    }
-                    if not getattr(res, "already_indexed", False):
-                        new_docs_indexed += 1
-                else:
-                    failures.append(f"{f.name}: {res.error}")
-                    if res.doc_id:
-                        st.session_state.failed_doc_ids.add(res.doc_id)
-
-            # Rotate uploader_key to clear uploaded files from widget and prevent infinite rerun loop
-            st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
-
-            if failures:
-                status_widget.update(
-                    label=f"Ingestion notice ({len(failures)} issue{'s' if len(failures) > 1 else ''})",
-                    state="error",
-                    expanded=True,
-                )
-                for fail_msg in failures:
-                    st.sidebar.error(fail_msg)
-            else:
-                status_widget.update(
-                    label=f"Ready! Indexed {new_docs_indexed} file(s)",
-                    state="complete",
-                    expanded=False,
-                )
-
-            if new_docs_indexed > 0:
-                st.rerun()
-
     # Active Documents List in Sidebar
     if st.session_state.document_metadata:
         st.sidebar.markdown(
@@ -416,9 +451,10 @@ def render_sidebar_documents(
             )
             confirm_col, cancel_col = st.sidebar.columns(2)
             with confirm_col:
-                if st.button("Confirm delete", key="sidebar_confirm_delete", type="primary", use_container_width=True):
-                    if _delete_document(doc_store, cache_dir, pending_delete_id, pending_name):
-                        st.rerun()
+                if st.button(
+                    "Confirm delete", key="sidebar_confirm_delete", type="primary", use_container_width=True
+                ) and _delete_document(doc_store, cache_dir, pending_delete_id, pending_name):
+                    st.rerun()
             with cancel_col:
                 if st.button("Cancel", key="sidebar_cancel_delete", use_container_width=True):
                     st.session_state.pop("pending_delete_doc_id", None)
@@ -436,8 +472,10 @@ def render_chat_view(
     health: Any,
     caps: Any,
     doc_store: DocStore,
+    cache_dir: Path | None = None,
 ) -> None:
-    """Render modern evidence-grounded chatbot workspace."""
+    """Render modern evidence-grounded chatbot workspace with chronological flow and popover inserter."""
+    cache_dir = cache_dir or (Path(__file__).resolve().parent.parent / ".cache")
     is_healthy = bool(health.status == "healthy")
     has_docs = bool(st.session_state.document_metadata or st.session_state.indexed_files)
 
@@ -455,7 +493,8 @@ def render_chat_view(
     if "selected_chat_doc" in st.session_state and st.session_state.selected_chat_doc in doc_options:
         current_filter_idx = doc_options.index(st.session_state.selected_chat_doc)
 
-    col_filter, col_actions = st.columns([4, 1.5])
+    # Chat Header Toolbar: Focus Selector + Single-Button File Inserter + New Chat
+    col_filter, col_insert, col_actions = st.columns([3, 1.4, 1])
     with col_filter:
         selected_filter = st.selectbox(
             "Focus Context",
@@ -467,22 +506,32 @@ def render_chat_view(
         )
         st.session_state.selected_chat_doc = selected_filter
 
+    with col_insert:
+        render_file_upload_button(
+            doc_store=doc_store,
+            ai_model=ai_model,
+            cache_dir=cache_dir,
+            label="➕ Insert Files",
+            key_suffix="chat",
+            use_container_width=True,
+        )
+
     with col_actions:
         if st.button("New Chat", use_container_width=True, help="Clear active conversation"):
             st.session_state.chat_history = []
             st.rerun()
 
-    # Empty State Hero when chat history is clean
+    # Empty State Hero when conversation has not started
     if not st.session_state.chat_history:
         st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
         brand_svg = get_brand_mark_svg(size=44)
         hero_html = (
-            f'<div class="amoled-card" style="text-align: center; padding: 3rem 1.5rem; margin-bottom: 2rem;">'
+            f'<div class="amoled-card" style="text-align: center; padding: 2.5rem 1.5rem; margin-bottom: 1.5rem;">'
             f'<div style="margin-bottom: 1rem;">{brand_svg}</div>'
             f'<div style="font-size: 1.35rem; font-weight: 700; color: #F5F3FF; margin-bottom: 0.5rem; letter-spacing: -0.02em;">'
             f"How can I help with your documents?</div>"
             f'<div style="font-size: 0.9rem; color: #9693A6; max-width: 520px; margin: 0 auto;">'
-            f"Local-first multimodal intelligence. Ask questions, analyze figures, and verify findings "
+            f"Local-first multimodal document intelligence. Ask questions, analyze figures, and verify findings "
             f"with page-grounded citations. Zero network egress.</div>"
             f"</div>"
         )
@@ -492,57 +541,63 @@ def render_chat_view(
             st.markdown(hero_html, unsafe_allow_html=True)
 
         if not has_docs:
-            st.info("Upload one or more PDFs in the left sidebar to begin asking questions.")
+            st.info("Upload one or more PDFs using the '➕ Insert Files' button above to begin asking questions.")
         else:
-            # Quick suggestion prompts
+            # Quick suggestion prompts for instant analysis
             st.markdown(
                 "<div style='font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; "
-                "color: #9693A6; font-weight: 700; margin-bottom: 0.5rem;'>Suggested Prompts</div>",
+                "color: #9693A6; font-weight: 700; margin-bottom: 0.5rem;'>Quick Analysis Prompts</div>",
                 unsafe_allow_html=True,
             )
             s1, s2, s3, s4 = st.columns(4)
             with s1:
-                if st.button("Summarize thesis", use_container_width=True):
-                    st.session_state._queued_prompt = "Summarize the core thesis and key findings of the document."
+                if st.button("📄 Summarize thesis", use_container_width=True):
+                    st.session_state._queued_prompt = (
+                        "Summarize the core thesis and key findings of the document in detail."
+                    )
                     st.rerun()
             with s2:
-                if st.button("Extract key tables", use_container_width=True):
+                if st.button("📊 Key tables & data", use_container_width=True):
                     st.session_state._queued_prompt = (
                         "What are the key tables, numbers, and quantitative data reported?"
                     )
                     st.rerun()
             with s3:
-                if st.button("Analyze methodology", use_container_width=True):
+                if st.button("🔬 Methodology", use_container_width=True):
                     st.session_state._queued_prompt = "Explain the methodology and approach used in this document."
                     st.rerun()
             with s4:
-                if st.button("Risks & limitations", use_container_width=True):
+                if st.button("⚠️ Risks & limitations", use_container_width=True):
                     st.session_state._queued_prompt = "What risks, limitations, or open questions are noted?"
                     st.rerun()
 
-    st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
 
-    # Conversation Stream
+    # -------------------------------------------------------------
+    # Chronological Conversation Feed (Oldest to Newest)
+    # -------------------------------------------------------------
+    allow_ext = bool(st.session_state.get("cloud_mode", False) and st.session_state.get("user_consented", False))
+
     for message in st.session_state.chat_history:
         role = message.get("role", "user")
         with st.chat_message(role):
             raw_content = message.get("content", "")
-            allow_ext = bool(
-                st.session_state.get("cloud_mode", False) and st.session_state.get("user_consented", False)
-            )
-            if role == "assistant" and message.get("rejected"):
-                st.warning(
-                    "Response withheld — grounding check failed. The draft did not cite retrieved evidence "
-                    "with [E#], cited invalid evidence, or echoed a prompt-injection directive."
-                )
-                with st.expander("Rejected draft (not accepted as an answer)", expanded=False):
-                    st.markdown(
-                        sanitize_display_markdown(message.get("rejected_draft") or "", allow_external=allow_ext)
-                    )
-            else:
-                st.markdown(sanitize_display_markdown(raw_content, allow_external=allow_ext))
 
             if role == "assistant":
+                # Check for malicious prompt injection echo
+                if message.get("injection_detected"):
+                    st.error(
+                        "Response blocked — adversarial prompt injection directive detected in output. "
+                        "Grounding check failed for security."
+                    )
+                else:
+                    if message.get("unverified"):
+                        st.warning(
+                            "⚠️ Grounding Notice: Inline citations ([E#]) were missing or unverified. "
+                            "Verify claims against the candidate sources below."
+                        )
+                    st.markdown(sanitize_display_markdown(raw_content, allow_external=allow_ext))
+
                 if message.get("is_cloud"):
                     cloud_m = message.get("model_name", "Cloud API")
                     st.caption(f"Generated via external cloud provider ({cloud_m}) with user consent.")
@@ -550,7 +605,7 @@ def render_chat_view(
                     st.caption("Generated locally on-device (zero network egress).")
 
                 v_data = message.get("verification")
-                if v_data and not message.get("rejected"):
+                if v_data and not message.get("injection_detected"):
                     st.caption(verification_caption(v_data))
 
                 notice = truncation_notice(message.get("truncation_warning"))
@@ -583,9 +638,10 @@ def render_chat_view(
                     with st.expander(expander_label, expanded=False):
                         for s in snippets:
                             is_cited = s.get("rank") in cited_ranks
-                            header = f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
-                            if is_cited:
-                                header += " — *Cited in response*"
+                            header = (
+                                f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
+                                + (" — *Cited in response*" if is_cited else "")
+                            )
                             st.markdown(header)
                             snippet_text = sanitize_display_markdown(
                                 s.get("content", "").strip(), allow_external=allow_ext
@@ -598,8 +654,12 @@ def render_chat_view(
                                     f"x1={bbox.get('x1', 0.0):.1f}, y1={bbox.get('y1', 0.0):.1f}"
                                 )
                             st.divider()
+            else:
+                st.markdown(sanitize_display_markdown(raw_content, allow_external=allow_ext))
 
-    # Chat Input Box
+    # -------------------------------------------------------------
+    # Chat Input Box & Active Generation Handling
+    # -------------------------------------------------------------
     input_placeholder = (
         "Ask a question about your documents… (Press Enter)"
         if is_healthy
@@ -610,7 +670,6 @@ def render_chat_view(
         disabled=(not has_docs or not is_healthy),
     )
 
-    # Handle queued suggestion prompt or user input
     effective_prompt = user_prompt or st.session_state.pop("_queued_prompt", None)
 
     if effective_prompt:
@@ -618,12 +677,12 @@ def render_chat_view(
             st.error(f"Inference engine unavailable: {health.message}")
             return
 
+        # 1. Append user prompt and display immediately
         append_chat_turn({"role": "user", "content": effective_prompt})
         with st.chat_message("user"):
             st.markdown(effective_prompt)
 
         history_to_pass = st.session_state.chat_history[:-1][-10:]
-        # Single shared follow-up heuristic (no drift with AiModel's internal path).
         search_query = contextualize_query(effective_prompt, history_to_pass)
 
         # Target document: explicit filter or auto-detected from query
@@ -641,8 +700,6 @@ def render_chat_view(
         retrieval_res = None
         active_retriever = st.session_state.get("hybrid_retriever") or st.session_state.local_embedding
 
-        # Whole-document inventory questions need an explicit document scope. When the
-        # filter is "all" but only one document is indexed, that scope is unambiguous.
         retrieval_scope = doc_filter
         if retrieval_scope is None and len(st.session_state.document_metadata) == 1:
             retrieval_scope = next(iter(st.session_state.document_metadata))
@@ -680,29 +737,46 @@ def render_chat_view(
                     retrieval_result=retrieval_res,
                     doc_id=doc_filter,
                 )
-                # Buffer the stream so an ungrounded draft is never left on screen
-                # as if it were an accepted answer.
                 stream_placeholder = st.empty()
                 response_chunks: list[str] = []
                 for token in response_stream:
                     response_chunks.append(token)
                     stream_placeholder.markdown("".join(response_chunks) + "▌")
                 full_response = "".join(response_chunks)
+
+                # Fallback citation attribution: If model omitted [E#] citations on a non-abstaining
+                # answer, attribute matching candidate snippets by lexical token overlap.
+                if retrieval_res and retrieval_res.snippets:
+                    attributed = auto_attribute_citations(full_response, retrieval_res)
+                    if attributed != full_response:
+                        full_response = attributed
+
                 stream_placeholder.markdown(full_response)
 
                 verification = ai_model.validate_response(full_response, retrieval_res)
                 withheld = should_withhold_answer(verification)
+                is_injection = getattr(verification, "injection_detected", False)
 
-                if withheld:
+                if is_injection:
                     stream_placeholder.empty()
-                    st.warning(
-                        "Response withheld — grounding check failed. The draft did not cite retrieved "
-                        "evidence with [E#], cited invalid evidence, or echoed a prompt-injection directive."
+                    st.error(
+                        "Response blocked — adversarial prompt injection directive detected in output. "
+                        "Grounding check failed for security."
                     )
-                    with st.expander("Rejected draft (not accepted as an answer)", expanded=False):
-                        st.markdown(sanitize_display_markdown(full_response))
+                    content_to_save = "[Response withheld: prompt injection detected.]"
+                    rejected_val = True
+                elif withheld:
+                    # Informative notice: do NOT suppress valid draft from user screen
+                    st.warning(
+                        "⚠️ Grounding Notice: Inline citations ([E#]) were missing or unverified. "
+                        "Please verify claims against the candidate sources below."
+                    )
+                    content_to_save = full_response
+                    rejected_val = False
                 else:
                     st.caption(verification_caption(verification.model_dump()))
+                    content_to_save = full_response
+                    rejected_val = False
 
                 truncation_warning = dict(getattr(ai_model, "last_truncation_warning", {}) or {})
                 notice = truncation_notice(truncation_warning)
@@ -752,10 +826,10 @@ def render_chat_view(
                 append_chat_turn(
                     {
                         "role": "assistant",
-                        # Withheld drafts must not re-enter model history as if accepted.
-                        "content": "[Response withheld: grounding check failed.]" if withheld else full_response,
-                        "rejected": withheld,
-                        "rejected_draft": full_response if withheld else None,
+                        "content": content_to_save,
+                        "rejected": rejected_val,
+                        "unverified": withheld and not is_injection,
+                        "injection_detected": is_injection,
                         "sources": list(sources),
                         "verification": verification.model_dump(),
                         "snippets": snippets_data,
@@ -764,6 +838,9 @@ def render_chat_view(
                         "model_name": caps.model_name,
                     }
                 )
+                # Refresh to re-render full chronological conversation uniformly
+                st.rerun()
+
             except Exception as err:
                 st.error(f"Inference streaming failed: {err}")
                 append_chat_turn(
@@ -771,6 +848,7 @@ def render_chat_view(
                         "role": "assistant",
                         "content": f"*[Response generation interrupted: {err}]*",
                         "rejected": False,
+                        "unverified": True,
                         "sources": list(sources),
                         "verification": None,
                         "snippets": snippets_data,
@@ -779,6 +857,7 @@ def render_chat_view(
                         "model_name": caps.model_name,
                     }
                 )
+                st.rerun()
 
 
 # =====================================================================
@@ -969,17 +1048,16 @@ def render_library_view(
                     key=f"lib_reidx_{doc.doc_id}",
                     help="Rebuild vector embeddings in LanceDB",
                     use_container_width=True,
+                ) and _reindex_document(
+                    doc_store,
+                    cache_dir,
+                    doc.doc_id,
+                    doc.filename,
+                    retriever=hybrid_retriever,
                 ):
-                    if _reindex_document(
-                        doc_store,
-                        cache_dir,
-                        doc.doc_id,
-                        doc.filename,
-                        retriever=hybrid_retriever,
-                    ):
-                        if doc.doc_id in st.session_state.document_metadata:
-                            st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = False
-                        st.rerun()
+                    if doc.doc_id in st.session_state.document_metadata:
+                        st.session_state.document_metadata[doc.doc_id]["needs_reindex"] = False
+                    st.rerun()
             with col_del:
                 if st.button("Delete", key=f"lib_del_{doc.doc_id}", type="secondary", use_container_width=True):
                     st.session_state.pending_delete_doc_id = doc.doc_id
@@ -998,15 +1076,14 @@ def render_library_view(
                     key=f"lib_confirm_del_{doc.doc_id}",
                     type="primary",
                     use_container_width=True,
+                ) and _delete_document(
+                    doc_store,
+                    cache_dir,
+                    doc.doc_id,
+                    doc.filename,
+                    retriever=hybrid_retriever,
                 ):
-                    if _delete_document(
-                        doc_store,
-                        cache_dir,
-                        doc.doc_id,
-                        doc.filename,
-                        retriever=hybrid_retriever,
-                    ):
-                        st.rerun()
+                    st.rerun()
             with cancel_col:
                 if st.button("Cancel", key=f"lib_cancel_del_{doc.doc_id}", use_container_width=True):
                     st.session_state.pop("pending_delete_doc_id", None)
@@ -1021,9 +1098,10 @@ def render_library_view(
             "This operation cannot be undone."
         )
         confirm_purge = st.checkbox("I understand that this will erase all stored documents and vectors.")
-        if st.button("Purge All Data Now", type="primary", disabled=not confirm_purge):
-            if _purge_all(doc_store, cache_dir, retriever=hybrid_retriever):
-                st.rerun()
+        if st.button("Purge All Data Now", type="primary", disabled=not confirm_purge) and _purge_all(
+            doc_store, cache_dir, retriever=hybrid_retriever
+        ):
+            st.rerun()
 
 
 # =====================================================================
@@ -1045,9 +1123,12 @@ def render_settings_view(
     st.markdown("### Privacy & Inference Mode")
 
     # Synchronize widget toggle state with actual consented cloud_mode
-    if not st.session_state.cloud_mode and not st.session_state.get("_show_consent_dialog", False):
-        if st.session_state.get("settings_cloud_toggle", False):
-            st.session_state.settings_cloud_toggle = False
+    if (
+        not st.session_state.cloud_mode
+        and not st.session_state.get("_show_consent_dialog", False)
+        and st.session_state.get("settings_cloud_toggle", False)
+    ):
+        st.session_state.settings_cloud_toggle = False
 
     col_toggle, col_status = st.columns([2, 1])
     with col_toggle:

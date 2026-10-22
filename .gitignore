@@ -1,23 +1,63 @@
+# Environments & Secrets
 .env
+.env.*
+!.env.example
 .venv
-./unused/*
-.claude
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Python bytecode & cache
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 .pytest_cache/
 .ruff_cache/
-data/
+.coverage
+htmlcov/
 *.egg-info/
 dist/
 build/
-.coverage
-htmlcov/
-unused/
+
+# Local databases, vectors & caches
+data/
 .cache/
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.lance
+*.lance/
+
+# Models & binaries
 models/
+tools/
 *.gguf
-*.tmp
 *.onnx
 *.zip
-tools/
+*.tar.gz
+*.tmp
+
+# Logs
+*.log
+logs/
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.sublime-workspace
+*.sublime-project
+.claude/
+unused/
+./unused/*
+
+# Scratch and debug files
+.planning/debug/*.py

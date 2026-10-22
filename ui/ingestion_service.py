@@ -3,16 +3,16 @@
 from dataclasses import dataclass
 import datetime
 import io
-import json
 import logging
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from core.doc_store import DocStore
 from ingestion.docling_reader import DoclingReader
 from retrieval.hybrid_retriever import HybridRetriever
 from retrieval.local_embedding import LocalEmbedding
-from core.models import Chunk, Document, EvidenceElement, Page, cache_dir_for
+from core.models import Chunk, Document, EvidenceElement, Page
 from ingestion.ocr_fallback import apply_conditional_ocr
 from ingestion.upload_validation import validate_pdf_bytes
 from ingestion.visual_analyzer import VisualAnalyzer
@@ -211,7 +211,7 @@ class IngestionService:
 
         # 6. Guard against 0 chunks (CONCERNS P1 audit)
         if not paragraphs and not evidence_elements:
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            now_iso = datetime.datetime.now(datetime.UTC).isoformat()
             self.doc_store.record_ingestion(
                 Document(
                     doc_id=doc_id,
@@ -237,7 +237,7 @@ class IngestionService:
             )
 
         # 7. Atomic SQLite Persistence
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
         doc_model = Document(
             doc_id=doc_id,
             filename=filename,
@@ -325,19 +325,6 @@ class IngestionService:
                 num_chunks=0,
                 error=f"Vector indexing error: {idx_err}",
             )
-
-        # 9. Disk cache write
-        try:
-            c_dir = cache_dir_for(self.cache_dir, sha256)
-            c_dir.mkdir(parents=True, exist_ok=True)
-            with open(c_dir / "pages.json", "w", encoding="utf-8") as f:
-                json.dump([p.model_dump() for p in page_records], f, indent=2)
-            with open(c_dir / "chunks.json", "w", encoding="utf-8") as f:
-                json.dump(paragraphs, f, indent=2)
-            with open(c_dir / "manifest.json", "w", encoding="utf-8") as f:
-                json.dump(doc_model.model_dump(), f, indent=2)
-        except Exception as cache_err:
-            logger.warning("Cache write warning: %s", cache_err)
 
         _report(f"Successfully indexed {filename} ({len(paragraphs)} chunks).")
         return IngestionResult(

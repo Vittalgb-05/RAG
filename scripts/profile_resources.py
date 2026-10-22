@@ -5,7 +5,7 @@ process RAM consumption, and GPU VRAM headroom against the 4 GB hardware ceiling
 Outputs results to .planning/research/RESOURCE_PROFILE.json.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 import json
 import logging
 from pathlib import Path
@@ -209,7 +209,7 @@ def run_resource_profile() -> dict:
             size_bytes=1024,
             num_pages=5,
             status="indexed",
-            upload_time=datetime.now(timezone.utc).isoformat(),
+            upload_time=datetime.now(UTC).isoformat(),
             num_chunks=5,
         )
         doc_store.upsert_document(bench_doc)
@@ -307,7 +307,7 @@ def run_resource_profile() -> dict:
 
         # Compile final profile report
         profile_data = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "target_gpu": "NVIDIA GeForce RTX 3050 Laptop GPU (4,096 MB VRAM)",
             "vram_measurement_mode": vram_source,
             "resident_model_vram_mb": resident_vram_mb,

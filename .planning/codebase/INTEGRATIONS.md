@@ -16,8 +16,7 @@
 **Optional Cloud LLM Providers (explicit opt-in only):**
 - LiteLLM gateway - unified adapter for Groq, OpenAI, and Anthropic (`providers/litellm_provider.py`).
   - SDK/Client: `litellm==1.105.0` (Python <3.14) / `1.102.4` (Python >=3.14)
-  - Default model: `groq/llama-3.3-70b-versatile` (`DEFAULT_CLOUD_MODEL`).
-  - Selectable models in `ui/views.py:791-795`: `groq/llama-3.3-70b-versatile`, `openai/gpt-4o-mini`, `anthropic/claude-3-5-haiku-20241022`.
+  - Selectable models in `ui/views.py`: `groq/llama-3.3-70b-versatile`, `openai/gpt-4o-mini`, `anthropic/claude-3-5-haiku-20241022` (configured via sidebar System & Privacy expander).
   - Auth: `GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, resolved in order from explicit argument, Streamlit `session_state.cloud_api_keys`, Streamlit secrets, then `os.environ` (`providers/litellm_provider.py:44-90`).
   - Consent: `user_consented=True` is mandatory before any transmission; otherwise `PermissionError` is raised. LiteLLM telemetry is force-disabled (`providers/litellm_provider.py:19-23`).
 - Groq direct SDK - secondary cloud path (`providers/groq_provider.py`).

@@ -48,15 +48,15 @@ The composition root is `main.py`. `start.py` is the operational launcher; `setu
 | Component | Responsibility | File |
 |-----------|----------------|------|
 | Streamlit composition root | Page config, session defaults, storage wiring, hydration, cloud-mode sync, health snapshot, sidebar, workspace routing | `main.py` |
-| Workspace renderers | Chat, Summarizer, Document Library, Settings, sidebar uploader | `ui/views.py` |
+| Workspace renderers | Chat, Document Library, single-button file inserter (`render_file_upload_button`), sidebar document list & settings expander | `ui/views.py` |
 | Ingestion orchestrator | Validation → dedup/repair → extraction → OCR → VLM → SQLite → vectors → cache, returning `IngestionResult` | `ui/ingestion_service.py` |
 | Lifecycle orchestrator | Atomic delete, purge-all, re-index across SQLite, LanceDB, disk cache, and session state | `ui/lifecycle_service.py` |
 | Startup hydration | Restore document catalog from SQLite, open the retriever, verify/repair missing vectors | `ui/hydration.py` |
 | Session teardown | One canonical reset for chat, evidence, credentials, retriever, uploader | `ui/session_state.py` |
-| Domain QA facade | Provider routing, retrieval-context assembly, token budgeting, streaming, post-hoc citation validation | `core/local_llm.py` |
+| Domain QA facade | Provider routing, retrieval-context assembly, token budgeting, streaming, post-hoc citation validation & auto-attribution | `core/local_llm.py` |
 | VRAM concurrency gate | Process-wide reentrant lock serializing all LLM/VLM/summarizer inference | `core/local_llm.py` (`InferenceGate`, lines 25–89) |
-| Summarization | Five profiles, fast path + token-bounded map-reduce, page-reference extraction, SQLite cache | `core/summarizer.py` |
-| Citation validation | `[E#]` extraction, ≥95% precision gate, abstention and injection detection | `core/citation_validator.py` |
+| Summarization | Five profiles, fast path + token-bounded map-reduce (up to 2500 tokens), rich multi-paragraph synthesis, SQLite cache | `core/summarizer.py` |
+| Citation validation & attribution | `[E#]` extraction, lexical auto-attribution (`auto_attribute_citations`), non-blocking warning gate (withholding restricted to prompt injections) | `core/citation_validator.py` |
 | Prompt budgeting | 4K-context allocation, `<document_context>` isolation, oldest-first history truncation | `core/prompt_budget.py` |
 | Canonical schemas | `Document`, `Page`, `Chunk`, `EvidenceElement`, `EvidenceSnippet`, `RetrievalResult`, `SummaryResult` | `core/models.py` |
 | SQLite store | WAL-mode metadata/chunks/pages/evidence/summaries, migrations v1–v4, transactional ingestion | `core/doc_store.py` |
@@ -87,11 +87,11 @@ The composition root is `main.py`. `start.py` is the operational launcher; `setu
 ## Layers
 
 **Presentation:**
-- Purpose: Render the four workspaces and the sidebar; translate widget events into service calls.
+- Purpose: Render the primary chatbot-first workspace (Chat view, Document Library, and single-button document insertion); translate widget events into service calls.
 - Location: `main.py`, `ui/views.py`, `ui/components.py`, `ui/theme.py`, `ui/sanitizer.py`
-- Contains: Streamlit renderers (`render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents`), AMOLED CSS, SVG icon helpers, Markdown/HTML sanitization.
+- Contains: Streamlit renderers (`render_chat_view`, `render_library_view`, `render_file_upload_button`, `render_sidebar_documents`), AMOLED CSS, SVG icon helpers, Markdown/HTML sanitization.
 - Depends on: UI orchestration services, `core.local_llm.AiModel`, `core.summarizer.Summarizer`, `core.doc_store.DocStore`, telemetry.
-- Used by: The Streamlit runtime only. `main.py` dispatches at lines 321–349.
+- Used by: The Streamlit runtime only. `main.py` dispatches at lines 270–320.
 
 **UI Orchestration:**
 - Purpose: Own multi-step workflows and cross-store consistency.

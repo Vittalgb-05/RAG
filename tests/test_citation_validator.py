@@ -241,3 +241,40 @@ def test_validate_citations_support_confirmed_for_overlapping_claim() -> None:
     assert result.support_checked is True
     assert result.support_precision == 1.0
     assert result.unsupported_ranks == []
+
+
+def test_auto_attribute_citations_adds_matching_rank() -> None:
+    """Uncited draft discussing facts from snippets gets matching [E#] attributed."""
+    from core.citation_validator import auto_attribute_citations
+
+    rr = _make_support_retrieval_result()
+    # Snippet 1 contains "Quarterly revenue rose sharply across all three regions."
+    draft = "Quarterly revenue rose sharply after the launch."
+    attributed = auto_attribute_citations(draft, rr)
+    assert "[E1]" in attributed
+
+    # When validated, it is now valid and verified!
+    res = validate_citations(attributed, rr)
+    assert res.is_valid is True
+    assert res.cited_ranks == [1]
+
+
+def test_auto_attribute_citations_leaves_abstention_untouched() -> None:
+    """Explicit abstentions must never receive attributed citations."""
+    from core.citation_validator import auto_attribute_citations
+
+    rr = _make_support_retrieval_result()
+    draft = "The document does not contain sufficient evidence to answer this question."
+    attributed = auto_attribute_citations(draft, rr)
+    assert attributed == draft
+    assert "[E" not in attributed
+
+
+def test_auto_attribute_citations_preserves_existing_citations() -> None:
+    """Responses that already contain citations are preserved as-is."""
+    from core.citation_validator import auto_attribute_citations
+
+    rr = _make_support_retrieval_result()
+    draft = "Revenue rose sharply [E1]."
+    attributed = auto_attribute_citations(draft, rr)
+    assert attributed == draft

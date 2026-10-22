@@ -299,7 +299,7 @@ class AiModel:
                 elif hasattr(local_embedding, "get_context"):
                     relevant_sections = local_embedding.get_context(search_query, k=10)
                     if hasattr(local_embedding, "last_retrieval_result"):
-                        retrieval_result = getattr(local_embedding, "last_retrieval_result")
+                        retrieval_result = local_embedding.last_retrieval_result
                 elif hasattr(local_embedding, "search_hybrid"):
                     retrieval_result = local_embedding.search_hybrid(search_query, k=10)
                     relevant_sections = (
@@ -336,7 +336,7 @@ class AiModel:
                 prompt=bounded_prompt,
                 system_prompt=system_prompt,
                 history=history_turns,
-                max_tokens=1024,
+                max_tokens=2048,
             )
         finally:
             # Guarantees the gate is released when the stream finishes normally,

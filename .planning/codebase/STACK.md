@@ -39,7 +39,7 @@
 - httpx `0.28.1` - HTTP/SSE client to local llama-server with loopback/SSRF enforcement (`providers/llama_cpp_provider.py`).
 
 **Testing:**
-- pytest `>=8.3.0` (`requirements-test.txt`) - 32 test modules, ~318 `test_` functions under `tests/`; config in `pyproject.toml:20-27` (`testpaths = ["tests"]`, warnings filtered).
+- pytest `>=8.3.0` (`requirements-test.txt`) - 32 test modules, 392 tests under `tests/`; config in `pyproject.toml:20-27` (`testpaths = ["tests"]`, warnings filtered).
 - reportlab `>=4.2.0` - synthetic PDF corpus generation (`tests/data/corpus/generate_corpus.py`), run as a CI step.
 
 **Build/Dev:**

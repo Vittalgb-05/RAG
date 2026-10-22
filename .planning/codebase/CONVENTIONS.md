@@ -15,7 +15,8 @@
 - `snake_case`, verb-first for actions: `ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`, `assemble_grounded_messages`, `apply_conditional_ocr`.
 - Boolean predicates use `is_*`, `has_*`, `should_*`, `supports_*`, `can_*`: `InferenceGate.is_locked()`, `HybridRetriever.has_document()`, `should_ocr_page()`, `validate_gguf_file()`.
 - Private helpers are underscore-prefixed and module-local: `DocStore._connect`, `DocStore._apply_migrations`, `LocalEmbedding._embed_one`, `AiModel._detect_provider`, `_escape_sql_literal`, `_doc_filter_clause` in `retrieval/hybrid_retriever.py`, `_reset_session_security_state` in `main.py`.
-- UI renderers are named `render_<area>` and return `None`: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents` in `ui/views.py`; `render_brand_header`, `render_status_pill`, `render_citation_chip` in `ui/components.py`.
+- UI renderers are named `render_<area>` and return `None`: `render_chat_view`, `render_library_view`, `render_file_upload_button`, `render_sidebar_documents` in `ui/views.py`; `render_brand_header`, `render_status_pill`, `render_citation_chip` in `ui/components.py`.
+- Citation verification and attribution helpers: `validate_citations`, `auto_attribute_citations` in `core/citation_validator.py`.
 - Factories/converters use `get_*`, `build_*`, or `*_for`: `get_shared_sentence_transformer`, `build_index`, `cache_dir_for`, `doc_id_for`, `sha256_bytes`.
 
 **Variables:**

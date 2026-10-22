@@ -8,7 +8,7 @@ aggregations for benchmarking 4 GB VRAM systems (QUAL-01).
 from collections import defaultdict
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 import logging
 import subprocess
 import threading
@@ -310,7 +310,7 @@ def get_system_telemetry_snapshot() -> dict[str, Any]:
     resident_gpu_mb = get_resident_model_gpu_memory()
 
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "gpu": gpu_info,
         "process": proc_info,
         "compute_apps": compute_apps,

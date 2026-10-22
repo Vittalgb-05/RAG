@@ -190,7 +190,7 @@ def test_summarizer_splits_oversized_page_into_bounded_batches() -> None:
     batches = summarizer._bundle_pages([page], max_tokens=MAX_BATCH_TOKENS)
     assert len(batches) > 1
     for batch in batches:
-        assert sum(len((p.page_text or "")) // 4 for p in batch) <= MAX_BATCH_TOKENS + 8
+        assert sum(len(p.page_text or "") // 4 for p in batch) <= MAX_BATCH_TOKENS + 8
         assert all(p.page_num == 7 for p in batch)
 
 

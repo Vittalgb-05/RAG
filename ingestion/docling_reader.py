@@ -309,7 +309,7 @@ class DoclingReader:
                 blocks: list[tuple[str, bool]] = []  # (content, is_table)
                 text_group: list[str] = []
 
-                def flush_group() -> None:
+                def flush_group(text_group: list[str] = text_group, blocks: list[tuple[str, bool]] = blocks) -> None:
                     if text_group:
                         blocks.append(("\n\n".join(text_group).strip(), False))
                         text_group.clear()

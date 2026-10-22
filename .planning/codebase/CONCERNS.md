@@ -1,9 +1,30 @@
-<!-- refreshed: 2026-10-21 -->
+<!-- refreshed: 2026-10-22 -->
 # Codebase Concerns
 
-**Analysis Date:** 2026-10-21
+**Analysis Date:** 2026-10-21 (repair status added 2026-10-22)
 
 Severity reflects impact on the stated core value (fast, grounded, local-only PDF QA within 4 GB VRAM). Status is either **open** (confirmed defect/gap) or **verification gap** (behavior is plausible but unproven by tests/CI).
+
+## Repair Status (2026-10-22)
+
+Resolved in the 2026-10-21/22 repair batches (see `docs/REPAIR_LOG.md` and `docs/TEST_RESULTS.md`):
+
+- Whole-document extraction / EVS question grounding (fixed retrieval scope, prompt, withhold gate, citation chips).
+- Fallback mirror divergence and scoped 10k truncation; LanceDB FTS status surface added.
+- Visual evidence excluded from summaries; summary session cache model-version drift; truncation notices.
+- Sanitizer bypass classes; OCR/visual pixel and time budgets; PNG/JPEG MIME detection; non-loopback bind refusal.
+- Missing application logging, `print()` in library modules, SQLite retry, gate release on generator close.
+- Unpinned model/llama-server downloads, non-streaming checksum verification, broken lmstudio mirror, gated Qwen URLs in the runbook.
+- Write-only extraction cache (write path removed; legacy cache cleanup retained).
+- Deprecated `HybridRetriever.add_vector` shim; Ruff rules `B`, `UP`, and `SIM` enabled.
+- Thesis rejection & false withholding on high-level queries: resolved via lexical citation auto-attribution (`auto_attribute_citations`) in `core/citation_validator.py` and non-blocking warning gate in `ui/views.py` (withholding strictly reserved for detected prompt injections).
+- Truncated / "way too small" summarizations: resolved by expanding token budgets (intermediate map 1500, fast-path/reduce 2500, chat stream 2048) and rewriting synthesis prompts for rich multi-paragraph extractions in `core/summarizer.py`.
+- Chat query reverse-ordering / DOM inversion: resolved by enforcing strict chronological sequence and immediate `st.rerun()` upon turn completion in `ui/views.py`.
+- Clunky 4-workspace UI consolidated into a focused chatbot-first interface: 2 primary views (`Chat` and `Document Library`), unified single-button document insertion (`render_file_upload_button`), and collapsible system/privacy expander.
+- Comprehensive `.gitignore` update covering SQLite WAL/SHM, LanceDB indexes, logs, and development scratch scripts.
+
+Deferred by explicit scope decision (tracked, not fixed): encryption at rest, authentication, portable backup/restore, request cancellation, health auto-recovery, full CI OS/Python matrix, LanceDB image digest pinning, and splitting `setup.py` into a thin packaging shim plus installer module.
+
 
 ## Tech Debt
 

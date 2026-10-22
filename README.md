@@ -103,7 +103,7 @@ RAG/
 │   ├── RUNBOOK.md              # Installation, model acquisition, operations guide
 │   ├── EVALUATION.md           # Benchmarks, VRAM profile, and test metrics
 │   └── LOCAL_INFERENCE.md      # llama-server tuning reference for 4 GB GPUs
-├── tests/                      # Automated pytest suite (318 tests, 100% passing)
+├── tests/                      # Automated pytest suite (389 tests, 100% passing)
 ├── requirements.txt            # Production runtime dependencies
 ├── requirements-lock.txt       # Deterministic deployment lockfile (Python 3.11)
 └── requirements-test.txt       # Test-only dependencies

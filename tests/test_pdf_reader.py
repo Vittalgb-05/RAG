@@ -6,6 +6,7 @@
 
 import io
 from pathlib import Path
+import pypdf
 import pytest
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate
@@ -102,7 +103,7 @@ def test_pdf_reader_corrupt_pdf_rejects():
     pdf_path = CORPUS_DIR / "corrupt_invalid.pdf"
     assert pdf_path.exists(), "Corpus file corrupt_invalid.pdf must exist"
 
-    with pytest.raises(Exception):
+    with pytest.raises(pypdf.errors.PdfReadError):
         reader = PdfReader(str(pdf_path))
         reader.extract_text()
 

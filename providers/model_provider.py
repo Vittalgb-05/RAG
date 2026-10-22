@@ -66,7 +66,7 @@ class BaseModelProvider(ABC):
 
     def close(self) -> None:
         """Release underlying HTTP client or network resources. Default is no-op."""
-        pass
+        return None
 
     def __enter__(self) -> "BaseModelProvider":
         return self

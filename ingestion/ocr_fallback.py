@@ -7,6 +7,7 @@ sub-5-second throughput. Isolates OCR failures strictly at the page level.
 
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import contextlib
 import logging
 import math
 import os
@@ -216,10 +217,8 @@ class OcrEngine:
                 lines = [str(t).strip() for t in raw_txts if str(t).strip()]
                 scores: list[float] = []
                 for s in raw_scores:
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         scores.append(float(s))
-                    except (ValueError, TypeError):
-                        pass
                 full_text = "\n".join(lines)
                 avg_score = sum(scores) / len(scores) if scores else 0.0
                 return full_text, avg_score
@@ -236,10 +235,8 @@ class OcrEngine:
                     text_line = str(item[1]).strip()
                     if text_line:
                         lines.append(text_line)
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         scores.append(float(item[2]))
-                    except (ValueError, TypeError):
-                        pass
                 elif isinstance(item, (list, tuple)) and len(item) == 2:
                     text_line = str(item[0]).strip()
                     if text_line:

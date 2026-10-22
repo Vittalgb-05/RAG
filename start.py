@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import contextlib
 import sys
 import time
 import urllib.error
@@ -21,15 +22,11 @@ import urllib.request
 
 # Ensure UTF-8 stdout/stderr across Windows consoles (cp1252/cp437)
 if hasattr(sys.stdout, "reconfigure"):
-    try:
+    with contextlib.suppress(Exception):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
 if hasattr(sys.stderr, "reconfigure"):
-    try:
+    with contextlib.suppress(Exception):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
 
 # Enforce PyTorch backend and suppress Keras 3 / TensorFlow integrations
 os.environ.setdefault("USE_TF", "0")

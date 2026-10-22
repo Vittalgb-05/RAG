@@ -139,10 +139,9 @@ def test_latency_tracker_success() -> None:
 
 def test_latency_tracker_exception() -> None:
     """Test LatencyTracker captures failure details when block raises."""
-    with pytest.raises(ValueError, match="Intentional failure"):
-        with LatencyTracker("failing_stage") as tracker:
-            time.sleep(0.01)
-            raise ValueError("Intentional failure")
+    with pytest.raises(ValueError, match="Intentional failure"), LatencyTracker("failing_stage") as tracker:
+        time.sleep(0.01)
+        raise ValueError("Intentional failure")
 
     assert tracker.success is False
     assert tracker.error == "Intentional failure"

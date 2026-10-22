@@ -266,9 +266,8 @@ def test_analyze_image_unsupported_format_warns_and_falls_back(caplog) -> None:
         )
 
     transport = httpx.MockTransport(handler)
-    with LlamaCppProvider(transport=transport) as provider:
-        with caplog.at_level("WARNING"):
-            provider.analyze_image(b"not-an-image", "Describe")
+    with LlamaCppProvider(transport=transport) as provider, caplog.at_level("WARNING"):
+        provider.analyze_image(b"not-an-image", "Describe")
 
     assert "Unsupported or undecodable image format" in caplog.text
     assert captured_payload["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")

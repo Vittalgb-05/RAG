@@ -80,10 +80,7 @@ class LlamaCppProvider(BaseModelProvider):
             else:
                 env_host = os.environ.get("LLAMA_SERVER_HOST")
                 env_port = os.environ.get("LLAMA_SERVER_PORT", "8080")
-                if env_host:
-                    base_url = f"http://{env_host}:{env_port}"
-                else:
-                    base_url = "http://127.0.0.1:8080"
+                base_url = f"http://{env_host}:{env_port}" if env_host else "http://127.0.0.1:8080"
 
         url_to_parse = base_url if "://" in base_url else f"http://{base_url}"
         parsed = urlparse(url_to_parse)

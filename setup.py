@@ -24,6 +24,7 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
+import contextlib
 import zipfile
 from typing import Any
 
@@ -31,15 +32,11 @@ from setuptools import Command, find_packages, setup
 
 # Ensure UTF-8 stdout/stderr across Windows consoles (cp1252/cp437)
 if hasattr(sys.stdout, "reconfigure"):
-    try:
+    with contextlib.suppress(Exception):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
 if hasattr(sys.stderr, "reconfigure"):
-    try:
+    with contextlib.suppress(Exception):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -62,21 +59,51 @@ MODEL_REGISTRY: list[dict[str, Any]] = [
         "name": "qwen3-vl-2b-instruct-q4_k_m.gguf",
         "description": "Qwen2-VL 2B Instruct GGUF (4-bit quantized base language/vision model)",
         "min_size_bytes": 800_000_000,
+        "sha256": "4ef095263343fc1237e8ca879790bb262bcf209f082e0a9bfce219b7ece55e8b",
         "urls": [
             "https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q4_K_M.gguf",
-            "https://huggingface.co/lmstudio-community/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q4_K_M.gguf",
         ],
     },
     {
         "name": "mmproj-f16.gguf",
         "description": "Qwen2-VL 2B Multimodal Projector Adapter GGUF (FP16 vision encoder)",
         "min_size_bytes": 500_000_000,
+        "sha256": "05cc3ae461a7b6aa4023312ccab549ecab77cf8677efee04f049fcbab55b8bc3",
         "urls": [
             "https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-2B-Instruct-f16.gguf",
-            "https://huggingface.co/lmstudio-community/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-2B-Instruct-f16.gguf",
         ],
     },
 ]
+
+
+LLAMA_ARCHIVE_SHA256: dict[str, str] = {
+    "llama-b11718-bin-win-cuda-12.4-x64.zip": "c13fda0ef74f47cd2bccda1eea2a62980c12a5778d39b39bedadb525b4e81aff",
+    "cudart-llama-bin-win-cuda-12.4-x64.zip": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+    "llama-b11718-bin-win-cpu-x64.zip": "92cc529b29a43f9a30e21d490cb2e95062acd0b59af6fee8b3b52b28074f838c",
+    "llama-b11718-bin-ubuntu-x64.tar.gz": "99f83b15cea9a4fb8945516c276b5f42b11608f82104fc6fa98a541cac826de7",
+    "llama-b11718-bin-ubuntu-cuda-12.8-x64.tar.gz": "491595b522685a7b51974e80c21a8458e3afb5cf630fa48dc74fa854c378b3e0",
+}
+
+
+def require_pinned_checksums() -> bool:
+    """Return True when the operator requires every download to carry a pinned SHA-256."""
+    return os.environ.get("RAG_REQUIRE_CHECKSUMS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def file_sha256(path: Path) -> str:
+    """Compute a file's SHA-256 digest using bounded streaming reads.
+
+    Args:
+        path: File to hash.
+
+    Returns:
+        Lowercase hexadecimal SHA-256 digest.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def ensure_project_directories() -> None:
@@ -177,10 +204,22 @@ def download_file_with_progress(
     if not force and dest_path.exists():
         current_size = dest_path.stat().st_size
         if current_size >= min_size_bytes:
-            print(f"  ✓ {dest_path.name} already exists ({format_bytes(current_size)}), skipping.")
-            return True
+            if expected_sha256:
+                existing_digest = file_sha256(dest_path)
+                if existing_digest.lower() != expected_sha256.lower():
+                    print(f"  ⚠️ Existing {dest_path.name} failed checksum verification. Re-downloading...")
+                else:
+                    print(f"  ✓ {dest_path.name} already exists ({format_bytes(current_size)}), skipping.")
+                    return True
+            else:
+                print(f"  ✓ {dest_path.name} already exists ({format_bytes(current_size)}), skipping.")
+                return True
         else:
             print(f"  ⚠️ Existing {dest_path.name} is undersized ({format_bytes(current_size)}). Re-downloading...")
+
+    if require_pinned_checksums() and not expected_sha256:
+        print(f"  ❌ RAG_REQUIRE_CHECKSUMS is set but no pinned SHA-256 exists for {dest_path.name}.")
+        return False
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = dest_path.with_suffix(".tmp")
@@ -234,7 +273,7 @@ def download_file_with_progress(
                 continue
 
             if expected_sha256:
-                digest = hashlib.sha256(temp_path.read_bytes()).hexdigest()
+                digest = file_sha256(temp_path)
                 if digest.lower() != expected_sha256.lower():
                     print(f"  ❌ Checksum mismatch for {dest_path.name}: expected {expected_sha256}, got {digest}.")
                     temp_path.unlink(missing_ok=True)
@@ -397,6 +436,7 @@ def download_and_extract_archive(
     archive_name: str,
     min_size_bytes: int = 1_000_000,
     force: bool = False,
+    expected_sha256: str | None = None,
 ) -> bool:
     """Download an archive and extract its contents into dest_dir.
 
@@ -406,6 +446,7 @@ def download_and_extract_archive(
         archive_name: Filename of the temporary downloaded archive.
         min_size_bytes: Minimum expected archive size.
         force: If True, re-download archive.
+        expected_sha256: Optional pinned SHA-256 digest for the archive.
 
     Returns:
         True if successfully downloaded and extracted.
@@ -418,6 +459,7 @@ def download_and_extract_archive(
         dest_path=temp_archive,
         min_size_bytes=min_size_bytes,
         force=force,
+        expected_sha256=expected_sha256,
     )
     if not download_ok:
         return False
@@ -494,6 +536,7 @@ def setup_llama_server(
                 archive_name=f"llama-{LLAMA_SERVER_RELEASE}-win-cuda.zip",
                 min_size_bytes=50_000_000,
                 force=force,
+                expected_sha256=LLAMA_ARCHIVE_SHA256.get(f"llama-{LLAMA_SERVER_RELEASE}-bin-win-cuda-12.4-x64.zip"),
             )
             rt_ok = download_and_extract_archive(
                 urls=cuda_rt_urls,
@@ -501,6 +544,7 @@ def setup_llama_server(
                 archive_name=f"cudart-{LLAMA_SERVER_RELEASE}-win.zip",
                 min_size_bytes=50_000_000,
                 force=force,
+                expected_sha256=LLAMA_ARCHIVE_SHA256.get("cudart-llama-bin-win-cuda-12.4-x64.zip"),
             )
 
             # Test execution of CUDA binary
@@ -526,6 +570,7 @@ def setup_llama_server(
             archive_name=f"llama-{LLAMA_SERVER_RELEASE}-win-cpu.zip",
             min_size_bytes=10_000_000,
             force=force,
+            expected_sha256=LLAMA_ARCHIVE_SHA256.get(f"llama-{LLAMA_SERVER_RELEASE}-bin-win-cpu-x64.zip"),
         )
 
     elif sys.platform == "linux":
@@ -541,18 +586,22 @@ def setup_llama_server(
                 f"{LLAMA_SERVER_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz",
                 f"{LLAMA_SERVER_MIRROR_BASE_URL}/llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz",
             ]
+        linux_archive = (
+            f"llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-cuda-12.8-x64.tar.gz"
+            if has_gpu
+            else f"llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz"
+        )
         download_and_extract_archive(
             urls=urls,
             dest_dir=dest_dir,
             archive_name=f"llama-{LLAMA_SERVER_RELEASE}-linux.tar.gz",
             min_size_bytes=10_000_000,
             force=force,
+            expected_sha256=LLAMA_ARCHIVE_SHA256.get(linux_archive),
         )
         if exe_path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 exe_path.chmod(exe_path.stat().st_mode | 0o755)
-            except Exception:
-                pass
     else:
         print(f"  ℹ️ Platform '{sys.platform}' requires manual llama-server installation.")
         print("     See docs/RUNBOOK.md or https://github.com/ggml-org/llama.cpp/releases")
@@ -648,14 +697,12 @@ def run_full_setup(
 
     # Step 4: Install current package in editable mode
     print("\n📦 Registering local package...")
-    try:
+    with contextlib.suppress(Exception):
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", "."],
             cwd=str(REPO_ROOT),
             check=False,
         )
-    except Exception:
-        pass
 
     print("\n" + "=" * 68)
     print("  🎉 Setup Complete!")

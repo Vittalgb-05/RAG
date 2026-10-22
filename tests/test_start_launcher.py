@@ -51,10 +51,9 @@ def test_get_llama_server_binary_finds_local_tools(tmp_path):
     local_bin.parent.mkdir(parents=True, exist_ok=True)
     local_bin.write_text("binary", encoding="utf-8")
 
-    with patch("shutil.which", return_value=None):
-        with patch("start.REPO_ROOT", tmp_path):
-            found = start.get_llama_server_binary()
-            assert found == local_bin
+    with patch("shutil.which", return_value=None), patch("start.REPO_ROOT", tmp_path):
+        found = start.get_llama_server_binary()
+        assert found == local_bin
 
 
 def test_check_llama_server_healthy(capsys):
@@ -106,14 +105,16 @@ def test_launch_streamlit_invokes_subprocess():
 def test_main_cli_args_parsing():
     """Verify main() parses arguments and executes pre-flight sequence."""
     test_args = ["start.py", "--port", "9000", "--host", "127.0.0.1", "--headless"]
-    with patch.object(sys, "argv", test_args):
-        with patch("start.check_python_version", return_value=True):
-            with patch("start.ensure_directories"):
-                with patch("start.check_llama_server"):
-                    with patch("start.launch_streamlit", return_value=0) as mock_launch:
-                        rc = start.main()
-                        assert rc == 0
-                        mock_launch.assert_called_once_with(port=9000, host="127.0.0.1", headless=True)
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("start.check_python_version", return_value=True),
+        patch("start.ensure_directories"),
+        patch("start.check_llama_server"),
+        patch("start.launch_streamlit", return_value=0) as mock_launch,
+    ):
+        rc = start.main()
+        assert rc == 0
+        mock_launch.assert_called_once_with(port=9000, host="127.0.0.1", headless=True)
 
 
 def test_is_loopback_host_classification():
@@ -139,12 +140,14 @@ def test_main_refuses_non_loopback_bind_without_opt_in(monkeypatch):
     """main() must not launch Streamlit on a wildcard/LAN bind by default."""
     monkeypatch.delenv("RAG_ALLOW_NON_LOOPBACK", raising=False)
     test_args = ["start.py", "--host", "0.0.0.0"]
-    with patch.object(sys, "argv", test_args):
-        with patch("start.check_python_version", return_value=True):
-            with patch("start.ensure_directories"):
-                with patch("start.check_llama_server"):
-                    with patch("start.launch_streamlit") as mock_launch:
-                        rc = start.main()
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("start.check_python_version", return_value=True),
+        patch("start.ensure_directories"),
+        patch("start.check_llama_server"),
+        patch("start.launch_streamlit") as mock_launch,
+    ):
+        rc = start.main()
     assert rc == 2
     mock_launch.assert_not_called()
 
@@ -153,12 +156,14 @@ def test_main_allows_non_loopback_with_flag(monkeypatch):
     """--allow-non-loopback is the explicit opt-in for LAN exposure."""
     monkeypatch.delenv("RAG_ALLOW_NON_LOOPBACK", raising=False)
     test_args = ["start.py", "--host", "0.0.0.0", "--allow-non-loopback"]
-    with patch.object(sys, "argv", test_args):
-        with patch("start.check_python_version", return_value=True):
-            with patch("start.ensure_directories"):
-                with patch("start.check_llama_server"):
-                    with patch("start.launch_streamlit", return_value=0) as mock_launch:
-                        rc = start.main()
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("start.check_python_version", return_value=True),
+        patch("start.ensure_directories"),
+        patch("start.check_llama_server"),
+        patch("start.launch_streamlit", return_value=0) as mock_launch,
+    ):
+        rc = start.main()
     assert rc == 0
     mock_launch.assert_called_once_with(port=8501, host="0.0.0.0", headless=False)
 
@@ -167,12 +172,14 @@ def test_main_allows_non_loopback_with_env(monkeypatch):
     """RAG_ALLOW_NON_LOOPBACK=1 is the environment opt-in for LAN exposure."""
     monkeypatch.setenv("RAG_ALLOW_NON_LOOPBACK", "1")
     test_args = ["start.py", "--host", "192.168.1.10"]
-    with patch.object(sys, "argv", test_args):
-        with patch("start.check_python_version", return_value=True):
-            with patch("start.ensure_directories"):
-                with patch("start.check_llama_server"):
-                    with patch("start.launch_streamlit", return_value=0) as mock_launch:
-                        rc = start.main()
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("start.check_python_version", return_value=True),
+        patch("start.ensure_directories"),
+        patch("start.check_llama_server"),
+        patch("start.launch_streamlit", return_value=0) as mock_launch,
+    ):
+        rc = start.main()
     assert rc == 0
     mock_launch.assert_called_once()
 
@@ -181,13 +188,15 @@ def test_main_cli_start_llama_lifecycle(tmp_path):
     """Verify main() spawns and terminates background llama-server when --start-llama is passed."""
     mock_proc = MagicMock()
     test_args = ["start.py", "--start-llama"]
-    with patch.object(sys, "argv", test_args):
-        with patch("start.check_python_version", return_value=True):
-            with patch("start.ensure_directories"):
-                with patch("start.start_llama_server_process", return_value=mock_proc) as mock_start:
-                    with patch("start.launch_streamlit", return_value=0):
-                        rc = start.main()
-                        assert rc == 0
-                        mock_start.assert_called_once()
-                        mock_proc.terminate.assert_called_once()
-                        mock_proc.wait.assert_called_once_with(timeout=5)
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("start.check_python_version", return_value=True),
+        patch("start.ensure_directories"),
+        patch("start.start_llama_server_process", return_value=mock_proc) as mock_start,
+        patch("start.launch_streamlit", return_value=0),
+    ):
+        rc = start.main()
+        assert rc == 0
+        mock_start.assert_called_once()
+        mock_proc.terminate.assert_called_once()
+        mock_proc.wait.assert_called_once_with(timeout=5)

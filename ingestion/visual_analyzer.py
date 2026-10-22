@@ -7,6 +7,7 @@ EvidenceElement records with isolated model provenance (VIS-01, VIS-02, VIS-03).
 """
 
 import hashlib
+import contextlib
 import logging
 import math
 from typing import Any
@@ -120,10 +121,7 @@ class VisualAnalyzer:
                             if r.width >= page_rect.width * 0.95 and r.height >= page_rect.height * 0.95:
                                 continue
                             drawing_count += 1
-                            if diagram_rect is None:
-                                diagram_rect = fitz.Rect(r)
-                            else:
-                                diagram_rect = diagram_rect | fitz.Rect(r)
+                            diagram_rect = fitz.Rect(r) if diagram_rect is None else diagram_rect | fitz.Rect(r)
 
                         # If drawing cluster is substantial (>2 drawings and area > 1000 pt^2)
                         if (
@@ -275,10 +273,8 @@ class VisualAnalyzer:
             element_id = f"elem_{doc_id}_p{page_num}_{kind}_{idx:02d}"
 
             if progress_callback is not None:
-                try:
+                with contextlib.suppress(Exception):
                     progress_callback(idx + 1, len(regions), f"{kind} (page {page_num})")
-                except Exception:
-                    pass
 
             try:
                 crop_bytes = self.crop_visual_element(pdf_bytes, page_num, bbox)

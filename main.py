@@ -27,6 +27,7 @@ from core.local_llm import AiModel
 from core.logging_setup import configure_logging, suppress_torch_classes_scan_warning
 from providers.model_provider import HealthStatus, ProviderCapabilities
 from ui.components import render_brand_header, render_status_pill
+from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from ui.hydration import hydrate_startup_state
 from ui.session_state import reset_in_memory_session
 from ui.theme import inject_custom_theme
@@ -378,12 +379,10 @@ with st.sidebar:
 
     st.divider()
 
-    # Workspace Navigation
+    # Workspace Navigation (Chatbot + Document Library)
     WORKSPACES = [
         "Chat",
-        "Summarizer",
         "Document Library",
-        "Settings",
     ]
 
     current_ws = st.session_state.active_workspace
@@ -403,6 +402,22 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+
+    with st.sidebar.expander("⚙️ System & Privacy", expanded=False):
+        proc_info = get_process_memory_info()
+        gpu_info = get_gpu_memory_info()
+        ram_mb = proc_info.get("rss_mb", 0.0)
+        vram_str = (
+            f"{gpu_info.get('used_mb', 0.0):.0f} / {gpu_info.get('total_mb', 0.0):.0f} MB" if gpu_info else "CPU-only"
+        )
+        st.markdown(
+            f"<div style='font-size: 0.75rem; color: #9693A6; margin-bottom: 0.5rem;'>"
+            f"<b>RAM:</b> {ram_mb:.0f} MB · <b>VRAM:</b> {vram_str}</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Open Diagnostics", use_container_width=True):
+            st.session_state.active_workspace = "Settings"
+            st.rerun()
 
     # Quick session reset
     if st.button("Clear Session", use_container_width=True, help="Clear in-memory chat and reset upload buffer"):
@@ -431,6 +446,7 @@ if active_page in ("Chat", "Ask Documents", "Workspace"):
         health=health,
         caps=caps,
         doc_store=doc_store,
+        cache_dir=CACHE_DIR,
     )
 elif active_page == "Summarizer":
     render_summarizer_view(

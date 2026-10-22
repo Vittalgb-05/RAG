@@ -1,45 +1,46 @@
 # Test Results
 
-**Date:** 2026-10-21
+**Date:** 2026-10-22
 **Host:** Windows 11, Python 3.13.5, RTX 3050 Laptop (4 GB) — no live llama-server.
 **Baseline commit:** `dc701ec` (before repairs)
-**Final working tree:** after repair commits through `0f7b994` and the documentation refresh.
+**Final working tree:** after repair commits through `7ef8e34`, the checksum-pinning slice, and the documentation refresh.
 
 ## 1. Summary
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit/contract suite | `python -m pytest -q --no-header` | **318 passed**, 0 failed, 0 skipped, 0 errors, **42.76 s** |
+| Unit/contract suite | `python -m pytest -q --no-header` | **389 passed**, 0 failed, 0 skipped, 0 errors, **39.20 s** |
 | Lint | `python -m ruff check .` | **All checks passed** |
-| Format | `python -m ruff format --check .` | **73 files already formatted** |
-| Collection | `python -m pytest --collect-only -q` | 318 tests collected |
+| Format | `python -m ruff format --check .` | **76 files already formatted** |
+| Collection | `python -m pytest --collect-only -q` | 389 tests collected |
 | GGUF identity | `verify_local_model_pair(...)` | `[]` (no problems) |
 | Live llama-server | `GET /health`, `GET /v1/models` | **UNTESTED** — connection timeout |
 | Live inference/GPU | app flow | **UNTESTED** — server not running |
 
-Baseline before any edits was 296 passed. The first repair batch added 13 regression tests (309). The second batch added 9 more (318) and remains green.
+Baseline before any edits was 296 passed. The first repair batch added 13 regression tests (309), the second added 9 (318), Batch A added 59 (377), and the checksum-pinning slice added 12 (389). All remain green.
 
 ## 2. Per-suite counts
 
 | Suite | Tests | Suite | Tests |
 |---|---:|---|---:|
-| `test_models.py` | 20 | `test_hybrid_retriever.py` | 20 |
-| `test_llama_cpp_provider.py` | 17 | `test_doc_store.py` | 17 |
-| `test_main_ui.py` | 16 | `test_resource_telemetry.py` | 14 |
-| `test_local_llm.py` | 14 | `test_ocr_fallback.py` | 13 |
-| `test_citation_validator.py` | 13 | `test_audit_repairs.py` | 13 |
-| `test_model_provider.py` | 12 | `test_start_launcher.py` | 11 |
-| `test_prompt_budget.py` | 11 | `test_litellm_provider.py` | 11 |
-| `test_ui_smoke.py` | 10 | `test_summarizer.py` | 10 |
-| `test_sanitizer.py` | 10 | `test_visual_analyzer.py` | 9 |
-| `test_pdf_reader.py` | 9 | `test_docling_reader.py` | 9 |
-| `test_upload_validation.py` | 8 | `test_concurrency_lock.py` | 8 |
-| `test_cloud_privacy.py` | 8 | `test_vector_index.py` | 7 |
-| `test_groq_provider.py` | 7 | `test_setup_llama.py` | 6 |
-| `test_cache_invalidation.py` | 6 | `test_logging_setup.py` | 4 |
-| `test_local_embedding.py` | 4 | `test_hydration.py` | 1 |
+| `test_hybrid_retriever.py` | 25 | `test_doc_store.py` | 20 |
+| `test_llama_cpp_provider.py` | 20 | `test_models.py` | 20 |
+| `test_ocr_fallback.py` | 18 | `test_main_ui.py` | 16 |
+| `test_sanitizer.py` | 16 | `test_start_launcher.py` | 16 |
+| `test_citation_validator.py` | 15 | `test_ui_smoke.py` | 15 |
+| `test_local_llm.py` | 14 | `test_resource_telemetry.py` | 14 |
+| `test_audit_repairs.py` | 13 | `test_model_provider.py` | 12 |
+| `test_setup_checksums.py` | 12 | `test_summarizer.py` | 12 |
+| `test_upload_validation.py` | 12 | `test_litellm_provider.py` | 11 |
+| `test_prompt_budget.py` | 11 | `test_visual_analyzer.py` | 11 |
+| `test_concurrency_lock.py` | 10 | `test_docling_reader.py` | 9 |
+| `test_logging_setup.py` | 9 | `test_pdf_reader.py` | 9 |
+| `test_cloud_privacy.py` | 8 | `test_whole_document_extraction.py` | 8 |
+| `test_groq_provider.py` | 7 | `test_vector_index.py` | 7 |
+| `test_cache_invalidation.py` | 6 | `test_setup_llama.py` | 6 |
+| `test_local_embedding.py` | 4 | `test_hydration.py` | 3 |
 
-**Total: 318.**
+**Total: 389 across 32 suites.**
 
 ## 3. New regression coverage
 

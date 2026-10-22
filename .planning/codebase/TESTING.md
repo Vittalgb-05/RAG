@@ -31,20 +31,20 @@ filterwarnings = [
 **Run Commands:**
 ```bash
 python tests/data/corpus/generate_corpus.py   # required once; CI runs this before pytest
-python -m pytest tests/ -v                    # full suite (318 tests)
+python -m pytest tests/ -v                    # full suite (392 tests)
 python -m pytest tests/ -q                    # concise
 python -m pytest tests/test_doc_store.py -v   # single module
 python -m pytest tests/ -k "inference_gate"   # single behavior group
 ruff check . && ruff format --check .         # lint/format gate
 ```
 
-- Current result: `318 passed in 42.11s` with no failures, warnings, or skips on a machine with local GGUF weights and cached embedding model.
+- Current result: `392 passed in 39.59s` with no failures, warnings, or skips on a machine with local GGUF weights and cached embedding model.
 
 ## Test File Organization
 
 **Location:**
 - Separate `tests/` tree at the repo root; tests are **not** co-located with source.
-- 30 `test_*.py` modules, 318 test functions, plus `tests/conftest.py` and `tests/__init__.py`.
+- 32 `test_*.py` modules, 392 test functions, plus `tests/conftest.py` and `tests/__init__.py`.
 - `tests/test_audit_repairs.py` is a cross-cutting regression suite for audit fixes; feature suites otherwise map 1:1 to a source module or area.
 
 **Naming:**

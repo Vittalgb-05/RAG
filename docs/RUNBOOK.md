@@ -106,13 +106,24 @@ mkdir models
 Download the 4-bit quantized Qwen2-VL 2B Instruct model weights and multimodal projection adapter (saved locally as `qwen3-vl-2b-instruct-q4_k_m.gguf`):
 ```bash
 # 1. Main model GGUF (~1.4 GB)
-curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/qwen2-vl-2b-instruct-q4_k_m.gguf
+curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q4_K_M.gguf
 
 # 2. Multimodal projection adapter GGUF (~600 MB)
-curl -L -o models/mmproj-f16.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-qwen2-vl-2b-instruct-f16.gguf
+curl -L -o models/mmproj-f16.gguf https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-2B-Instruct-f16.gguf
 ```
 
-Verify the downloaded artifacts before launching. `python setup.py download_models` does this automatically, and `start.py` refuses to launch a mismatched pair:
+Verify both the pinned SHA-256 digests and the GGUF identity before launching:
+
+```bash
+sha256sum models/qwen3-vl-2b-instruct-q4_k_m.gguf models/mmproj-f16.gguf
+# expected:
+# 4ef095263343fc1237e8ca879790bb262bcf209f082e0a9bfce219b7ece55e8b  models/qwen3-vl-2b-instruct-q4_k_m.gguf
+# 05cc3ae461a7b6aa4023312ccab549ecab77cf8677efee04f049fcbab55b8bc3  models/mmproj-f16.gguf
+```
+
+On Windows PowerShell, use `Get-FileHash -Algorithm SHA256 <path>`.
+
+`python setup.py download_models` verifies these digests automatically (set `RAG_REQUIRE_CHECKSUMS=1` to fail closed on any unpinned artifact), and `start.py` refuses to launch a mismatched pair:
 
 ```bash
 python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3-vl-2b-instruct-q4_k_m.gguf', 'models/mmproj-f16.gguf') or 'identity OK')"

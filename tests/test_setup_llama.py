@@ -52,23 +52,27 @@ def test_setup_llama_server_downloads_when_missing(tmp_path):
         return True
 
     mock_run = MagicMock(returncode=0)
-    with patch("setup.detect_nvidia_gpu", return_value=False):
-        with patch("setup.download_and_extract_archive", side_effect=fake_download):
-            with patch("subprocess.run", return_value=mock_run):
-                ok = setup_mod.setup_llama_server(tools_dir=tmp_path, force=True, cpu_only=True)
-                assert ok is True
+    with (
+        patch("setup.detect_nvidia_gpu", return_value=False),
+        patch("setup.download_and_extract_archive", side_effect=fake_download),
+        patch("subprocess.run", return_value=mock_run),
+    ):
+        ok = setup_mod.setup_llama_server(tools_dir=tmp_path, force=True, cpu_only=True)
+        assert ok is True
 
 
 def test_run_full_setup_orchestration(tmp_path):
     """Verify run_full_setup calls ensure_project_directories, install_dependencies, download_all_models, and setup_llama_server."""
-    with patch("setup.ensure_project_directories") as mock_dirs:
-        with patch("setup.install_dependencies", return_value=True) as mock_deps:
-            with patch("setup.download_all_models", return_value=True) as mock_models:
-                with patch("setup.setup_llama_server", return_value=True) as mock_llama:
-                    with patch("subprocess.run"):
-                        rc = setup_mod.run_full_setup(skip_vlm=True, force_models=False, skip_llama=False)
-                        assert rc == 0
-                        mock_dirs.assert_called_once()
-                        mock_deps.assert_called_once()
-                        mock_models.assert_called_once()
-                        mock_llama.assert_called_once()
+    with (
+        patch("setup.ensure_project_directories") as mock_dirs,
+        patch("setup.install_dependencies", return_value=True) as mock_deps,
+        patch("setup.download_all_models", return_value=True) as mock_models,
+        patch("setup.setup_llama_server", return_value=True) as mock_llama,
+        patch("subprocess.run"),
+    ):
+        rc = setup_mod.run_full_setup(skip_vlm=True, force_models=False, skip_llama=False)
+        assert rc == 0
+        mock_dirs.assert_called_once()
+        mock_deps.assert_called_once()
+        mock_models.assert_called_once()
+        mock_llama.assert_called_once()

@@ -8,8 +8,11 @@ and produces deterministic doc_id identifiers based on document content hash.
 from dataclasses import dataclass
 import hashlib
 import io
+import logging
 import re
 import pypdf
+
+logger = logging.getLogger(__name__)
 
 # Locked configuration constants (RESEARCH-locked ASSUMED caps)
 MAX_FILE_MB: int = 50
@@ -160,8 +163,8 @@ def validate_pdf_bytes(raw: bytes, filename: str) -> ValidatedUpload:
     sha = sha256_bytes(raw)
     doc_id = doc_id_for(sha)
 
-    print(f"[UploadValidation] Validated {filename} ({doc_id}, {num_pages} pages, {size_bytes} bytes)")
-    print(f"[UploadValidation] {preflight_note}")
+    logger.info("Validated %s (%s, %d pages, %d bytes)", filename, doc_id, num_pages, size_bytes)
+    logger.info("%s", preflight_note)
     return ValidatedUpload(
         doc_id=doc_id,
         filename=filename,

@@ -413,3 +413,94 @@ def validate_citations(
         unsupported_ranks=unsupported_ranks,
         message=msg,
     )
+
+
+def auto_attribute_citations(
+    text: str,
+    retrieval_result: RetrievalResult | None,
+    min_overlap: float = 0.18,
+) -> str:
+    """Attribute candidate evidence citations ([E#]) to sentences in an uncited draft.
+
+    When local language models generate accurate answers grounded in document context
+    but omit inline citation tags [E#], this function scans sentences for lexical
+    overlap with retrieved snippets and appends the best matching [E#] citations.
+
+    Args:
+        text: Assistant draft text.
+        retrieval_result: Retrieved candidate evidence records.
+        min_overlap: Minimum token overlap fraction to attribute a snippet (default 0.18).
+
+    Returns:
+        Draft text with grounded [E#] citations appended to matching sentences, or original text if no matches.
+    """
+    if not text or not text.strip():
+        return text
+
+    # If the response already contains any [E#] citations, do not alter it.
+    if extract_citations(text):
+        return text
+
+    # Abstentions must never cite evidence.
+    if is_abstention(text):
+        return text
+
+    if retrieval_result is None or not retrieval_result.snippets:
+        return text
+
+    snippet_tokens: list[tuple[int, set[str]]] = []
+    for rank, snippet in enumerate(retrieval_result.snippets, start=1):
+        content = snippet.content or ""
+        tokens = _support_tokens(content)
+        if tokens:
+            snippet_tokens.append((rank, tokens))
+
+    if not snippet_tokens:
+        return text
+
+    # Split into paragraphs to preserve structure
+    paragraphs = text.split("\n")
+    attributed_paragraphs = []
+    any_cited = False
+
+    for paragraph in paragraphs:
+        if not paragraph.strip():
+            attributed_paragraphs.append(paragraph)
+            continue
+
+        # Split into sentences
+        sentences = re.split(r"(?<=[.!?])\s+", paragraph)
+        attributed_sentences = []
+
+        for sent in sentences:
+            sent_trimmed = sent.strip()
+            claim_tokens = _support_tokens(sent_trimmed)
+
+            if len(claim_tokens) < SUPPORT_MIN_CLAIM_TOKENS:
+                attributed_sentences.append(sent)
+                continue
+
+            best_rank = None
+            best_overlap = 0.0
+
+            for rank, s_tokens in snippet_tokens:
+                overlap = len(claim_tokens & s_tokens) / max(len(claim_tokens), 1)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_rank = rank
+
+            if best_rank is not None and best_overlap >= min_overlap:
+                any_cited = True
+                if sent_trimmed.endswith((".", "!", "?")):
+                    new_sent = sent_trimmed[:-1].rstrip() + f" [E{best_rank}]" + sent_trimmed[-1]
+                else:
+                    new_sent = sent_trimmed + f" [E{best_rank}]"
+                attributed_sentences.append(new_sent)
+            else:
+                attributed_sentences.append(sent)
+
+        attributed_paragraphs.append(" ".join(attributed_sentences))
+
+    if any_cited:
+        return "\n".join(attributed_paragraphs)
+    return text
