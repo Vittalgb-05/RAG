@@ -21,12 +21,12 @@ The previously reported high-priority defects were checked against current sourc
 | Prior claim | Status | Current evidence |
 |---|---|---|
 | Downloads lacked checksum pinning | **Fixed** | Every `MODEL_REGISTRY` entry and every llama archive path has a pinned SHA-256; `download_file_with_progress()` verifies before install and deletes bad bytes; `RAG_REQUIRE_CHECKSUMS` fails closed. Covered by `tests/test_setup_checksums.py`. |
-| Streaming download could report success on a short read | **Fixed** | `setup.py:521-618` enforces `Content-Length` and post-write SHA-256; tests cover mismatch, and wrong existing files are replaced. |
-| Write-only extraction cache with unbounded growth | **Fixed in code** | No production module persists `pages.json` / `chunks.json`; `ui/ingestion_service.py` no longer writes `.cache`, and runtime trees are empty. Stale UI/docs still claim cache persistence (see Documentation drift). |
+| Streaming download could report success on a short read | **Fixed via checksum** | `setup.py:231-278` enforces `min_size_bytes` and post-write SHA-256; tests cover mismatch, and wrong existing files are replaced. There is no explicit `Content-Length` comparison; pinned checksums are the truncation guard. |
+| Write-only extraction cache with unbounded growth | **Fixed in code** | No production module persists `pages.json` / `chunks.json`; `ui/ingestion_service.py` no longer writes `.cache`. Legacy `.cache/<sha256>/...` directories from earlier runs can remain until lifecycle cleanup. Stale UI/docs still claim cache persistence (see Documentation drift). |
 | `print()` used throughout library modules | **Fixed** | Active prints remain only in operator CLIs (`setup.py`, `start.py`) and comments. Library modules use `logging.getLogger(__name__)`. |
 | Deprecated `HybridRetriever.add_vector()` shim wrote empty vectors | **Fixed** | Only `retrieval/vector_index.py::VectorIndex.add_vector()` remains. `retrieval/retriever.py` is gone. |
-| `LocalEmbedding` deprecated facades silently ran another vector store | **Open** | `retrieval/local_embedding.py:114,152` still exposes `search_hybrid()` / `get_context()` and `core/local_llm.py:113` still falls back to them. |
-| Ruff did not enable bugbear/pyupgrade/Sim rules | **Fixed (partial)** | `pyproject.toml` selects `E`, `F`, `I`, `UP`, `B`, `SIM`, `RUF`; `BLE001` is not selected. |
+| `LocalEmbedding` deprecated facades silently ran another vector store | **Open** | `retrieval/local_embedding.py:114,152` still exposes `search_hybrid()` / `get_context()` and `core/local_llm.py:299-304` still falls back to them. |
+| Ruff did not enable bugbear/pyupgrade/Sim rules | **Fixed (partial)** | `pyproject.toml` selects `E`, `F`, `W`, `B`, `UP`, `SIM` and ignores `E501`/`W291`/`W293`; `start.py` ignores `UP036`. `I` and `RUF` are not selected, and `BLE001` is not selected. |
 | Fallback mirror merge broke after lazy load | **Fixed** | `retrieval/hybrid_retriever.py:312-347` merges with the on-disk mirror instead of writing a one-document file. Correctness is fixed; cost remains O(N) (see Performance). |
 | Whole-document extraction used a fixed 10,000-character cutoff | **Fixed** | `retrieval/hybrid_retriever.py:623-637` filters in SQL before ordering/limits; `tests/test_whole_document_extraction.py` covers long documents. |
 | Visual evidence was dropped before summarization | **Fixed** | `_build_summary_sources()` in `core/summarizer.py` merges `[E#]` elements into pages. |
@@ -45,7 +45,7 @@ The deferred items below were re-checked and remain open. The largest residual r
 - Fix approach: split into `installer/models.py`, `installer/llama_server.py`, `installer/deps.py`, `installer/__main__.py`, leaving a thin shim in `setup.py`; exclude `tests` explicitly from packaging; add focused failure-path tests.
 
 **Two retrieval/facade layers (`retrieval/local_embedding.py`, `retrieval/vector_index.py`, `retrieval/hybrid_retriever.py`):**
-- Issue: `LocalEmbedding` retains deprecated `search_hybrid()` / `get_context()` facades and an unused `db_uri` constructor argument (`retrieval/local_embedding.py:60-172`). The live path is `HybridRetriever` plus `VectorIndex`; `core/local_llm.py:113` still has a legacy fallback branch.
+- Issue: `LocalEmbedding` retains deprecated `search_hybrid()` / `get_context()` facades and an unused `db_uri` constructor argument (`retrieval/local_embedding.py:60-172`). The live path is `HybridRetriever` plus `VectorIndex`; `core/local_llm.py:299-304` still has a legacy fallback branch.
 - Impact: readers and future agents can follow the wrong retrieval implementation; the deprecated objects are in-memory and do not share LanceDB persistence semantics.
 - Fix approach: move callers to `HybridRetriever`, remove the facades and `db_uri`, then delete the `tests/test_hybrid_retriever.py`-level facade tests. Do this after confirming no external users.
 
