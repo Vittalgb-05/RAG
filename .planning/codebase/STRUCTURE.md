@@ -1,234 +1,291 @@
-<!-- refreshed: 2026-10-21 -->
 # Codebase Structure
 
-**Analysis Date:** 2026-10-21
+**Analysis Date:** 2026-10-22
 
 ## Directory Layout
 
 ```text
 RAG/
-├── main.py                     # Streamlit composition root: session, hydration, routing
-├── start.py                    # One-command launcher (llama-server probe/launch + Streamlit)
-├── setup.py                    # Packaging + setup CLI/model downloader (setuptools)
-├── core/                       # Domain: models, SQLite store, LLM facade/gate, summarizer, prompts, telemetry
-├── ingestion/                  # PDF validation, Docling/pypdf extraction, OCR fallback, visual analysis
-├── retrieval/                  # LanceDB hybrid retriever, MiniLM embeddings, in-memory vector fallback
-├── providers/                  # BaseModelProvider ABC + llama.cpp / LiteLLM / Groq adapters
-├── ui/                         # Streamlit views, components, theme, sanitizer, orchestration services
-├── tests/                      # pytest suite + synthetic PDF corpus + shared fixtures
-├── scripts/                    # Benchmark, multimodal evaluation, resource profiling, icon generation
-├── docs/                       # Runbook, evaluation, local inference, audit/quality reports
-├── assets/                     # Brand mark + monochrome SVG icon set
-├── .streamlit/config.toml      # Dark AMOLED theme, 50 MB upload cap, telemetry off
-├── .github/workflows/ci.yml    # Ruff + corpus generation + pytest on Python 3.11
-├── data/                       # RUNTIME: documents.db + lancedb/ (generated, not committed)
-├── .cache/                     # RUNTIME: <sha256>/<CONFIG_VERSION>/{pages,chunks,manifest}.json
-├── models/                     # RUNTIME: GGUF weights + mmproj (downloaded)
-├── tools/llama-server/         # RUNTIME: local llama-server binary (downloaded)
-├── requirements.txt            # Runtime dependencies
-├── requirements-lock.txt       # uv-compiled universal lockfile (Python 3.11)
-├── requirements-test.txt       # Test-only dependencies
-├── pyproject.toml              # Ruff + pytest configuration
-├── Dockerfile / docker-compose.yml
-├── README.md / CLAUDE.md / LICENSE
-└── .planning/                  # GSD planning + codebase docs (not application code)
+├── main.py                  # Streamlit composition root and workspace router
+├── start.py                 # Launcher: loopback guard, llama-server probe/spawn, Streamlit subprocess
+├── setup.py                 # Packaging + checksum-pinned model/llama-server installer CLI
+├── core/                    # Domain models, persistence, inference facade, summarization, prompting
+│   ├── models.py            # Pydantic v2 canonical schemas
+│   ├── doc_store.py         # SQLite store, migrations v1–v4, atomic ingestion writes
+│   ├── local_llm.py         # InferenceGate + AiModel facade
+│   ├── summarizer.py        # Five-profile single-pass / map-reduce summarizer
+│   ├── query_intent.py      # Follow-up rewrite, whole-document detection, evidence selection
+│   ├── prompt_budget.py     # Context budgeting and XML isolation
+│   ├── citation_validator.py# Rank/support validation, abstention, injection, auto-attribution
+│   ├── model_identity.py    # GGUF metadata parsing and model-pair verification
+│   ├── resource_telemetry.py# nvidia-smi/psutil telemetry and latency tracking
+│   └── logging_setup.py     # Idempotent logging + watcher-noise filter
+├── ui/                      # Presentation and Streamlit orchestration services
+│   ├── views.py             # Chat, Summarizer, Library, Settings renderers
+│   ├── components.py        # SVG icons, cards, status pills, citation chips
+│   ├── theme.py             # AMOLED CSS injection
+│   ├── sanitizer.py         # Markdown/HTML sanitization for local rendering
+│   ├── session_state.py     # Shared in-memory reset
+│   ├── ingestion_service.py # End-to-end ingestion orchestration
+│   ├── lifecycle_service.py # Delete / purge / re-index orchestration
+│   └── hydration.py         # Startup catalog and vector repair
+├── ingestion/               # Untrusted PDF → pages/chunks/visual evidence
+│   ├── upload_validation.py # Magic bytes, caps, SHA-256, doc_id
+│   ├── docling_reader.py    # Docling layout/tables with pypdf fallback
+│   ├── pdf_reader.py        # pypdf extraction and chunking
+│   ├── ocr_fallback.py      # Conditional RapidOCR with raster/time budgets
+│   └── visual_analyzer.py   # Visual region detection, crops, VLM analysis
+├── retrieval/               # Embeddings and hybrid retrieval
+│   ├── local_embedding.py   # CPU-pinned all-MiniLM-L6-v2, shared process cache
+│   ├── hybrid_retriever.py  # LanceDB dense+FTS, RRF, durable mirror, whole-doc fetch
+│   ├── vector_index.py      # Pure-Python fallback vector store
+│   └── data/                # Legacy package-relative LanceDB location (migration source only)
+├── providers/               # Inference provider adapters
+│   ├── model_provider.py    # BaseModelProvider ABC + capability/health schemas
+│   ├── llama_cpp_provider.py# Local llama-server HTTP/SSE + VLM
+│   ├── litellm_provider.py  # Consent-gated cloud adapter
+│   └── groq_provider.py     # Direct Groq adapter
+├── tests/                   # Pytest suite, shared fixtures, synthetic corpus
+│   ├── conftest.py          # Offline fixtures (mock providers, embeddings, env keys)
+│   ├── test_*.py            # 30+ suites covering each module
+│   └── data/corpus/         # Generated PDFs and generator script
+├── scripts/                 # Benchmarking, profiling, icon generation
+├── docs/                    # Runbook, audit, evaluation, traceability docs
+├── assets/icons/            # Local monochrome SVGs (no external assets)
+├── application_screenshots/ # Reference screenshots
+├── data/                    # Runtime state (gitignored): documents.db, lancedb/, logs/
+├── models/                  # GGUF weights (gitignored)
+├── tools/llama-server/      # Native llama-server binaries (gitignored)
+├── .cache/                  # Legacy cache directory (gitignored)
+├── .streamlit/config.toml   # Dark theme, loopback bind, upload cap, CORS/XSRF
+├── .github/workflows/ci.yml # Ruff + corpus generation + pytest on Python 3.11
+├── pyproject.toml           # Ruff and pytest configuration
+├── requirements.txt         # Runtime dependencies
+├── requirements-lock.txt    # uv-compiled universal lockfile
+├── requirements-test.txt    # Test-only dependencies
+├── Dockerfile               # python:3.11-slim-bookworm runtime image
+├── docker-compose.yml       # App + optional CUDA llama-server profile
+├── CLAUDE.md                # Project context and stack/convention summaries
+├── README.md                # Product overview and setup instructions
+└── LICENSE                  # MIT
 ```
 
 ## Directory Purposes
 
 **`core/`:**
-- Purpose: Framework-independent domain logic and persistence.
-- Contains: Pydantic schemas, SQLite repository, inference facade + `InferenceGate`, summarizer, citation validator + lexical auto-attribution (`auto_attribute_citations`), prompt budgeting, hardware telemetry, GGUF identity verification, logging filter.
-- Key files: `core/models.py`, `core/doc_store.py`, `core/local_llm.py`, `core/summarizer.py`, `core/citation_validator.py`, `core/prompt_budget.py`, `core/resource_telemetry.py`.
-
-**`ingestion/`:**
-- Purpose: Convert untrusted PDF bytes into canonical chunks, pages, and visual evidence.
-- Contains: upload validation, Docling reader with pypdf fallback, conditional RapidOCR engine, PyMuPDF visual region detector/cropper.
-- Key files: `ingestion/upload_validation.py`, `ingestion/docling_reader.py`, `ingestion/pdf_reader.py`, `ingestion/ocr_fallback.py`, `ingestion/visual_analyzer.py`.
-
-**`retrieval/`:**
-- Purpose: Embeddings and hybrid search over persisted chunks.
-- Contains: `HybridRetriever` (LanceDB dense + FTS + RRF, JSON fallback mirror), `LocalEmbedding` (MiniLM CPU), `VectorIndex` (stdlib cosine/euclidean).
-- Key files: `retrieval/hybrid_retriever.py`, `retrieval/local_embedding.py`, `retrieval/vector_index.py`.
-- Note: `retrieval/data/lancedb/` is a legacy index location; the canonical path is `data/lancedb/` (`retrieval/hybrid_retriever.py:66-70`, migration at lines 83–117).
-
-**`providers/`:**
-- Purpose: Normalize all inference backends behind one interface.
-- Contains: `BaseModelProvider`, `ProviderCapabilities`, `HealthStatus`; llama-server HTTP/SSE client; LiteLLM cloud adapter; direct Groq adapter.
-- Key files: `providers/model_provider.py`, `providers/llama_cpp_provider.py`, `providers/litellm_provider.py`, `providers/groq_provider.py`.
+- Purpose: Provider-independent domain logic and durable metadata.
+- Contains: Pydantic schemas, SQLite store, `AiModel`, `InferenceGate`, `Summarizer`, query intent, prompt budgeting, citation validation, GGUF identity, telemetry, logging.
+- Key files: `core/local_llm.py`, `core/doc_store.py`, `core/models.py`, `core/query_intent.py`, `core/citation_validator.py`.
 
 **`ui/`:**
-- Purpose: Streamlit presentation plus workflow orchestration.
-- Contains: consolidated primary view renderers (`Chat` and `Document Library`), single-button file inserter (`render_file_upload_button`), reusable AMOLED components/theme, markdown sanitizer, `IngestionService`, `LifecycleService`, hydration, session reset.
-- Key files: `ui/views.py`, `ui/ingestion_service.py`, `ui/lifecycle_service.py`, `ui/hydration.py`, `ui/session_state.py`, `ui/components.py`, `ui/theme.py`, `ui/sanitizer.py`.
+- Purpose: All Streamlit rendering plus the orchestration services that perform multi-tier side effects.
+- Contains: four view renderers, reusable components/theme/sanitizer, session reset, ingestion/lifecycle/hydration services.
+- Key files: `ui/views.py`, `ui/ingestion_service.py`, `ui/lifecycle_service.py`, `ui/hydration.py`.
+
+**`ingestion/`:**
+- Purpose: Transform untrusted PDF bytes into validated, page-attributed text/chunk/evidence records.
+- Contains: upload validation, Docling reader, pypdf fallback, OCR engine, visual analyzer.
+- Key files: `ingestion/upload_validation.py`, `ingestion/docling_reader.py`, `ingestion/ocr_fallback.py`, `ingestion/visual_analyzer.py`.
+
+**`retrieval/`:**
+- Purpose: Embeddings, persistent hybrid index, fallback mirror, whole-document reads.
+- Contains: `LocalEmbedding`, `HybridRetriever`, pure-Python `VectorIndex`.
+- Key files: `retrieval/hybrid_retriever.py`, `retrieval/local_embedding.py`, `retrieval/vector_index.py`.
+
+**`providers/`:**
+- Purpose: Normalize local and cloud inference behind one contract.
+- Contains: provider ABC/schemas and three adapters.
+- Key files: `providers/model_provider.py`, `providers/llama_cpp_provider.py`, `providers/litellm_provider.py`.
 
 **`tests/`:**
-- Purpose: Fully offline unit/integration coverage with mocked models and a generated PDF corpus.
-- Contains: 32 `test_*.py` suites (392 tests), `conftest.py` fixtures, `tests/data/corpus/` synthetic PDFs and generator.
-- Key files: `tests/conftest.py` (mock provider, mock MiniLM, fake Groq, corpus path), `tests/data/corpus/generate_corpus.py`.
+- Purpose: Offline unit/integration coverage with mocked GPU and network boundaries.
+- Contains: `conftest.py`, per-module suites, synthetic corpus PDFs and generator.
+- Key files: `tests/conftest.py`, `tests/test_hybrid_retriever.py`, `tests/test_whole_document_extraction.py`, `tests/test_concurrency_lock.py`, `tests/data/corpus/generate_corpus.py`.
 
 **`scripts/`:**
-- Purpose: Manual evaluation and profiling harnesses, not imported by the app.
-- Contains: `benchmark_baseline.py`, `benchmark_multimodal.py`, `profile_resources.py`, `generate_icons.py`.
+- Purpose: Developer/benchmark utilities outside the app runtime.
+- Contains: `profile_resources.py`, `benchmark_baseline.py`, `benchmark_multimodal.py`, `generate_icons.py`.
 
 **`docs/`:**
-- Purpose: Operational and evaluation documentation.
-- Contains: `RUNBOOK.md`, `LOCAL_INFERENCE.md`, `EVALUATION.md`, `ENDPOINT_INTEGRATION_MATRIX.md`, `FILE_CALLER_TEST_MAP.md`, `REQUIREMENTS_TRACEABILITY.md`, audit/repair/quality reports.
+- Purpose: Operational and audit documentation.
+- Contains: `RUNBOOK.md`, `LOCAL_INFERENCE.md`, `EVALUATION.md`, `AUDIT_SUMMARY.md`, `FILE_CALLER_TEST_MAP.md`, traceability and test-result reports.
 
-**`assets/`:**
-- Purpose: Offline visual identity (no CDN/network).
-- Contains: `assets/brand_mark.svg`, `assets/icons/*.svg` (chat, document, gpu, ram, database, lock, cloud, etc.).
-
-**`data/` / `.cache/` / `models/` / `tools/`:**
-- Purpose: Runtime state, derived artifacts, model weights, and llama-server binary.
-- Contains: `data/documents.db`, `data/lancedb/`, `.cache/<sha256>/<CONFIG_VERSION>/`, `models/*.gguf`, `tools/llama-server/llama-server[.exe]`.
-- Generated: Yes. Do not commit these.
+**`assets/icons/`:**
+- Purpose: Local SVG iconography for the AMOLED UI.
+- Contains: monochrome icons consumed by `ui/components.py:14`.
 
 ## Key File Locations
 
 **Entry Points:**
-- `main.py`: Streamlit composition root — page config, session defaults, `DocStore`, hydration, `AiModel`, cloud consent, health cache, sidebar, workspace dispatch.
-- `start.py`: Launcher — Python check, directory creation, llama-server health/launch, Streamlit subprocess.
-- `setup.py`: Packaging + CLI (`rag-assistant`, `rag-setup`, `rag-download-models`, `rag-setup-llama`; `setup.py:773-779`).
-- `scripts/profile_resources.py`: VRAM/RAM/latency and gate-safety verification.
+- `main.py`: Streamlit composition root, session defaults, hydration, provider sync, workspace routing.
+- `start.py`: `main()` launcher; `--start-llama`, `--host`, `--port`, `--ctx`, `--ngl`.
+- `setup.py`: `main_cli()`, `download_models_cli()`, `setup_llama_server_cli()`; setuptools commands `download_models`, `setup_llama_server`.
+- `ui/views.py`: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents`.
 
 **Configuration:**
-- `pyproject.toml`: Ruff (`line-length=120`, `py311`) and pytest (`testpaths=["tests"]`).
-- `.streamlit/config.toml`: AMOLED theme, `maxUploadSize=50`, XSRF/CORS, usage stats off.
-- `requirements*.txt`: runtime, lockfile, test dependencies.
-- `.github/workflows/ci.yml`: install from lockfile, `ruff check`, `ruff format --check`, generate corpus, `pytest tests/ -v`.
-- `.env` (if present): local environment only; never commit or read secrets.
+- `pyproject.toml`: Ruff (`line-length = 120`, `target-version = "py311"`) and pytest (`testpaths = ["tests"]`).
+- `.streamlit/config.toml`: dark theme, `address = "127.0.0.1"`, `maxUploadSize = 50`, CORS/XSRF, telemetry off.
+- `requirements.txt`, `requirements-lock.txt`, `requirements-test.txt`: dependency pins.
+- `Dockerfile`, `docker-compose.yml`: container runtime and optional CUDA llama-server profile.
+- `.github/workflows/ci.yml`: Ruff check/format, corpus generation, pytest.
+- `.gitignore`: excludes `.env*`, `data/`, `.cache/`, `models/`, `tools/`, binaries, logs.
 
 **Core Logic:**
-- `core/models.py:14`: `CONFIG_VERSION = "docling-1000-200-v1"` drives cache paths and summary invalidation.
-- `core/local_llm.py:25`: `InferenceGate`; `core/local_llm.py:236`: streaming grounded QA.
-- `core/summarizer.py:376`: `summarize_document`; profiles at lines 35–109.
-- `core/doc_store.py:105`: migration registry; `core/doc_store.py:291`: atomic `record_ingestion`.
-- `retrieval/hybrid_retriever.py:738`: `search_hybrid`; `core/models.py:171`: `RetrievalResult`.
-- `ingestion/upload_validation.py:15`: `MAX_FILE_MB=50`, `MAX_PAGES=500`.
-- `ui/views.py`: `render_chat_view`, `render_library_view`, `render_file_upload_button`.
-- `main.py`: consolidated 2-view navigation (`Chat` and `Document Library`); dispatch in lines 270–320.
+- `core/local_llm.py`: `InferenceGate` and `AiModel`.
+- `core/doc_store.py`: SQLite source of truth and migrations.
+- `core/query_intent.py`: shared retrieval intent/whole-document extraction.
+- `core/summarizer.py`: summary profiles and map-reduce.
+- `retrieval/hybrid_retriever.py`: dense/FTS/RRF, mirror, scoped search, `fts_status()`.
+- `ui/ingestion_service.py`: ingestion transaction.
+- `ui/lifecycle_service.py`: delete/purge/re-index ordering.
+- `setup.py`: checksum-pinned downloads and safe extraction.
 
 **Testing:**
-- `tests/conftest.py`: shared fixtures (`mock_llama_provider`, `mock_sentence_transformer`, `mock_groq_client`, `sample_pdf_path`).
-- `tests/data/corpus/generate_corpus.py`: regenerates deterministic PDFs used by ingestion tests.
-- One suite per module: `tests/test_doc_store.py`, `tests/test_hybrid_retriever.py`, `tests/test_summarizer.py`, `tests/test_citation_validator.py`, `tests/test_concurrency_lock.py`, `tests/test_main_ui.py`, `tests/test_ui_smoke.py`, etc.
+- `tests/conftest.py`: mocked provider, SentenceTransformer, Groq client, corpus path.
+- `tests/data/corpus/generate_corpus.py`: reportlab-generated PDF corpus.
+- Per-module suites: `tests/test_local_llm.py`, `tests/test_hybrid_retriever.py`, `tests/test_summarizer.py`, `tests/test_doc_store.py`, `tests/test_ocr_fallback.py`, `tests/test_visual_analyzer.py`, `tests/test_setup_checksums.py`.
+
+**Persistence / Runtime State:**
+- `data/documents.db`: SQLite catalog (runtime, gitignored).
+- `data/lancedb/chunks.lance`: LanceDB table directory.
+- `data/lancedb/fallback_store.json`: durable fallback mirror.
+- `data/lancedb_bench/`: benchmark index output.
+- `data/logs/app.log`: rotating application log.
+- `models/qwen3-vl-2b-instruct-q4_k_m.gguf` and `models/mmproj-f16.gguf`: local VLM pair (legacy filenames verified by GGUF metadata).
+- `tools/llama-server/llama-server.exe`: native server binary.
 
 ## Naming Conventions
 
 **Files:**
-- `snake_case.py`, one primary class or concern per module: `hybrid_retriever.py` → `HybridRetriever`, `doc_store.py` → `DocStore`.
+- `snake_case.py` by responsibility: `hybrid_retriever.py`, `citation_validator.py`, `lifecycle_service.py`.
 - Tests: `tests/test_<module_or_feature>.py`.
-- Scripts: verb/noun task names (`benchmark_baseline.py`, `profile_resources.py`).
+- No `__main__` entry in library modules; root scripts `main.py`, `start.py`, `setup.py` are the exceptions.
+- Package `__init__.py` files carry a one-line docstring and `__version__` (except `ui`, which exports `sanitize_markdown_for_local`).
 
 **Directories:**
-- Lowercase package names by responsibility (`core`, `ingestion`, `retrieval`, `providers`, `ui`). Do not create a new top-level package for a single module; place it in the matching layer.
+- Lowercase, single-word responsibility groups: `core`, `ui`, `ingestion`, `retrieval`, `providers`, `tests`, `scripts`, `docs`, `assets`.
 
 **Classes:**
-- `PascalCase` nouns: `DocStore`, `HybridRetriever`, `IngestionService`, `LifecycleService`, `InferenceGate`, `VisualAnalyzer`, `Summarizer`, `LlamaCppProvider`.
-- Pydantic models are singular nouns in `core/models.py`; provider contract models in `providers/model_provider.py`.
+- `PascalCase`, noun-oriented: `AiModel`, `InferenceGate`, `HybridRetriever`, `DocStore`, `IngestionService`, `LifecycleService`, `VisualAnalyzer`, `Summarizer`.
+- Pydantic models are nouns: `Document`, `Page`, `Chunk`, `EvidenceElement`, `EvidenceSnippet`, `RetrievalResult`, `SummaryResult`, `ProviderCapabilities`, `HealthStatus`.
+- Dataclasses for internal results: `IngestionResult`, `ValidatedUpload`, `ModelIdentity`, `LatencyTracker`.
 
 **Functions / methods:**
-- `snake_case`, verb-first for actions (`ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`, `search_hybrid`, `index_chunks`).
-- UI renderers: `render_<area>` returning `None` (`render_chat_view`, `render_library_view`, `render_file_upload_button`, `render_sidebar_documents`).
-- Boolean predicates: `is_*`, `has_*`, `should_*` (`is_persistent`, `has_document`, `should_ocr_page`, `is_abstention`).
+- `snake_case`, verb-first: `ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`, `resolve_retrieval`, `fetch_document_chunks`, `assemble_grounded_messages`.
+- UI renderers are `render_<area>` and return `None`: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents`.
+- Private helpers are `_leading_underscore`: `_mirror_upsert`, `_load_fallback_store`, `_doc_filter_clause`, `_bounded_zoom`, `_lifecycle_preflight`.
+- Booleans read as predicates: `is_whole_document_query`, `should_ocr_page`, `has_document`, `is_persistent`, `fts_status`.
 
-**Variables / constants:**
-- `snake_case` locals; module constants `UPPER_SNAKE_CASE` (`MAX_FILE_MB`, `MAX_PAGES`, `DEFAULT_RRF_K`, `FAST_PATH_TOKEN_LIMIT`, `CONFIG_VERSION`).
+**Constants:**
+- `UPPER_SNAKE_CASE`: `DEFAULT_DB_URI`, `DEFAULT_RRF_K`, `MAX_FILE_MB`, `MAX_PAGES`, `MAX_OCR_PAGES_PER_DOC`, `FAST_PATH_TOKEN_LIMIT`, `CONFIG_VERSION`, `SCHEMA_V1_DDL`.
+- Env-var names are string constants or inline lookups: `RAG_LOG_LEVEL`, `RAG_REQUIRE_CHECKSUMS`, `RAG_ALLOW_NON_LOOPBACK`, `LLAMA_SERVER_URL`.
+
+**Session state keys:**
+- Public state keys are plain: `doc_ids`, `chat_history`, `hybrid_retriever`, `active_workspace`.
+- Internal/transient keys are underscore-prefixed: `_startup_hydrated`, `_health_snapshot`, `_health_probe_ts`, `_cached_cloud_model`, `_cached_cloud_key`, `_queued_prompt`, `_show_consent_dialog`.
+- Summary cache keys: `summary_<doc_id>_<profile>_<model_version>` (`ui/views.py:39`).
+- Per-widget uploader keys: `pdf_uploader_<suffix>_<counter>`, `uploader_key_<suffix>`.
 
 **Identifiers:**
-- Document: `doc_<sha256[:16]>` (`ingestion/upload_validation.py:36-48`).
-- Chunk: `{sha12}_p{page}_{index:04d}` (`ingestion/pdf_reader.py:94`, `ingestion/docling_reader.py:339`).
-- Evidence element: `elem_{doc_id}_p{page}_{kind}_{idx:02d}` (`ingestion/visual_analyzer.py:258`).
-- Summary: `summ_<uuid4[:16]>` (`core/summarizer.py:481`).
-- Session summary cache key: `summary_{doc_id}_{profile}` (`ui/views.py:559`).
+- Documents: `doc_<sha16>` (`ingestion/upload_validation.py:90`).
+- Visual elements: `elem_<doc_id>_p<page>_<kind>_<index>` (`ingestion/visual_analyzer.py:273`).
+- Summaries: `summ_<uuid16>` (`core/summarizer.py:576`).
 
 ## Where to Add New Code
 
-**New Feature (user-visible workspace or capability):**
-- Primary code: add the workflow to a service first — `ui/ingestion_service.py` / `ui/lifecycle_service.py` for storage-touching flows, or a new `ui/<feature>_service.py` following the constructor pattern `(doc_store, hybrid_retriever, local_embedding, cache_dir)`.
-- Presentation: add `render_<feature>_view(...)` in `ui/views.py`; import it in `main.py`; add the label to `WORKSPACES` in `main.py` and a branch to the dispatch chain.
-- Tests: `tests/test_<feature>.py` + fixture additions in `tests/conftest.py` if a new external dependency is mocked.
+**New feature (UI-facing):**
+- Primary code: add a `render_<name>_view` in `ui/views.py` and register it in the workspace router in `main.py:383` / `main.py:443`.
+- Session defaults: add keys to the initialization list in `main.py:101`.
+- Reusable widgets: `ui/components.py`; styling tokens: `ui/theme.py`.
+- Tests: `tests/test_main_ui.py` or a new `tests/test_<feature>.py`.
 
-**New Inference Provider:**
-- Implementation: `providers/<name>_provider.py`, subclass `BaseModelProvider` (`providers/model_provider.py:64`), implement `generate_text`, `stream_text`, `analyze_image`, `check_health`, `get_capabilities`, and `close`.
-- Routing: extend `AiModel._detect_provider` (`core/local_llm.py:197-213`) and `set_cloud_mode` (`core/local_llm.py:167-195`). Cloud providers MUST accept a `user_consented` flag and assert it before any network call (mirror `providers/groq_provider.py:62-68`).
-- UI configuration: extend `PROVIDER_CONFIG` in `ui/views.py:791-795` and the session default `cloud_provider` / `cloud_model` in `main.py:92-93`.
-- Tests: `tests/test_<name>_provider.py` with `httpx.MockTransport` or a mocked SDK client.
+**New inference provider:**
+- Implementation: `providers/<name>_provider.py`, subclass `BaseModelProvider` from `providers/model_provider.py`.
+- Contract: implement `generate_text`, `stream_text`, `analyze_image`, `check_health`, `get_capabilities`; set `ProviderCapabilities.is_local` accurately.
+- Wiring: `AiModel._detect_provider` / `set_cloud_mode` in `core/local_llm.py:178`; cloud adapters must accept `user_consented` and assert it before transmission.
+- Tests: add to `tests/test_model_provider.py` and a provider-specific suite; keep network mocked.
 
-**New Ingestion Extractor / Preprocessor:**
-- Implementation: `ingestion/<extractor>.py` returning `list[dict]` chunks (`Chunk` dumps) and `list[Page]` records, with per-page fault isolation.
-- Orchestration: call it inside `IngestionService.ingest_pdf` between extraction and OCR (`ui/ingestion_service.py:141-188`), and ensure failures degrade rather than abort.
-- Chunk identity: reuse the `{sha12}_p{page}_{idx:04d}` convention and set `extraction="<backend>"` on every `Chunk`.
-- If chunking policy changes: bump `CONFIG_VERSION` in `core/models.py:14` so caches and summaries invalidate.
+**New ingestion source or extractor:**
+- Implementation: `ingestion/<name>_reader.py`, returning `list[dict]` chunks and `list[Page]` records compatible with `core/models.py`.
+- Wiring: `IngestionService.ingest_pdf` extraction stage (`ui/ingestion_service.py:141`); preserve the Docling → pypdf fallback chain.
+- Validation/caps: reuse `ingestion/upload_validation.py`; do not add unbounded rasterization (`ingestion/ocr_fallback.py:38` shows the bounded-zoom pattern).
 
-**New Retrieval Backend or Ranking Stage:**
-- Implementation: extend `retrieval/hybrid_retriever.py`; expose a free function for ranking math (follow `compute_rrf`, lines 120–165) so it is unit-testable.
-- Integration: keep `search_hybrid` returning a canonical `RetrievalResult` with rank provenance; never return raw dicts to callers.
-- Persistence: route writes through `index_chunks` / `delete_document` / `purge_all`; raise `VectorIndexError` on failed writes (lines 74–80) rather than returning a count.
-- Tests: `tests/test_hybrid_retriever.py`; use a temp `db_uri` and the `mock_sentence_transformer` fixture.
+**New retrieval backend or ranking stage:**
+- Implementation: extend `retrieval/hybrid_retriever.py` (`search_dense`, `search_fts`, `search_hybrid`, `compute_rrf`) rather than bypassing it.
+- Fallback parity: any new write path must also update the durable mirror (`_mirror_upsert`, `_mirror_delete_document`) or explicitly document why not.
+- Scoped search: push `doc_id` filters into the backend before limits and keep the defense-in-depth filter (`retrieval/hybrid_retriever.py:1000`).
+- Tests: `tests/test_hybrid_retriever.py`; include a LanceDB-unavailable path.
 
-**New Persistent Field or Table:**
-- Schema: add a new DDL block and migration entry in `core/doc_store.py` (`SCHEMA_V5_DDL`, `MIGRATIONS[5]`, lines 17–110). Never edit an applied migration; append a new version.
-- Model: add the field to the canonical Pydantic model in `core/models.py` and update both read (`model_validate`) and write paths.
-- Ingestion/reindex: persist it in `record_ingestion` (`core/doc_store.py:291-436`) so partial writes stay atomic.
-- Tests: `tests/test_doc_store.py` includes migration and transactional-ingestion coverage; extend it.
+**New domain rule (intent, budgeting, citations):**
+- Intent / whole-document logic: `core/query_intent.py` (shared by UI and `AiModel`).
+- Token budgeting / XML isolation: `core/prompt_budget.py`.
+- Citation/support/abstention: `core/citation_validator.py`.
+- Keep provider-agnostic code free of `streamlit` imports.
 
-**New Domain Helper (prompting, citation, budgeting, telemetry):**
-- Implementation: `core/<concern>.py`, pure functions where possible, with a module docstring stating invariants.
-- Do not import Streamlit or `ui.*` from `core/`; keep the dependency direction `ui → core/ingestion/retrieval → core.models`.
+**New lifecycle operation:**
+- Implementation: add a method to `ui/lifecycle_service.py` and a preflight-gated wrapper in `ui/views.py` (`_delete_document`, `_reindex_document`, `_purge_all` are the patterns).
+- Ordering rule: vectors first, then SQLite, then legacy cache, then session state.
 
-**New UI Component / Icon:**
-- Component: add a helper to `ui/components.py` (`get_svg_icon`, `render_status_pill`, `render_citation_chip` pattern).
-- Icon: add an SVG to `assets/icons/` and reference it by name; there is no CDN or external asset load.
-- Styling: extend `ui/theme.py` tokens; do not inline new color systems in views.
+**New background/CPU work:**
+- Prefer CPU-bound preprocessing in `ingestion/` or `retrieval/`; do not acquire `InferenceGate` for CPU work.
+- Any GPU model call must use `InferenceGate.hold(...)` or go through `AiModel`.
 
 **Utilities:**
-- Shared helpers belong in the layer that owns the concern: model/storage in `core/`, parsing in `ingestion/`, ranking in `retrieval/`, presentation in `ui/`.
-- Do not add a generic `utils.py`; if truly cross-layer, add a narrowly named module (e.g. `core/token_utils.py`) and import only from allowed layers.
+- Shared helpers: `core/` if domain-related; `ui/components.py` if presentation-only; avoid a catch-all `utils.py`.
+- Cross-cutting logging: `core/logging_setup.py`.
+
+**Tests:**
+- Add `tests/test_<module>.py`; use fixtures from `tests/conftest.py` (`mock_llama_provider`, `mock_sentence_transformer`, `mock_groq_client`, `sample_pdf_path`).
+- Keep tests offline: no live llama-server, GPU, or network calls.
+- For PDF fixtures, extend `tests/data/corpus/generate_corpus.py` rather than committing new binaries.
 
 ## Special Directories
 
 **`data/`:**
-- Purpose: `documents.db` (SQLite source of truth) and `lancedb/` (vector + FTS index).
-- Generated: Yes (created by `DocStore` / `HybridRetriever`).
-- Committed: No.
+- Purpose: Runtime persistence: `documents.db`, `lancedb/`, `lancedb_bench/`, `logs/`.
+- Generated: Yes.
+- Committed: No (`.gitignore` excludes `data/`).
 
 **`.cache/`:**
-- Purpose: Extraction artifacts keyed by content hash and config version: `pages.json`, `chunks.json`, `manifest.json`.
-- Generated: Yes (`ui/ingestion_service.py:329-340`; `core/models.py:17-30`).
-- Committed: No. Safe to delete; re-ingestion regenerates it.
+- Purpose: Legacy extraction-cache root. Ingestion does not write here; lifecycle and Settings remove legacy directories.
+- Generated: Historically; retained for cleanup compatibility.
+- Committed: No.
 
 **`models/`:**
-- Purpose: `qwen3-vl-2b-instruct-q4_k_m.gguf` (legacy filename, Qwen2-VL-2B weights) and `mmproj-f16.gguf`.
-- Generated: Downloaded by `python setup.py download_models`.
-- Committed: No (size + licensing). Identity is verified by `core/model_identity.py` before launch.
+- Purpose: GGUF language model and multimodal projector weights.
+- Generated: No (downloaded by `setup.py download_models`).
+- Committed: No (`.gitignore` excludes `models/`, `*.gguf`).
 
 **`tools/llama-server/`:**
-- Purpose: Local llama-server binary installed by `python setup.py setup_llama_server`.
-- Generated: Yes.
+- Purpose: Native llama-server binaries and CUDA runtime DLLs.
+- Generated: No (downloaded/extracted by `setup.py setup_llama_server`).
+- Committed: No (`.gitignore` excludes `tools/`).
+
+**`retrieval/data/lancedb/`:**
+- Purpose: Legacy package-relative LanceDB location. `_migrate_legacy_index` copies it to `data/lancedb` on first default-URI use and leaves the source intact.
+- Generated: Legacy runtime artifact.
 - Committed: No.
 
 **`tests/data/corpus/`:**
-- Purpose: Deterministic synthetic PDFs (`clean_digital`, `scanned_sample`, `dense_table`, `multi_column`, `chart_diagram`, `corrupt_invalid`) plus `generate_corpus.py`.
-- Generated: PDFs are generated, but the generator is committed and CI regenerates before pytest.
-- Committed: Generator yes; treat generated PDFs as build artifacts.
+- Purpose: Synthetic PDFs for extraction/OCR/retrieval tests.
+- Generated: Yes, by `tests/data/corpus/generate_corpus.py` (CI generates before pytest).
+- Committed: Corpus PDFs are present in the working tree; the generator is the source of truth.
 
 **`.planning/`:**
-- Purpose: GSD project state, phase plans, research, and these codebase maps.
-- Generated: By GSD workflows.
-- Committed: Per project policy; not part of the runtime application.
+- Purpose: GSD planning artifacts, codebase maps, debug sessions, phases, research.
+- Generated: Yes, by planning commands.
+- Committed: Selectively; debug scripts are gitignored (`*.py` under `.planning/debug/`).
 
-**`.streamlit/`:**
-- Purpose: Server/theme configuration (`maxUploadSize=50`, dark palette, telemetry off).
-- Generated: No.
+**`assets/icons/`:**
+- Purpose: Local SVG icon set used by `ui/components.py`.
+- Generated: `scripts/generate_icons.py` can regenerate them.
 - Committed: Yes.
 
-**`.github/`, `.devcontainer/`:**
-- Purpose: CI and development container definitions.
-- Generated: No.
+**`application_screenshots/`:**
+- Purpose: UI reference captures.
+- Generated: Yes.
 - Committed: Yes.
 
 ---
 
-*Structure analysis: 2026-10-21*
+*Structure analysis: 2026-10-22*
