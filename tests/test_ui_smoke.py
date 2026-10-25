@@ -304,6 +304,34 @@ def test_verification_caption_separates_validity_from_support():
     unchecked = dict(valid_but_unsupported, support_checked=False, support_precision=0.0)
     assert "support not verified" in verification_caption(unchecked)
 
+    # Auto-attributed citations
+    auto_attributed = {
+        "abstention_detected": False,
+        "total_citations": 2,
+        "auto_attributed_count": 2,
+        "is_valid": True,
+        "precision": 1.0,
+        "support_checked": True,
+        "support_precision": 0.4,
+    }
+    auto_caption = verification_caption(auto_attributed)
+    assert "Auto-attributed citations (2/2)" in auto_caption
+    assert "partially supported" in auto_caption
+
+    # Mixed citations
+    mixed = {
+        "abstention_detected": False,
+        "total_citations": 3,
+        "auto_attributed_count": 1,
+        "is_valid": True,
+        "precision": 1.0,
+        "support_checked": True,
+        "support_precision": 0.8,
+    }
+    mixed_caption = verification_caption(mixed)
+    assert "Mixed citations (2 model-generated, 1 auto-attributed)" in mixed_caption
+    assert "grounded" in mixed_caption
+
 
 def test_clear_cloud_credentials_scrubs_session_and_provider():
     """Clearing keys removes them from session state and provider objects."""

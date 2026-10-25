@@ -18,7 +18,7 @@ from providers.llama_cpp_provider import LlamaCppProvider
 from retrieval.local_embedding import LocalEmbedding
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 from core.models import RetrievalResult
-from core.prompt_budget import assemble_grounded_messages
+from core.prompt_budget import DEFAULT_MAX_OUTPUT_TOKENS, assemble_grounded_messages
 
 logger = logging.getLogger(__name__)
 
@@ -336,7 +336,7 @@ class AiModel:
                 prompt=bounded_prompt,
                 system_prompt=system_prompt,
                 history=history_turns,
-                max_tokens=2048,
+                max_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
             )
         finally:
             # Guarantees the gate is released when the stream finishes normally,

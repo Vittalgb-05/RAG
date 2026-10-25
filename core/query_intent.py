@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from core.models import EvidenceSnippet, RetrievalResult
+from core.prompt_budget import DEFAULT_MAX_OUTPUT_TOKENS
 
 # Verbs/pronouns that make a short prompt a follow-up rather than a new question.
 FOLLOWUP_TOKENS: frozenset[str] = frozenset(
@@ -35,15 +36,30 @@ _INVENTORY_NOUNS = (
     r"terms?|definitions?|findings?|key\s+points?|requirements?|instructions?)"
 )
 
+# Exhaustive-extraction verbs — extend this list rather than creating new patterns.
+_EXTRACTION_VERBS = (
+    r"(?:list|extract|enumerate|identify|name|provide|give|show|mention|tell|state|"
+    r"write|display|print|summarize|summarise|outline|detail)"
+)
+
 _WHOLE_DOCUMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     # "What are the questions?", "Which topics were covered?"
     re.compile(rf"\b(?:what|which)\s+(?:are|were)\s+(?:all\s+)?(?:of\s+)?(?:the\s+)?{_INVENTORY_NOUNS}\b"),
     # "What questions does the document ask?"
     re.compile(rf"\bwhat\s+{_INVENTORY_NOUNS}\s+(?:are|does|were|did)\b"),
-    # "List/extract/enumerate all the questions"
+    # "What questions are in the document/paper/PDF?"
     re.compile(
-        rf"\b(?:list|extract|enumerate|identify|name|provide|give|show)\b[^?.!]*?"
-        rf"\b(?:all|every|each|the)\b[^?.!]*?\b{_INVENTORY_NOUNS}\b"
+        rf"\bwhat\s+(?:are\s+)?(?:the\s+)?{_INVENTORY_NOUNS}\s+(?:in|from|of)\s+(?:the\s+)?(?:document|pdf|paper|book|booklet)\b"
+    ),
+    # "List/extract/enumerate/mention all the questions"
+    re.compile(
+        rf"\b{_EXTRACTION_VERBS}\b[^?.!]{{0,60}}?"
+        rf"\b(?:all|every|each|the)\b[^?.!]{{0,40}}?\b{_INVENTORY_NOUNS}\b"
+    ),
+    # "Mention the questions", "Tell me the questions" (without 'all')
+    re.compile(
+        rf"\b{_EXTRACTION_VERBS}\b[^?.!]{{0,40}}?\bthe\b[^?.!]{{0,20}}?\b{_INVENTORY_NOUNS}\b"
+        rf"[^?.!]{{0,40}}?(?:in|from|of)\s+(?:the\s+)?(?:document|pdf|paper|question\s*paper|book)"
     ),
     # "All the questions", "every exercise"
     re.compile(rf"\ball\s+(?:of\s+)?(?:the\s+)?{_INVENTORY_NOUNS}\b"),
@@ -51,6 +67,10 @@ _WHOLE_DOCUMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Whole-document scope requests
     re.compile(r"\b(?:whole|entire|full)\s+(?:document|pdf|book|booklet)\b"),
     re.compile(r"\bsummar(?:y|ize|ise)\s+(?:the\s+)?(?:whole|entire|full)\s+(?:document|pdf|book)\b"),
+    # "Questions in the paper / document"
+    re.compile(
+        rf"\b{_INVENTORY_NOUNS}\s+(?:in|from)\s+(?:the\s+)?(?:document|pdf|paper|book|booklet|question\s*paper)\b"
+    ),
 )
 
 
@@ -106,8 +126,11 @@ def is_whole_document_query(query: str) -> bool:
     return any(pattern.search(lowered) for pattern in _WHOLE_DOCUMENT_PATTERNS)
 
 
-def whole_document_char_budget(context_window: int = 4096, max_output_tokens: int = 1024) -> int:
+def whole_document_char_budget(context_window: int = 4096, max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS) -> int:
     """Estimate characters of evidence that fit alongside the grounding system prompt.
+
+    Uses DEFAULT_MAX_OUTPUT_TOKENS from prompt_budget so all three budget sites
+    (prompt assembly, char budget, stream_text) agree on the same output reservation.
 
     Args:
         context_window: Provider context window in tokens.
@@ -116,8 +139,9 @@ def whole_document_char_budget(context_window: int = 4096, max_output_tokens: in
     Returns:
         Conservative character budget for page-diverse evidence selection.
     """
-    # ~4 chars/token, minus ~400 tokens for the system contract and user prompt.
-    return max(2000, (max(0, context_window - max_output_tokens - 400)) * 4)
+    # System grounding template is ~565 tokens with empty context; reserve
+    # ~700 tokens for system contract, user question, XML tags, and margins.
+    return max(2000, (max(0, context_window - max_output_tokens - 700)) * 4)
 
 
 def select_page_diverse_snippets(
@@ -209,6 +233,12 @@ def resolve_retrieval(
 ) -> RetrievalResult:
     """Retrieve evidence, switching to page-ordered whole-document scope when needed.
 
+    When the user asks for an exhaustive inventory ("list all questions",
+    "mention all the questions", etc.) but ``doc_id`` is not a single string,
+    the function returns a ``RetrievalResult`` with ``search_mode="intent_mismatch"``
+    so the caller can ask the user to select a specific document instead of
+    silently falling back to an incomplete top-k retrieval.
+
     Args:
         retriever: HybridRetriever or LocalEmbedding-compatible retriever.
         query: Contextualized search query.
@@ -218,16 +248,31 @@ def resolve_retrieval(
 
     Returns:
         Canonical RetrievalResult whose snippet ranks match the prompt evidence.
+        May have ``search_mode="intent_mismatch"`` when exhaustive intent is detected
+        but no single document is scoped — the caller must handle this case.
     """
-    if isinstance(doc_id, str) and doc_id and is_whole_document_query(query):
-        fetch = getattr(retriever, "fetch_document_chunks", None)
-        if callable(fetch):
-            document_result = fetch(doc_id)
-            if document_result.snippets:
-                budget = max_context_chars or whole_document_char_budget()
-                selected = select_page_diverse_snippets(document_result.snippets, budget)
-                if selected:
-                    return document_result.model_copy(update={"query": query, "snippets": selected})
+    # Exhaustive-extraction intent detected — whole-document path required.
+    if is_whole_document_query(query):
+        if isinstance(doc_id, str) and doc_id:
+            # Single document scoped: fetch all chunks and budget them.
+            fetch = getattr(retriever, "fetch_document_chunks", None)
+            if callable(fetch):
+                document_result = fetch(doc_id)
+                if document_result.snippets:
+                    budget = max_context_chars or whole_document_char_budget()
+                    selected = select_page_diverse_snippets(document_result.snippets, budget)
+                    if selected:
+                        return document_result.model_copy(update={"query": query, "snippets": selected})
+        else:
+            # Exhaustive intent, but no single document is in scope.  Signal the
+            # caller so it can ask the user to pick a document rather than silently
+            # returning a partial top-k answer that looks exhaustive.
+            return RetrievalResult(
+                query=query,
+                snippets=[],
+                total_candidates=0,
+                search_mode="intent_mismatch",
+            )
 
     if hasattr(retriever, "search_hybrid"):
         return retriever.search_hybrid(query, k=k, doc_id=doc_id)

@@ -178,8 +178,19 @@ class RetrievalResult(BaseModel):
     query: str = Field(..., description="User search query or question.")
     snippets: list[EvidenceSnippet] = Field(default_factory=list, description="Ranked list of evidence snippets.")
     total_candidates: int = Field(default=0, ge=0, description="Total candidates examined across modalities.")
-    search_mode: Literal["hybrid", "dense", "fts", "fallback", "document"] = Field(
-        default="hybrid", description="Retrieval execution mode."
+    search_mode: Literal["hybrid", "dense", "fts", "fallback", "document", "intent_mismatch", "document_truncated"] = (
+        Field(
+            default="hybrid",
+            description=(
+                "Retrieval execution mode. 'intent_mismatch' means exhaustive-extraction was "
+                "requested but no single document was scoped — caller must ask user to pick a doc. "
+                "'document_truncated' means fetch_document_chunks hit the chunk safety cap."
+            ),
+        )
+    )
+    chunk_cap_reached: bool = Field(
+        default=False,
+        description="True when fetch_document_chunks truncated results at the safety cap — tail pages may be missing.",
     )
 
     def formatted_evidence(self) -> str:

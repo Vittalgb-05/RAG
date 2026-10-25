@@ -173,3 +173,21 @@ def test_assemble_grounded_messages_truncation_meta() -> None:
     )
     assert meta["context_truncated"] is True
     assert meta["prompt_truncated"] is False
+
+
+def test_token_budget_invariant_fits_context_window() -> None:
+    """Estimated input tokens plus DEFAULT_MAX_OUTPUT_TOKENS must not exceed context window."""
+    from core.prompt_budget import DEFAULT_MAX_OUTPUT_TOKENS, estimate_tokens
+    from core.query_intent import whole_document_char_budget
+
+    context_window = 4096
+    char_budget = whole_document_char_budget(context_window)
+    context_text = "x" * char_budget
+    messages = assemble_grounded_messages(
+        prompt="List all questions in this document.",
+        context_text=context_text,
+        max_context_tokens=context_window,
+        max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+    total_input_tokens = sum(estimate_tokens(m["content"]) for m in messages)
+    assert total_input_tokens + DEFAULT_MAX_OUTPUT_TOKENS <= context_window

@@ -706,11 +706,13 @@ class HybridRetriever:
                 )
             )
 
+        cap_reached = len(rows) >= limit
         return RetrievalResult(
             query="",
             snippets=snippets,
             total_candidates=len(rows),
-            search_mode="document",
+            search_mode="document_truncated" if cap_reached else "document",
+            chunk_cap_reached=cap_reached,
         )
 
     def search_dense(

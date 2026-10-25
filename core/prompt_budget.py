@@ -10,6 +10,12 @@ import math
 import re
 from typing import Any
 
+# Single source of truth for output token reservation.
+# Matches the actual max_tokens passed to stream_text in local_llm.py.
+# Using three different values (1024 / 1536 / 2048) across these files caused
+# context budget over-commitment on the 4096-token context window.
+DEFAULT_MAX_OUTPUT_TOKENS: int = 1536
+
 SYSTEM_GROUNDING_TEMPLATE = """You are a helpful, precise AI assistant. Answer the user's question based strictly on the provided Document Context and conversation history.
 CRITICAL GROUNDING & CITATION RULES:
 1. Base your answer ONLY on facts directly stated in the <document_context> section.
@@ -71,7 +77,7 @@ def assemble_grounded_messages(
     context_text: str = "",
     history: list[dict[str, str]] | None = None,
     max_context_tokens: int = 4096,
-    max_output_tokens: int = 1536,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     truncation_meta: dict[str, bool] | None = None,
 ) -> list[dict[str, str]]:
     """Assemble bounded chat messages with XML injection defense and oldest-first history truncation.
@@ -104,8 +110,9 @@ def assemble_grounded_messages(
     bounded_prompt = sanitize_xml_boundary(prompt)
     max_prompt_budget = max(64, total_input_budget - base_system_tokens)
     if estimate_tokens(bounded_prompt) > max_prompt_budget:
-        char_cap = max(0, max_prompt_budget * 4)
-        bounded_prompt = bounded_prompt[:char_cap] + "\n[... prompt truncated ...]"
+        notice = "\n[... prompt truncated ...]"
+        char_cap = max(0, (max_prompt_budget - estimate_tokens(notice)) * 4)
+        bounded_prompt = bounded_prompt[:char_cap] + notice
         if truncation_meta is not None:
             truncation_meta["prompt_truncated"] = True
 
@@ -118,8 +125,9 @@ def assemble_grounded_messages(
     if clean_context:
         context_tokens = estimate_tokens(clean_context)
         if context_tokens > available_for_context:
-            char_limit = max(0, available_for_context * 4)
-            clean_context = clean_context[:char_limit] + "\n[... truncated ...]"
+            notice = "\n[... truncated ...]"
+            char_limit = max(0, (available_for_context - estimate_tokens(notice)) * 4)
+            clean_context = clean_context[:char_limit] + notice
             if truncation_meta is not None:
                 truncation_meta["context_truncated"] = True
 

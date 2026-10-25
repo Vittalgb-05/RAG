@@ -278,3 +278,13 @@ def test_auto_attribute_citations_preserves_existing_citations() -> None:
     draft = "Revenue rose sharply [E1]."
     attributed = auto_attribute_citations(draft, rr)
     assert attributed == draft
+
+
+def test_citation_verification_result_tracks_auto_attributed_count() -> None:
+    """CitationVerificationResult model accepts and tracks auto_attributed_count field."""
+    rr = _make_support_retrieval_result()
+    res = validate_citations("Revenue rose sharply [E1].", rr)
+    assert res.auto_attributed_count == 0
+
+    res_with_auto = res.model_copy(update={"auto_attributed_count": 2})
+    assert res_with_auto.auto_attributed_count == 2
