@@ -55,12 +55,11 @@ logger = logging.getLogger(__name__)
 suppress_torch_classes_scan_warning()
 
 MAX_CHAT_TURNS = 50
-WORKSPACES = ["Chat", "Document Library", "Summarizer", "Settings"]
+WORKSPACES = ["Chat", "Document Library", "Summarizer", "Settings", "Diagnostics"]
 WORKSPACE_ALIASES = {
     "Workspace": "Chat",
     "Ask Documents": "Chat",
     "Library": "Document Library",
-    "Diagnostics": "Settings",
 }
 
 
@@ -358,6 +357,18 @@ if st.session_state.get("_show_consent_dialog", False):
 with st.sidebar:
     render_brand_header()
 
+    # Prominent New Chat CTA button
+    if st.button(
+        "New conversation",
+        key="sidebar_new_conversation",
+        type="primary",
+        use_container_width=True,
+        help="Start a fresh conversation",
+    ):
+        st.session_state.chat_history = []
+        st.session_state.active_workspace = "Chat"
+        st.rerun()
+
     # Engine Status Pill (rendered via st.sidebar.html)
     if is_healthy:
         if caps.is_local:
@@ -370,9 +381,9 @@ with st.sidebar:
         status_html = render_status_pill("Inference Offline", variant="error")
 
     status_block = (
-        f'<div style="margin-top: 0.25rem; margin-bottom: 0.75rem;">'
+        f'<div style="margin-top: 0.35rem; margin-bottom: 0.75rem;">'
         f'<div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; '
-        f'color: #9693A6; margin-bottom: 0.35rem; font-weight: 700;">Engine Status</div>'
+        f'color: #A1A1AA; margin-bottom: 0.35rem; font-weight: 700;">Engine Status</div>'
         f"{status_html}</div>"
     )
     if hasattr(st.sidebar, "html"):
@@ -385,18 +396,9 @@ with st.sidebar:
 
     st.divider()
 
-    # Document Uploader and Active Documents
-    render_sidebar_documents(
-        doc_store=doc_store,
-        ai_model=ai_model,
-        cache_dir=CACHE_DIR,
-    )
-
-    st.divider()
-
-    # Workspace Navigation: one canonical list shared with the router.
+    # Workspace Navigation: canonical list shared with the router
     current_ws = normalize_workspace(st.session_state.active_workspace)
-    current_ws_idx = WORKSPACES.index(current_ws)
+    current_ws_idx = WORKSPACES.index(current_ws) if current_ws in WORKSPACES else 0
 
     selected_workspace = st.radio(
         "Navigation",
@@ -410,7 +412,16 @@ with st.sidebar:
 
     st.divider()
 
-    with st.sidebar.expander("⚙️ System & Privacy", expanded=False):
+    # Document Uploader and Active Documents
+    render_sidebar_documents(
+        doc_store=doc_store,
+        ai_model=ai_model,
+        cache_dir=CACHE_DIR,
+    )
+
+    st.divider()
+
+    with st.sidebar.expander("System & Privacy", expanded=False):
         proc_info = get_process_memory_info()
         gpu_info = get_gpu_memory_info()
         ram_mb = proc_info.get("rss_mb", 0.0)
@@ -418,12 +429,12 @@ with st.sidebar:
             f"{gpu_info.get('used_mb', 0.0):.0f} / {gpu_info.get('total_mb', 0.0):.0f} MB" if gpu_info else "CPU-only"
         )
         st.markdown(
-            f"<div style='font-size: 0.75rem; color: #9693A6; margin-bottom: 0.5rem;'>"
+            f"<div style='font-size: 0.75rem; color: #A1A1AA; margin-bottom: 0.5rem;'>"
             f"<b>RAM:</b> {ram_mb:.0f} MB · <b>VRAM:</b> {vram_str}</div>",
             unsafe_allow_html=True,
         )
         if st.button("Open Diagnostics", use_container_width=True):
-            st.session_state.active_workspace = "Settings"
+            st.session_state.active_workspace = "Diagnostics"
             st.rerun()
 
     # Quick session reset
@@ -432,7 +443,7 @@ with st.sidebar:
         st.rerun()
 
     footer_html = (
-        "<div style='font-size: 0.72rem; color: #9693A6; margin-top: 0.75rem; text-align: center; line-height: 1.4;'>"
+        "<div style='font-size: 0.72rem; color: #A1A1AA; margin-top: 0.75rem; text-align: center; line-height: 1.4;'>"
         "100% Offline Local Pipeline<br>Qwen2-VL · LanceDB · MiniLM</div>"
     )
     if hasattr(st.sidebar, "html"):
@@ -467,7 +478,7 @@ elif active_page == "Document Library":
         hybrid_retriever=st.session_state.hybrid_retriever,
         cache_dir=CACHE_DIR,
     )
-elif active_page == "Settings":
+elif active_page in ("Settings", "Diagnostics"):
     render_settings_view(
         ai_model=ai_model,
         health=health,

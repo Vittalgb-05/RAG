@@ -419,7 +419,7 @@ def render_sidebar_documents(
     """Render document uploader and active document list in the left sidebar."""
     st.sidebar.markdown(
         "<div style='font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; "
-        "color: #9693A6; font-weight: 700; margin-top: 0.5rem; margin-bottom: 0.35rem;'>"
+        "color: #A1A1AA; font-weight: 700; margin-top: 0.5rem; margin-bottom: 0.35rem;'>"
         "Documents</div>",
         unsafe_allow_html=True,
     )
@@ -428,14 +428,14 @@ def render_sidebar_documents(
         doc_store=doc_store,
         ai_model=ai_model,
         cache_dir=cache_dir,
-        label="➕ Insert Document",
+        label="Add Document",
         key_suffix="sidebar",
         use_container_width=True,
     )
     # Active Documents List in Sidebar
     if st.session_state.document_metadata:
         st.sidebar.markdown(
-            f"<div style='font-size: 0.75rem; color: #70D9C2; font-weight: 600; margin-top: 0.5rem;'>"
+            f"<div style='font-size: 0.75rem; color: #5EEAD4; font-weight: 600; margin-top: 0.5rem;'>"
             f"{len(st.session_state.indexed_files)} Active Document(s)</div>",
             unsafe_allow_html=True,
         )
@@ -448,11 +448,11 @@ def render_sidebar_documents(
 
             col_doc, col_del = st.sidebar.columns([4, 1])
             with col_doc:
-                doc_icon = get_svg_icon("document", size=13, color="#B9A3FF")
+                doc_icon = get_svg_icon("document", size=13, color="#A78BFA")
                 st.markdown(
-                    f"<div style='font-size: 0.8rem; font-weight: 500; color: #F5F3FF; overflow: hidden; "
+                    f"<div style='font-size: 0.8rem; font-weight: 500; color: #F4F4F5; overflow: hidden; "
                     f"text-overflow: ellipsis; white-space: nowrap;'>{doc_icon} {safe_name}</div>"
-                    f"<div style='font-size: 0.7rem; color: #9693A6;'>{pages}p · {chunks} chunks</div>",
+                    f"<div style='font-size: 0.7rem; color: #A1A1AA;'>{pages}p · {chunks} chunks</div>",
                     unsafe_allow_html=True,
                 )
             with col_del:
