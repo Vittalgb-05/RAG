@@ -135,7 +135,7 @@ def render_citation_chip(
     return (
         f'<span data-citation-state="{state}" title="{label}" '
         f'style="display: inline-flex; align-items: center; gap: 0.25rem; background: {background}; '
-        f'border: {border}; border-radius: 6px; padding: 0.15rem 0.5rem; font-size: 0.75rem; color: {icon_color}; '
+        f"border: {border}; border-radius: 6px; padding: 0.15rem 0.5rem; font-size: 0.75rem; color: {icon_color}; "
         f'font-weight: 500;">'
         f"{doc_icon} {prefix}{safe_filename} · p. {page}{marker}</span>"
     )

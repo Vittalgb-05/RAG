@@ -119,21 +119,20 @@ def test_apptest_example_prompt_selection(base_app):
     assert not at.exception
     # Verify the prompt was consumed and submitted into chat history
     assert len(at.session_state.chat_history) >= 1
-    assert at.session_state.chat_history[0]["content"] == "Summarize the core thesis and key findings of the document in detail."
+    assert (
+        at.session_state.chat_history[0]["content"]
+        == "Summarize the core thesis and key findings of the document in detail."
+    )
 
 
 def test_direct_vs_auto_attributed_citation_chips():
     """Citation chips distinguish direct model citations from auto-attributed citations."""
-    direct_chip = render_citation_chip(
-        doc_id="doc_1", page=7, filename="paper.pdf", rank=1, auto_attributed=False
-    )
+    direct_chip = render_citation_chip(doc_id="doc_1", page=7, filename="paper.pdf", rank=1, auto_attributed=False)
     assert "[E1] paper.pdf · p. 7" in direct_chip
     assert "(auto)" not in direct_chip
     assert "#5EEAD4" in direct_chip
 
-    auto_chip = render_citation_chip(
-        doc_id="doc_1", page=12, filename="paper.pdf", rank=2, auto_attributed=True
-    )
+    auto_chip = render_citation_chip(doc_id="doc_1", page=12, filename="paper.pdf", rank=2, auto_attributed=True)
     assert "[E2] paper.pdf · p. 12" in auto_chip
     assert "(auto)" in auto_chip
     assert 'data-citation-state="auto"' in auto_chip
