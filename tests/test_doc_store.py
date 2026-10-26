@@ -125,14 +125,14 @@ def test_two_instance_interleave_R1(tmp_path):
 
 
 def test_user_version_set(tmp_path):
-    """Verify schema migrations apply and PRAGMA user_version is 4 with doc_id indexes."""
+    """Verify schema migrations apply and PRAGMA user_version is 5 with doc_id indexes."""
     db_file = tmp_path / "version_check.db"
     store = DocStore(db_file)
 
     with store._connect() as conn:
         cursor = conn.execute("PRAGMA user_version;")
         version = cursor.fetchone()[0]
-        assert version == 4
+        assert version == 5
 
         # Verify v4 indexes exist
         cursor = conn.execute(
@@ -141,6 +141,9 @@ def test_user_version_set(tmp_path):
         indexes = {row[0] for row in cursor.fetchall()}
         assert "idx_chunks_doc_id" in indexes
         assert "idx_pages_doc_id" in indexes
+
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='deletion_tombstones';")
+        assert cursor.fetchone() is not None
 
 
 def test_chunk_json_columns_nullable(tmp_path):
@@ -752,3 +755,32 @@ def test_write_retry_is_bounded(tmp_path: Path, monkeypatch):
         store.upsert_document(_retry_test_document())
 
     assert attempts["count"] == doc_store_module.WRITE_MAX_ATTEMPTS
+
+
+def test_v4_database_migrates_tombstones_without_losing_documents(tmp_path):
+    """Upgrading an existing v4 database adds tombstones and preserves documents."""
+    db_file = tmp_path / "v4_upgrade.db"
+    store = DocStore(db_file)
+    doc = Document(
+        doc_id="doc_v4",
+        filename="legacy.pdf",
+        sha256="4" * 64,
+        size_bytes=10,
+        num_pages=1,
+        status="indexed",
+        upload_time="2026-10-26T00:00:00Z",
+        num_chunks=0,
+    )
+    store.upsert_document(doc)
+
+    with store._connect() as conn:
+        conn.execute("DROP TABLE deletion_tombstones;")
+        conn.execute("PRAGMA user_version = 4;")
+        conn.commit()
+
+    upgraded = DocStore(db_file)
+
+    assert upgraded.get_document(doc.doc_id) == doc
+    assert upgraded.list_deletion_tombstones() == []
+    with upgraded._connect() as conn:
+        assert conn.execute("PRAGMA user_version;").fetchone()[0] == 5

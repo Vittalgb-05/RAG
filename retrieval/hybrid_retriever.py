@@ -405,8 +405,8 @@ class HybridRetriever:
         if self._has_lancedb and self._table is not None:
             try:
                 return len(self._table)
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError, TypeError) as err:
+                logger.warning("Failed to count indexed chunks in LanceDB; using fallback store: %s", err)
         self._load_fallback_store()
         return len(self._fallback_store.documents)
 
@@ -417,8 +417,8 @@ class HybridRetriever:
                 safe_doc_id = _escape_sql_literal(doc_id)
                 results = self._table.search().where(f"doc_id = '{safe_doc_id}'").limit(1).to_list()
                 return len(results) > 0
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError, TypeError) as err:
+                logger.warning("Failed to check document presence in LanceDB; using fallback store: %s", err)
         self._load_fallback_store()
         return any(d.get("doc_id") == doc_id for d in self._fallback_store.documents)
 

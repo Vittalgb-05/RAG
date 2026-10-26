@@ -3,6 +3,7 @@
 from core.citation_validator import CitationVerificationResult
 from core.doc_store import DocStore
 from core.models import BBox, Document, EvidenceSnippet, SummaryResult
+from ui.components import render_citation_chip
 
 
 def test_chat_turn_schema_contract():
@@ -590,3 +591,69 @@ def test_upload_loop_regression_uploader_key_rotated(tmp_path):
         assert uploader_key == 1
     finally:
         ui.ingestion_service.validate_pdf_bytes = orig_val
+
+
+def test_citation_chip_distinguishes_direct_and_auto_attributed_sources():
+    """Auto-attributed rankings must be visually and semantically distinct from direct citations."""
+    direct = render_citation_chip(doc_id="doc_a", page=1, filename="a.pdf", rank=1)
+    auto = render_citation_chip(doc_id="doc_a", page=1, filename="a.pdf", rank=2, auto_attributed=True)
+
+    assert 'data-citation-state="direct"' in direct
+    assert 'data-citation-state="auto"' in auto
+    assert "Auto-attributed" in auto
+    assert "Auto-attributed" not in direct
+
+
+def test_lifecycle_delete_without_retriever_records_tombstone(tmp_path):
+    """Deleting without a vector handle must leave a durable cleanup tombstone."""
+    from core.doc_store import DocStore
+    from core.models import Document
+    from ui.lifecycle_service import LifecycleService
+
+    store = DocStore(tmp_path / "tombstone_delete.db")
+    doc = Document(
+        doc_id="doc_tombstone",
+        filename="tombstone.pdf",
+        sha256="9" * 64,
+        size_bytes=10,
+        num_pages=1,
+        status="indexed",
+        upload_time="2026-10-26T00:00:00Z",
+        num_chunks=0,
+    )
+    store.upsert_document(doc)
+
+    service = LifecycleService(doc_store=store, hybrid_retriever=None, cache_dir=tmp_path / "cache")
+    assert service.delete_document(doc.doc_id) is True
+
+    assert store.get_document(doc.doc_id) is None
+    assert store.list_deletion_tombstones() == [doc.doc_id]
+
+
+def test_lifecycle_delete_with_retriever_does_not_leave_tombstone(tmp_path):
+    """A successful live vector delete needs no deferred cleanup record."""
+    from unittest.mock import MagicMock
+
+    from core.doc_store import DocStore
+    from core.models import Document
+    from ui.lifecycle_service import LifecycleService
+
+    store = DocStore(tmp_path / "no_tombstone_delete.db")
+    doc = Document(
+        doc_id="doc_live_delete",
+        filename="live.pdf",
+        sha256="8" * 64,
+        size_bytes=10,
+        num_pages=1,
+        status="indexed",
+        upload_time="2026-10-26T00:00:00Z",
+        num_chunks=0,
+    )
+    store.upsert_document(doc)
+
+    retriever = MagicMock()
+    service = LifecycleService(doc_store=store, hybrid_retriever=retriever, cache_dir=tmp_path / "cache")
+    assert service.delete_document(doc.doc_id) is True
+
+    retriever.delete_document.assert_called_once_with(doc.doc_id)
+    assert store.list_deletion_tombstones() == []

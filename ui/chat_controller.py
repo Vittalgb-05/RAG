@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from core.citation_validator import CitationVerificationResult, auto_attribute_citations, should_withhold_answer
 from core.models import RetrievalResult
 from core.query_intent import contextualize_query, resolve_retrieval, whole_document_char_budget
+from core.redaction import redact_text
 
 
 class CitationValidator(Protocol):
@@ -66,6 +67,7 @@ class ChatTurnResult:
     truncation_warning: dict[str, bool]
     is_cloud: bool
     model_name: str
+    error_message: str | None = None
 
 
 class ChatTurnService:
@@ -153,8 +155,13 @@ class ChatTurnService:
             on_response_ready(full_response)
 
         verification = self._validator(full_response, preparation.retrieval_result)
+        verification = verification.model_copy(
+            update={
+                "auto_attributed_count": auto_attributed_count,
+                "auto_attributed_ranks": auto_attributed_ranks,
+            }
+        )
         verification_dict = verification.model_dump()
-        verification_dict["auto_attributed_count"] = auto_attributed_count
 
         withheld = should_withhold_answer(verification)
         injection_detected = bool(getattr(verification, "injection_detected", False))
@@ -176,7 +183,7 @@ class ChatTurnService:
             "unverified": unverified,
             "injection_detected": injection_detected,
             "sources": list(preparation.sources),
-            "verification": verification.model_dump(),
+            "verification": verification_dict,
             "snippets": preparation.snippets,
             "truncation_warning": truncation,
             "is_cloud": is_cloud,
@@ -201,6 +208,52 @@ class ChatTurnService:
             truncation_warning=truncation,
             is_cloud=is_cloud,
             model_name=model_name,
+        )
+
+    def error_result(
+        self,
+        preparation: ChatTurnPreparation,
+        error: BaseException,
+        *,
+        truncation_warning: dict[str, bool] | None = None,
+        is_cloud: bool = False,
+        model_name: str = "",
+    ) -> ChatTurnResult:
+        """Build a redacted, persistable assistant turn for a failed generation."""
+        error_message = redact_text(str(error))
+        content = f"*[Response generation interrupted: {error_message}]*"
+        truncation = dict(truncation_warning or {})
+        assistant_turn = {
+            "role": "assistant",
+            "content": content,
+            "rejected": False,
+            "unverified": True,
+            "sources": list(preparation.sources),
+            "verification": None,
+            "snippets": preparation.snippets,
+            "truncation_warning": truncation,
+            "is_cloud": is_cloud,
+            "model_name": model_name,
+        }
+        return ChatTurnResult(
+            content=content,
+            response_text=content,
+            assistant_turn=assistant_turn,
+            verification=None,
+            cited_ranks=[],
+            auto_attributed_count=0,
+            auto_attributed_ranks=[],
+            withheld=False,
+            injection_detected=False,
+            unverified=True,
+            rejected=False,
+            chunk_cap_reached=preparation.chunk_cap_reached,
+            sources=list(preparation.sources),
+            snippets=preparation.snippets,
+            truncation_warning=truncation,
+            is_cloud=is_cloud,
+            model_name=model_name,
+            error_message=error_message,
         )
 
     def intent_mismatch_result(self, preparation: ChatTurnPreparation) -> ChatTurnResult:

@@ -56,13 +56,15 @@ class LifecycleService:
                 raise
         else:
             logger.warning(
-                "No vector retriever available; deleting %s from SQLite only. "
-                "Existing vectors may be resurrected by hydration.",
+                "No vector retriever available; deleting %s from SQLite and recording "
+                "a deferred vector-cleanup tombstone.",
                 doc_id,
             )
 
-        # 2. SQLite deletion (chunks, pages, evidence, summaries, doc)
-        deleted = self.doc_store.delete_document(doc_id)
+        # 2. SQLite deletion (chunks, pages, evidence, summaries, doc). Without a
+        # live retriever, persist the cleanup marker in the same transaction so a
+        # later hydration cannot resurrect the deleted document's vectors.
+        deleted = self.doc_store.delete_document(doc_id, record_tombstone=self.retriever is None)
 
         # 3. Disk cache removal (best-effort; a leftover cache cannot serve answers)
         if sha256:

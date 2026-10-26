@@ -8,6 +8,7 @@ with Windows file locks and Streamlit execution loops.
 
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
@@ -128,11 +129,21 @@ SCHEMA_V4_DDL = [
     """,
 ]
 
+SCHEMA_V5_DDL = [
+    """
+    CREATE TABLE IF NOT EXISTS deletion_tombstones (
+        doc_id TEXT PRIMARY KEY,
+        deleted_at TEXT NOT NULL
+    );
+    """,
+]
+
 MIGRATIONS: dict[int, list[str]] = {
     1: SCHEMA_V1_DDL,
     2: SCHEMA_V2_DDL,
     3: SCHEMA_V3_DDL,
     4: SCHEMA_V4_DDL,
+    5: SCHEMA_V5_DDL,
 }
 
 
@@ -810,12 +821,15 @@ class DocStore:
 
         return self._execute_write(_write)
 
-    def delete_document(self, doc_id: str) -> bool:
+    def delete_document(self, doc_id: str, *, record_tombstone: bool = False) -> bool:
         """
         Delete a document and cascade delete associated pages, chunks, evidence elements, and summaries.
 
         Args:
             doc_id: Unique document identifier.
+            record_tombstone: Persist a deferred vector-cleanup marker in the same
+                transaction. Used when no vector retriever is available so hydration
+                cannot resurrect the deleted document.
 
         Returns:
             bool: True if a document was deleted, False otherwise.
@@ -829,6 +843,49 @@ class DocStore:
             conn.execute("DELETE FROM evidence_elements WHERE doc_id = ?;", (doc_id,))
             conn.execute("DELETE FROM document_summaries WHERE doc_id = ?;", (doc_id,))
             cursor = conn.execute("DELETE FROM documents WHERE doc_id = ?;", (doc_id,))
+            if record_tombstone:
+                conn.execute(
+                    """
+                    INSERT INTO deletion_tombstones (doc_id, deleted_at)
+                    VALUES (?, ?)
+                    ON CONFLICT(doc_id) DO UPDATE SET deleted_at = excluded.deleted_at;
+                    """,
+                    (doc_id, datetime.now(UTC).isoformat()),
+                )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_write)
+
+    def record_deletion_tombstone(self, doc_id: str) -> None:
+        """Record a durable request to purge vectors for an already-deleted document."""
+        if not isinstance(doc_id, str):
+            raise TypeError("doc_id must be a string")
+
+        def _write(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO deletion_tombstones (doc_id, deleted_at)
+                VALUES (?, ?)
+                ON CONFLICT(doc_id) DO UPDATE SET deleted_at = excluded.deleted_at;
+                """,
+                (doc_id, datetime.now(UTC).isoformat()),
+            )
+
+        self._execute_write(_write)
+
+    def list_deletion_tombstones(self) -> list[str]:
+        """Return document IDs whose vectors still need deferred cleanup."""
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT doc_id FROM deletion_tombstones ORDER BY deleted_at, doc_id;")
+            return [row[0] for row in cursor.fetchall()]
+
+    def clear_deletion_tombstone(self, doc_id: str) -> bool:
+        """Remove one tombstone after its vectors have been purged."""
+        if not isinstance(doc_id, str):
+            raise TypeError("doc_id must be a string")
+
+        def _write(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute("DELETE FROM deletion_tombstones WHERE doc_id = ?;", (doc_id,))
             return cursor.rowcount > 0
 
         return self._execute_write(_write)
@@ -844,6 +901,7 @@ class DocStore:
             conn.execute("DELETE FROM evidence_elements;")
             conn.execute("DELETE FROM document_summaries;")
             conn.execute("DELETE FROM documents;")
+            conn.execute("DELETE FROM deletion_tombstones;")
 
         self._execute_write(_delete_all)
         # VACUUM cannot run inside a transaction, so it executes after the
