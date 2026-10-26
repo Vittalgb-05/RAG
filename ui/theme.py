@@ -2,17 +2,17 @@
 
 import streamlit as st
 
-# AMOLED Design Tokens
-COLOR_BG = "#050608"
-COLOR_SURFACE = "#0C0D12"
-COLOR_ELEVATED = "#14151D"
-COLOR_BORDER = "#252632"
-COLOR_PRIMARY = "#B9A3FF"
-COLOR_SECONDARY = "#70D9C2"
-COLOR_TEXT_PRIMARY = "#F5F3FF"
-COLOR_TEXT_MUTED = "#9693A6"
-COLOR_DANGER = "#FF7B72"
-COLOR_WARNING = "#F0883E"
+# AMOLED Design Tokens (Stage 6 Contract)
+COLOR_BG = "#09090B"
+COLOR_SURFACE = "#111114"
+COLOR_ELEVATED = "#18181D"
+COLOR_BORDER = "#29292F"
+COLOR_PRIMARY = "#A78BFA"
+COLOR_SECONDARY = "#5EEAD4"
+COLOR_TEXT_PRIMARY = "#F4F4F5"
+COLOR_TEXT_MUTED = "#A1A1AA"
+COLOR_DANGER = "#F87171"
+COLOR_WARNING = "#FBBF24"
 
 THEME_CSS = f"""
 <style>
@@ -20,6 +20,16 @@ THEME_CSS = f"""
 .stApp {{
     background-color: {COLOR_BG};
     color: {COLOR_TEXT_PRIMARY};
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}}
+
+/* Main Chat Content Column - Centered 820px max width */
+.block-container {{
+    max-width: 820px !important;
+    padding-top: 1.75rem !important;
+    padding-bottom: 6rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
 }}
 
 [data-testid="stSidebar"] {{
@@ -27,19 +37,71 @@ THEME_CSS = f"""
     border-right: 1px solid {COLOR_BORDER};
 }}
 
+[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {{
+    display: none;
+}}
+
 /* Typography */
 h1, h2, h3, h4, h5, h6 {{
     color: {COLOR_TEXT_PRIMARY} !important;
     font-weight: 600;
     letter-spacing: -0.02em;
+    line-height: 1.3;
 }}
 
 p, span, label, div {{
     color: {COLOR_TEXT_PRIMARY};
+    font-size: 0.95rem;
+    line-height: 1.6;
 }}
 
 small, .text-muted {{
     color: {COLOR_TEXT_MUTED} !important;
+    font-size: 0.8125rem;
+}}
+
+/* Clean Chat Message Styling (ChatGPT / Claude style) */
+[data-testid="stChatMessage"] {{
+    background-color: transparent !important;
+    border: none !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    margin-bottom: 1.5rem !important;
+}}
+
+/* User chat message bubble - compact elevated container */
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {{
+    background-color: {COLOR_ELEVATED} !important;
+    border: 1px solid {COLOR_BORDER} !important;
+    border-radius: 12px !important;
+    padding: 0.75rem 1rem !important;
+    margin-left: auto !important;
+    max-width: 85% !important;
+}}
+
+/* Assistant chat message - readable uncluttered flow */
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {{
+    background-color: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+}}
+
+/* Pinned Chat Input at bottom */
+[data-testid="stChatInput"] {{
+    background-color: {COLOR_SURFACE} !important;
+    border: 1px solid {COLOR_BORDER} !important;
+    border-radius: 12px !important;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4) !important;
+    transition: border-color 150ms ease;
+}}
+
+[data-testid="stChatInput"]:focus-within {{
+    border-color: {COLOR_PRIMARY} !important;
+}}
+
+[data-testid="stChatInput"] textarea {{
+    color: {COLOR_TEXT_PRIMARY} !important;
+    font-size: 0.95rem !important;
 }}
 
 /* Custom Workspace Cards */
@@ -49,13 +111,11 @@ small, .text-muted {{
     border-radius: 10px;
     padding: 1.25rem;
     margin-bottom: 1rem;
-    transition: border-color 180ms ease, transform 180ms ease;
-    animation: fadeInUp 200ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition: border-color 180ms ease;
 }}
 
 .amoled-card:hover {{
-    border-color: {COLOR_PRIMARY}80;
-    transform: translateY(-1px);
+    border-color: {COLOR_BORDER};
 }}
 
 .amoled-card-elevated {{
@@ -68,7 +128,7 @@ small, .text-muted {{
 
 /* Stat Badge */
 .stat-value {{
-    font-size: 2rem;
+    font-size: 1.85rem;
     font-weight: 700;
     color: {COLOR_PRIMARY};
     line-height: 1.1;
@@ -76,9 +136,9 @@ small, .text-muted {{
 }}
 
 .stat-label {{
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     color: {COLOR_TEXT_MUTED};
     font-weight: 600;
 }}
@@ -94,7 +154,7 @@ small, .text-muted {{
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
-    padding: 0.2rem 0.6rem;
+    padding: 0.2rem 0.55rem;
     border-radius: 9999px;
     font-size: 0.75rem;
     font-weight: 600;
@@ -130,40 +190,52 @@ small, .text-muted {{
     background-color: {COLOR_ELEVATED};
     color: {COLOR_TEXT_PRIMARY};
     border: 1px solid {COLOR_BORDER};
-    border-radius: 6px;
+    border-radius: 8px;
     font-weight: 500;
+    font-size: 0.875rem;
+    padding: 0.45rem 0.85rem;
     transition: background-color 150ms ease, border-color 150ms ease;
 }}
 
 .stButton > button:hover {{
     background-color: {COLOR_BORDER};
-    border-color: {COLOR_PRIMARY};
-    color: {COLOR_PRIMARY};
+    border-color: {COLOR_PRIMARY}80;
+    color: {COLOR_TEXT_PRIMARY};
 }}
 
 .stButton > button[kind="primary"] {{
     background-color: {COLOR_PRIMARY};
-    color: #0A0A0F;
+    color: #09090B;
     border: 1px solid {COLOR_PRIMARY};
     font-weight: 600;
 }}
 
 .stButton > button[kind="primary"]:hover {{
-    background-color: #A489FF;
-    border-color: #A489FF;
+    background-color: #906ffa;
+    border-color: #906ffa;
     color: #000000;
 }}
 
-/* Subtle Motion */
-@keyframes fadeInUp {{
-    from {{
-        opacity: 0;
-        transform: translateY(6px);
-    }}
-    to {{
-        opacity: 1;
-        transform: translateY(0);
-    }}
+/* Sidebar New Chat Button */
+.new-chat-btn > button {{
+    background-color: {COLOR_PRIMARY}1A !important;
+    color: {COLOR_PRIMARY} !important;
+    border: 1px solid {COLOR_PRIMARY}40 !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+}}
+
+.new-chat-btn > button:hover {{
+    background-color: {COLOR_PRIMARY}2E !important;
+    border-color: {COLOR_PRIMARY} !important;
+}}
+
+/* Expanders */
+[data-testid="stExpander"] {{
+    background-color: {COLOR_SURFACE};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
 }}
 
 /* Reduced Motion Override */
