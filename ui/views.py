@@ -387,7 +387,7 @@ def render_file_upload_button(
     doc_store: DocStore,
     ai_model: AiModel,
     cache_dir: Path,
-    label: str = "➕ Insert Document",
+    label: str = "Add Document",
     key_suffix: str = "sidebar",
     use_container_width: bool = True,
 ) -> None:
@@ -396,7 +396,7 @@ def render_file_upload_button(
     with st.popover(label, use_container_width=use_container_width):
         st.markdown(
             "<div style='font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem;'>Select PDF Documents</div>"
-            f"<div style='font-size: 0.75rem; color: #9693A6; margin-bottom: 0.5rem;'>Max {MAX_FILE_MB} MB. Processed on-device with OCR and layout parsing.</div>",
+            f"<div style='font-size: 0.75rem; color: #A1A1AA; margin-bottom: 0.5rem;'>Max {MAX_FILE_MB} MB. Processed on-device with OCR and layout parsing.</div>",
             unsafe_allow_html=True,
         )
         uploaded = st.file_uploader(
@@ -512,8 +512,8 @@ def render_chat_view(
     if "selected_chat_doc" in st.session_state and st.session_state.selected_chat_doc in doc_options:
         current_filter_idx = doc_options.index(st.session_state.selected_chat_doc)
 
-    # Chat Header Toolbar: Focus Selector + Single-Button File Inserter + New Chat
-    col_filter, col_insert, col_actions = st.columns([3, 1.4, 1])
+    # Chat Header Toolbar: Focus Selector + Single-Button File Inserter
+    col_filter, col_insert = st.columns([3.5, 1.5])
     with col_filter:
         selected_filter = st.selectbox(
             "Focus Context",
@@ -530,28 +530,22 @@ def render_chat_view(
             doc_store=doc_store,
             ai_model=ai_model,
             cache_dir=cache_dir,
-            label="➕ Insert Files",
+            label="Attach PDF",
             key_suffix="chat",
             use_container_width=True,
         )
 
-    with col_actions:
-        if st.button("New Chat", use_container_width=True, help="Clear active conversation"):
-            st.session_state.chat_history = []
-            st.rerun()
-
     # Empty State Hero when conversation has not started
     if not st.session_state.chat_history:
         st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
-        brand_svg = get_brand_mark_svg(size=44)
+        brand_svg = get_brand_mark_svg(size=40)
         hero_html = (
-            f'<div class="amoled-card" style="text-align: center; padding: 2.5rem 1.5rem; margin-bottom: 1.5rem;">'
-            f'<div style="margin-bottom: 1rem;">{brand_svg}</div>'
-            f'<div style="font-size: 1.35rem; font-weight: 700; color: #F5F3FF; margin-bottom: 0.5rem; letter-spacing: -0.02em;">'
-            f"How can I help with your documents?</div>"
-            f'<div style="font-size: 0.9rem; color: #9693A6; max-width: 520px; margin: 0 auto;">'
-            f"Local-first multimodal document intelligence. Ask questions, analyze figures, and verify findings "
-            f"with page-grounded citations. Zero network egress.</div>"
+            f'<div class="amoled-card" style="text-align: center; padding: 2.5rem 1.5rem; margin-bottom: 1.5rem; border-color: #29292F;">'
+            f'<div style="margin-bottom: 0.85rem;">{brand_svg}</div>'
+            f'<div style="font-size: 1.45rem; font-weight: 600; color: #F4F4F5; margin-bottom: 0.5rem; letter-spacing: -0.02em;">'
+            f"What would you like to understand?</div>"
+            f'<div style="font-size: 0.9rem; color: #A1A1AA; max-width: 520px; margin: 0 auto; line-height: 1.6;">'
+            f"Ask questions, extract data, analyze figures, and verify findings with page-grounded citations. Zero network egress.</div>"
             f"</div>"
         )
         if hasattr(st, "html"):
@@ -560,33 +554,33 @@ def render_chat_view(
             st.markdown(hero_html, unsafe_allow_html=True)
 
         if not has_docs:
-            st.info("Upload one or more PDFs using the '➕ Insert Files' button above to begin asking questions.")
+            st.info("Upload one or more PDFs using the 'Attach PDF' button above to begin asking questions.")
         else:
             # Quick suggestion prompts for instant analysis
             st.markdown(
                 "<div style='font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; "
-                "color: #9693A6; font-weight: 700; margin-bottom: 0.5rem;'>Quick Analysis Prompts</div>",
+                "color: #A1A1AA; font-weight: 700; margin-bottom: 0.5rem;'>Example Analysis Prompts</div>",
                 unsafe_allow_html=True,
             )
             s1, s2, s3, s4 = st.columns(4)
             with s1:
-                if st.button("📄 Summarize thesis", use_container_width=True):
+                if st.button("Summarize thesis", use_container_width=True):
                     st.session_state._queued_prompt = (
                         "Summarize the core thesis and key findings of the document in detail."
                     )
                     st.rerun()
             with s2:
-                if st.button("📊 Key tables & data", use_container_width=True):
+                if st.button("Extract key data", use_container_width=True):
                     st.session_state._queued_prompt = (
                         "What are the key tables, numbers, and quantitative data reported?"
                     )
                     st.rerun()
             with s3:
-                if st.button("🔬 Methodology", use_container_width=True):
+                if st.button("Explain methodology", use_container_width=True):
                     st.session_state._queued_prompt = "Explain the methodology and approach used in this document."
                     st.rerun()
             with s4:
-                if st.button("⚠️ Risks & limitations", use_container_width=True):
+                if st.button("Risks and limits", use_container_width=True):
                     st.session_state._queued_prompt = "What risks, limitations, or open questions are noted?"
                     st.rerun()
 
@@ -612,7 +606,7 @@ def render_chat_view(
                 else:
                     if message.get("unverified"):
                         st.warning(
-                            "⚠️ Grounding Notice: Inline citations ([E#]) were missing or unverified. "
+                            "Grounding Notice: Inline citations ([E#]) were unverified or absent. "
                             "Verify claims against the candidate sources below."
                         )
                     st.markdown(sanitize_display_markdown(raw_content, allow_external=allow_ext))
@@ -652,7 +646,7 @@ def render_chat_view(
                             st.html(chip_html)
                         else:
                             st.markdown(chip_html, unsafe_allow_html=True)
-                        expander_label = "Cited Evidence & Source Context"
+                        expander_label = f"Sources and Evidence ({len(cited_ranks)})"
                     else:
                         expander_label = "Retrieved Candidate Context (Uncited)"
 
@@ -661,9 +655,9 @@ def render_chat_view(
                             is_cited = s.get("rank") in cited_ranks
                             is_auto = s.get("rank") in auto_ranks
                             citation_note = (
-                                " — *Auto-attributed by lexical match*"
+                                " — *(auto-attributed)*"
                                 if is_auto
-                                else (" — *Cited in response*" if is_cited else "")
+                                else (" — *(cited)*" if is_cited else "")
                             )
                             header = (
                                 f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
@@ -688,7 +682,7 @@ def render_chat_view(
     # Chat Input Box & Active Generation Handling
     # -------------------------------------------------------------
     input_placeholder = (
-        "Ask a question about your documents… (Press Enter)"
+        "Ask a question about the document... (Press Enter)"
         if is_healthy
         else "Inference backend is offline. Start llama-server or configure Cloud in Settings."
     )
@@ -723,8 +717,8 @@ def render_chat_view(
         if prepared.intent_mismatch:
             with st.chat_message("assistant"):
                 st.warning(
-                    "📂 To extract all items (e.g. every question), please select a specific "
-                    "document from the filter above, then ask again."
+                    "To extract all items across this document, please select a specific "
+                    "document from the context filter above, then ask again."
                 )
             append_chat_turn(chat_service.intent_mismatch_result(prepared).assistant_turn)
             return
@@ -765,7 +759,7 @@ def render_chat_view(
                     )
                 elif result.withheld:
                     st.warning(
-                        "⚠️ Grounding Notice: Inline citations ([E#]) were missing or unverified. "
+                        "Grounding Notice: Inline citations ([E#]) were unverified or absent. "
                         "Please verify claims against the candidate sources below."
                     )
                 else:
@@ -782,8 +776,8 @@ def render_chat_view(
 
                 if result.chunk_cap_reached and prepared.retrieval_result is not None:
                     st.caption(
-                        f"⚠️ Document has many chunks — only the first {prepared.retrieval_result.total_candidates} "
-                        "were retrieved. Tail pages may be missing. Re-index or ask a more specific question."
+                        f"Document retrieval limit reached — only the first {prepared.retrieval_result.total_candidates} "
+                        "chunks were retrieved. Tail pages may be missing. Re-index or ask a more specific question."
                     )
 
                 if snippets_data:
@@ -806,7 +800,7 @@ def render_chat_view(
                             st.html(chip_html)
                         else:
                             st.markdown(chip_html, unsafe_allow_html=True)
-                        expander_label = "Cited Evidence & Source Context"
+                        expander_label = f"Sources and Evidence ({len(cited_ranks)})"
                     else:
                         st.caption("No retrieved candidate was cited by the answer.")
                         expander_label = "Retrieved Candidate Context (Uncited)"
@@ -816,9 +810,9 @@ def render_chat_view(
                             is_cited = s.get("rank") in cited_ranks
                             is_auto = s.get("rank") in auto_ranks
                             citation_note = (
-                                " — *Auto-attributed by lexical match*"
+                                " — *(auto-attributed)*"
                                 if is_auto
-                                else (" — *Cited in response*" if is_cited else "")
+                                else (" — *(cited)*" if is_cited else "")
                             )
                             header = (
                                 f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
