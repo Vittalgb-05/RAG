@@ -999,14 +999,15 @@ def render_library_view(
             upload_dt = doc.upload_time[:19].replace("T", " ") if doc.upload_time else "Unknown"
             status_variant = "local" if doc.status == "indexed" else ("error" if doc.status == "failed" else "warning")
             safe_fname = html.escape(doc.filename)
+            doc_icon = get_svg_icon("document", size=15, color="#A78BFA")
             card_html = (
                 f'<div class="amoled-card" style="margin-bottom: 0.5rem;">'
                 f'<div style="display: flex; justify-content: space-between; align-items: center;">'
-                f'<span style="font-weight: 600; color: #F5F3FF; font-size: 1rem;">{safe_fname}</span>'
+                f'<span style="font-weight: 600; color: #F4F4F5; font-size: 0.95rem; display: inline-flex; align-items: center; gap: 0.4rem;">{doc_icon} {safe_fname}</span>'
                 f"{render_status_pill(doc.status.title(), variant=status_variant)}</div>"
-                f'<div style="font-size: 0.8rem; color: #9693A6; margin-top: 0.4rem;">'
+                f'<div style="font-size: 0.8rem; color: #A1A1AA; margin-top: 0.4rem;">'
                 f"<code>{doc.doc_id}</code> · {doc.num_pages} pages · {doc.num_chunks} chunks · {doc.size_bytes / 1024:.1f} KB</div>"
-                f'<div style="font-size: 0.75rem; color: #9693A6; margin-top: 0.2rem;">'
+                f'<div style="font-size: 0.75rem; color: #A1A1AA; margin-top: 0.2rem;">'
                 f"Uploaded: {upload_dt} · SHA-256: <code>{doc.sha256[:16]}...</code></div>"
                 f"</div>"
             )
@@ -1142,9 +1143,9 @@ def render_settings_view(
 
     if st.session_state.cloud_mode and st.session_state.user_consented:
         cloud_info_html = (
-            '<div class="amoled-card-elevated" style="border-left: 3px solid #B9A3FF;">'
-            '<div style="font-weight: 600; color: #B9A3FF;">Cloud Egress Permitted</div>'
-            '<div style="font-size: 0.85rem; color: #9693A6; margin-top: 0.25rem;">'
+            '<div class="amoled-card-elevated" style="border-left: 3px solid #A78BFA;">'
+            '<div style="font-weight: 600; color: #A78BFA;">Cloud Egress Permitted</div>'
+            '<div style="font-size: 0.85rem; color: #A1A1AA; margin-top: 0.25rem;">'
             "Prompts and retrieved text excerpts are transmitted to your selected cloud API. "
             "Original PDF files and dense embeddings remain local on disk.</div></div>"
         )

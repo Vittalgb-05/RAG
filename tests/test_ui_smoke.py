@@ -73,16 +73,16 @@ def test_status_pill_rendering():
     """Verify monochrome status pill markup for local and cloud states."""
     local_pill = render_status_pill("Local Mode", variant="local")
     assert "status-badge local" in local_pill
-    assert "#70D9C2" in local_pill
+    assert "#5EEAD4" in local_pill
     assert "Local Mode" in local_pill
 
     cloud_pill = render_status_pill("Cloud Active", variant="cloud")
     assert "status-badge cloud" in cloud_pill
-    assert "#B9A3FF" in cloud_pill
+    assert "#A78BFA" in cloud_pill
 
     error_pill = render_status_pill("Offline", variant="error")
     assert "status-badge error" in error_pill
-    assert "#FF7B72" in error_pill
+    assert "#F87171" in error_pill
 
 
 def test_citation_chip_formatting():
@@ -359,11 +359,11 @@ def test_workspace_navigation_includes_all_primary_destinations():
     """Sidebar navigation must expose every routed workspace and normalize legacy aliases."""
     import main
 
-    assert main.WORKSPACES == ["Chat", "Document Library", "Summarizer", "Settings"]
+    assert main.WORKSPACES == ["Chat", "Document Library", "Summarizer", "Settings", "Diagnostics"]
     assert main.normalize_workspace("Workspace") == "Chat"
     assert main.normalize_workspace("Ask Documents") == "Chat"
     assert main.normalize_workspace("Library") == "Document Library"
-    assert main.normalize_workspace("Diagnostics") == "Settings"
+    assert main.normalize_workspace("Diagnostics") == "Diagnostics"
     assert main.normalize_workspace("Settings") == "Settings"
     assert main.normalize_workspace("unknown") == "Chat"
 
