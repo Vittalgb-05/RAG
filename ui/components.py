@@ -110,13 +110,31 @@ def render_empty_state(title: str, message: str, icon_name: str = "document") ->
         st.markdown(empty_html, unsafe_allow_html=True)
 
 
-def render_citation_chip(doc_id: str, page: int, filename: str, rank: int | None = None) -> str:
-    """Render an evidence citation chip with page reference."""
+def render_citation_chip(
+    doc_id: str,
+    page: int,
+    filename: str,
+    rank: int | None = None,
+    auto_attributed: bool = False,
+) -> str:
+    """Render an evidence citation chip, marking auto-attributed citations distinctly."""
     prefix = f"[E{rank}] " if rank is not None else ""
     safe_filename = html.escape(filename)
-    doc_icon = get_svg_icon("document", size=12, color="#B9A3FF")
+    state = "auto" if auto_attributed else "direct"
+    icon_color = "#D8C8FF" if auto_attributed else "#B9A3FF"
+    background = "#1E172B" if auto_attributed else "#14151D"
+    border = "1px dashed #8C77B8" if auto_attributed else "1px solid #252632"
+    label = "Auto-attributed" if auto_attributed else "Direct citation"
+    marker = (
+        ' <span style="font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; '
+        'opacity: 0.85;">Auto-attributed</span>'
+        if auto_attributed
+        else ""
+    )
+    doc_icon = get_svg_icon("document", size=12, color=icon_color)
     return (
-        f'<span style="display: inline-flex; align-items: center; gap: 0.25rem; background: #14151D; '
-        f'border: 1px solid #252632; border-radius: 4px; padding: 0.15rem 0.45rem; font-size: 0.75rem; color: #B9A3FF;">'
-        f"{doc_icon} {prefix}{safe_filename} p. {page}</span>"
+        f'<span data-citation-state="{state}" title="{label}" '
+        f'style="display: inline-flex; align-items: center; gap: 0.25rem; background: {background}; '
+        f'border: {border}; border-radius: 4px; padding: 0.15rem 0.45rem; font-size: 0.75rem; color: {icon_color};">'
+        f"{doc_icon} {prefix}{safe_filename} p. {page}{marker}</span>"
     )

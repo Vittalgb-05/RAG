@@ -66,7 +66,17 @@ def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
     Returns:
         True when the bind is allowed, False when it must be refused.
     """
-    if is_loopback_host(host) or allow_non_loopback or non_loopback_opt_in():
+    if is_loopback_host(host):
+        return True
+
+    if allow_non_loopback or non_loopback_opt_in():
+        print(
+            f"WARNING: Binding Streamlit to non-loopback host '{host}'.\n"
+            "   This application has NO authentication: anyone who can reach this\n"
+            "   port can read every indexed document and the cloud API-key page.\n"
+            "   Only do this on a trusted, isolated network.",
+            file=sys.stderr,
+        )
         return True
 
     print(

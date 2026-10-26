@@ -25,6 +25,7 @@ from core.doc_store import DocStore
 from providers.litellm_provider import LiteLLMProvider
 from core.local_llm import AiModel
 from core.logging_setup import configure_logging, suppress_torch_classes_scan_warning
+from core.redaction import redact_text
 from providers.model_provider import HealthStatus, ProviderCapabilities
 from ui.components import render_brand_header, render_status_pill
 from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
@@ -54,6 +55,19 @@ logger = logging.getLogger(__name__)
 suppress_torch_classes_scan_warning()
 
 MAX_CHAT_TURNS = 50
+WORKSPACES = ["Chat", "Document Library", "Summarizer", "Settings"]
+WORKSPACE_ALIASES = {
+    "Workspace": "Chat",
+    "Ask Documents": "Chat",
+    "Library": "Document Library",
+    "Diagnostics": "Settings",
+}
+
+
+def normalize_workspace(value: str | None) -> str:
+    """Return a canonical workspace name, falling back to Chat for unknown values."""
+    candidate = WORKSPACE_ALIASES.get(value or "", value or "")
+    return candidate if candidate in WORKSPACES else "Chat"
 
 
 def safe_has_secret(key: str) -> bool:
@@ -70,6 +84,7 @@ def safe_has_secret(key: str) -> bool:
 def _render_startup_failure(title: str, detail: str, remediation: str) -> None:
     """Render an actionable startup error instead of a blank Streamlit page."""
     st.error(title)
+    detail = redact_text(detail)
     st.markdown(f"**How to fix it:** {remediation}")
     with st.expander("Technical details", expanded=False):
         st.code(detail)
@@ -243,7 +258,7 @@ except Exception as cloud_err:
     st.session_state.cloud_mode = False
     st.session_state.cloud_mode_toggle = False
     st.session_state.user_consented = False
-    st.warning(f"Cloud mode could not be enabled: {cloud_err}. Continuing in local mode.")
+    st.warning(f"Cloud mode could not be enabled: {redact_text(str(cloud_err))}. Continuing in local mode.")
     ai_model.set_cloud_mode(False)
 
 # Probe provider health at most once every 5 seconds.  Streamlit reruns this script
@@ -267,7 +282,7 @@ if (
         logger.exception("Provider health probe failed")
         health = HealthStatus(
             status="error",
-            message=f"Health probe failed: {health_err}",
+            message=f"Health probe failed: {redact_text(str(health_err))}",
         )
         caps = ProviderCapabilities(
             model_name="unavailable",
@@ -366,7 +381,7 @@ with st.sidebar:
         st.sidebar.markdown(status_block, unsafe_allow_html=True)
 
     if not is_healthy and health.message:
-        st.caption(health.message)
+        st.caption(redact_text(health.message))
 
     st.divider()
 
@@ -379,17 +394,9 @@ with st.sidebar:
 
     st.divider()
 
-    # Workspace Navigation (Chatbot + Document Library)
-    WORKSPACES = [
-        "Chat",
-        "Document Library",
-    ]
-
-    current_ws = st.session_state.active_workspace
-    if current_ws in ("Workspace", "Ask Documents"):
-        current_ws = "Chat"
-
-    current_ws_idx = WORKSPACES.index(current_ws) if current_ws in WORKSPACES else 0
+    # Workspace Navigation: one canonical list shared with the router.
+    current_ws = normalize_workspace(st.session_state.active_workspace)
+    current_ws_idx = WORKSPACES.index(current_ws)
 
     selected_workspace = st.radio(
         "Navigation",
@@ -438,9 +445,9 @@ with st.sidebar:
 # Main Content View Routing
 # ------------------------------------------------------------------
 
-active_page = st.session_state.active_workspace
+active_page = normalize_workspace(st.session_state.active_workspace)
 
-if active_page in ("Chat", "Ask Documents", "Workspace"):
+if active_page == "Chat":
     render_chat_view(
         ai_model=ai_model,
         health=health,
@@ -454,7 +461,7 @@ elif active_page == "Summarizer":
         ai_model=ai_model,
         is_healthy=is_healthy,
     )
-elif active_page in ("Document Library", "Library"):
+elif active_page == "Document Library":
     render_library_view(
         doc_store=doc_store,
         hybrid_retriever=st.session_state.hybrid_retriever,

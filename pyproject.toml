@@ -23,6 +23,8 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 filterwarnings = [
-    "ignore::UserWarning",
-    "ignore::DeprecationWarning",
+    # Targeted third-party deprecations only; do not suppress all warnings.
+    "ignore:table_names\\(\\) is deprecated.*:DeprecationWarning",
+    "ignore:create_fts_index is deprecated.*:DeprecationWarning",
+    "ignore:Direct unindexed PDF ingestion.*:DeprecationWarning",
 ]

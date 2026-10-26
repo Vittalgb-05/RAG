@@ -134,3 +134,35 @@ def test_hydration_reports_progress_when_repairing_missing_vectors(tmp_path):
     assert progress[-1][:2] == (1, 1)
     assert st.session_state.document_metadata[doc.doc_id]["needs_reindex"] is False
     assert st.session_state._startup_hydrated is True
+
+
+def test_hydration_consumes_deletion_tombstones_without_indexed_documents(tmp_path):
+    """A pending tombstone must purge vectors even when SQLite has no indexed docs."""
+    store = DocStore(tmp_path / "tombstone_hydrate.db")
+    store.record_deletion_tombstone("doc_deleted_offline")
+
+    with patch("ui.hydration.HybridRetriever") as mock_retriever_cls:
+        retriever = MagicMock()
+        mock_retriever_cls.return_value = retriever
+
+        hydrate_startup_state(store)
+
+    retriever.delete_document.assert_called_once_with("doc_deleted_offline")
+    assert store.list_deletion_tombstones() == []
+    assert st.session_state._startup_hydrated is True
+
+
+def test_hydration_keeps_tombstone_when_vector_purge_fails(tmp_path):
+    """A failed vector purge must leave the tombstone for the next retry."""
+    store = DocStore(tmp_path / "tombstone_retry.db")
+    store.record_deletion_tombstone("doc_retry")
+
+    with patch("ui.hydration.HybridRetriever") as mock_retriever_cls:
+        retriever = MagicMock()
+        retriever.delete_document.side_effect = RuntimeError("index unavailable")
+        mock_retriever_cls.return_value = retriever
+
+        hydrate_startup_state(store)
+
+    assert store.list_deletion_tombstones() == ["doc_retry"]
+    assert st.session_state._startup_hydrated is False

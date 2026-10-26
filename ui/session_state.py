@@ -10,6 +10,8 @@ import logging
 
 import streamlit as st
 
+from retrieval.local_embedding import clear_shared_model_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +22,7 @@ def reset_in_memory_session() -> None:
     st.session_state.indexed_files = set()
     st.session_state.document_metadata = {}
     st.session_state.local_embedding = None
+    clear_shared_model_cache()
 
     ai_model = st.session_state.get("ai_model")
     if ai_model is not None and hasattr(ai_model, "reset_turn_state"):

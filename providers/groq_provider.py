@@ -7,6 +7,7 @@ from collections.abc import Generator
 import os
 from typing import Any
 
+from core.redaction import redact_text
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
 try:
@@ -140,7 +141,8 @@ class GroqProvider(BaseModelProvider):
             )
             return str(response.choices[0].message.content)
         except Exception as exc:
-            raise RuntimeError(f"Groq API error: {exc}") from exc
+            safe_error = redact_text(str(exc), extra_secrets=(self.api_key or "",))
+            raise RuntimeError(f"Groq API error: {safe_error}") from exc
 
     def stream_text(
         self,
@@ -176,7 +178,8 @@ class GroqProvider(BaseModelProvider):
                 if content:
                     yield content
         except Exception as exc:
-            raise RuntimeError(f"Groq API error: {exc}") from exc
+            safe_error = redact_text(str(exc), extra_secrets=(self.api_key or "",))
+            raise RuntimeError(f"Groq API error: {safe_error}") from exc
 
     def analyze_image(
         self,

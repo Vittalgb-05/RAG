@@ -13,6 +13,7 @@ from retrieval.hybrid_retriever import HybridRetriever
 from core.local_llm import AiModel
 from core.models import CONFIG_VERSION
 from core.prompt_budget import bound_chat_history
+from core.redaction import redact_text
 from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from core.summarizer import Summarizer
 from ui.chat_controller import ChatTurnService
@@ -183,7 +184,7 @@ def _delete_document(
     except Exception as err:
         logger.exception("Delete failed for %s", doc_id)
         st.error(
-            f"Delete failed for {filename}: {err}. SQLite was left untouched, so the document remains visible. "
+            f"Delete failed for {filename}: {redact_text(str(err))}. SQLite was left untouched, so the document remains visible. "
             "Retry, or restart the app if the vector index is locked."
         )
         return False
@@ -217,7 +218,7 @@ def _reindex_document(
     except Exception as err:
         logger.exception("Reindex failed for %s", doc_id)
         st.error(
-            f"Re-index failed for {filename}: {err}. Stored text is intact; retry after restarting "
+            f"Re-index failed for {filename}: {redact_text(str(err))}. Stored text is intact; retry after restarting "
             "the app if the vector index is locked."
         )
         return False
@@ -250,7 +251,7 @@ def _purge_all(doc_store: DocStore, cache_dir: Path, retriever: Any | None = Non
     except Exception as err:
         logger.exception("Purge failed")
         st.error(
-            f"Purge incomplete: {err}. Some storage tiers may still hold data; retry, or restart "
+            f"Purge incomplete: {redact_text(str(err))}. Some storage tiers may still hold data; retry, or restart "
             "the app if the vector index is locked."
         )
         return False
@@ -633,6 +634,7 @@ def render_chat_view(
                 snippets = message.get("snippets", [])
                 if snippets:
                     cited_ranks = set((v_data or {}).get("cited_ranks") or [])
+                    auto_ranks = set((v_data or {}).get("auto_attributed_ranks") or [])
                     if cited_ranks:
                         chips = [
                             render_citation_chip(
@@ -640,6 +642,7 @@ def render_chat_view(
                                 page=s.get("page", 1),
                                 filename=s.get("filename", "doc"),
                                 rank=s.get("rank"),
+                                auto_attributed=s.get("rank") in auto_ranks,
                             )
                             for s in snippets
                             if s.get("rank") in cited_ranks
@@ -656,9 +659,15 @@ def render_chat_view(
                     with st.expander(expander_label, expanded=False):
                         for s in snippets:
                             is_cited = s.get("rank") in cited_ranks
+                            is_auto = s.get("rank") in auto_ranks
+                            citation_note = (
+                                " — *Auto-attributed by lexical match*"
+                                if is_auto
+                                else (" — *Cited in response*" if is_cited else "")
+                            )
                             header = (
                                 f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
-                                + (" — *Cited in response*" if is_cited else "")
+                                + citation_note
                             )
                             st.markdown(header)
                             snippet_text = sanitize_display_markdown(
@@ -692,7 +701,7 @@ def render_chat_view(
 
     if effective_prompt:
         if not is_healthy:
-            st.error(f"Inference engine unavailable: {health.message}")
+            st.error(f"Inference engine unavailable: {redact_text(health.message)}")
             return
 
         # 1. Append user prompt and display immediately
@@ -779,6 +788,7 @@ def render_chat_view(
 
                 if snippets_data:
                     cited_ranks = set(result.cited_ranks or [])
+                    auto_ranks = set(result.auto_attributed_ranks or [])
                     if cited_ranks:
                         chips = [
                             render_citation_chip(
@@ -786,6 +796,7 @@ def render_chat_view(
                                 page=s.get("page", 1),
                                 filename=s.get("filename", "doc"),
                                 rank=s.get("rank"),
+                                auto_attributed=s.get("rank") in auto_ranks,
                             )
                             for s in snippets_data
                             if s.get("rank") in cited_ranks
@@ -803,9 +814,15 @@ def render_chat_view(
                     with st.expander(expander_label, expanded=False):
                         for s in snippets_data:
                             is_cited = s.get("rank") in cited_ranks
+                            is_auto = s.get("rank") in auto_ranks
+                            citation_note = (
+                                " — *Auto-attributed by lexical match*"
+                                if is_auto
+                                else (" — *Cited in response*" if is_cited else "")
+                            )
                             header = (
                                 f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
-                                + (" — *Cited in response*" if is_cited else "")
+                                + citation_note
                             )
                             st.markdown(header)
                             snippet_text = sanitize_display_markdown(s.get("content", "").strip())
@@ -817,21 +834,15 @@ def render_chat_view(
                 st.rerun()
 
             except Exception as err:
-                st.error(f"Inference streaming failed: {err}")
-                append_chat_turn(
-                    {
-                        "role": "assistant",
-                        "content": f"*[Response generation interrupted: {err}]*",
-                        "rejected": False,
-                        "unverified": True,
-                        "sources": list(prepared.sources),
-                        "verification": None,
-                        "snippets": snippets_data,
-                        "truncation_warning": dict(getattr(ai_model, "last_truncation_warning", {}) or {}),
-                        "is_cloud": not caps.is_local,
-                        "model_name": caps.model_name,
-                    }
+                error_result = chat_service.error_result(
+                    prepared,
+                    err,
+                    truncation_warning=dict(getattr(ai_model, "last_truncation_warning", {}) or {}),
+                    is_cloud=not caps.is_local,
+                    model_name=caps.model_name,
                 )
+                st.error(f"Inference streaming failed: {error_result.error_message}")
+                append_chat_turn(error_result.assistant_turn)
                 st.rerun()
 
 
@@ -920,7 +931,7 @@ def render_summarizer_view(
                 sum_status.update(label="Summary generated successfully!", state="complete", expanded=False)
             except Exception as sum_err:
                 sum_status.update(label="Summary generation failed", state="error", expanded=True)
-                st.error(f"Summarization error: {sum_err}")
+                st.error(f"Summarization error: {redact_text(str(sum_err))}")
 
     # Check for summary to display with exact model version + config verification (P1 audit)
     active_summary = get_session_summary(selected_doc_id, selected_profile, active_model_version)
@@ -1248,5 +1259,5 @@ def render_settings_view(
                     shutil.rmtree(cache_dir, ignore_errors=True)
                     st.toast("Disk cache cleared.")
                 except Exception as e:
-                    st.error(f"Error clearing cache: {e}")
+                    st.error(f"Error clearing cache: {redact_text(str(e))}")
             st.rerun()

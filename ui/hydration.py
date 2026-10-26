@@ -31,6 +31,55 @@ def _report_progress(
         logger.debug("Hydration progress reporter failed: %s", progress_err)
 
 
+def _consume_deletion_tombstones(doc_store: DocStore) -> bool:
+    """Purge vectors for documents deleted while no retriever was available.
+
+    Returns True when no tombstones remain. Failures keep the tombstone so the
+    next startup retries instead of silently resurrecting deleted chunks.
+    """
+    try:
+        tombstones = doc_store.list_deletion_tombstones()
+    except (sqlite3.Error, OSError, ValueError) as err:
+        logger.warning("Could not read deletion tombstones: %s", err, exc_info=True)
+        return False
+
+    if not tombstones:
+        return True
+
+    retriever = st.session_state.get("hybrid_retriever")
+    owns_retriever = retriever is None
+    remaining: list[str] = []
+    try:
+        if retriever is None:
+            retriever = HybridRetriever()
+        for doc_id in tombstones:
+            try:
+                retriever.delete_document(doc_id)
+            except (OSError, RuntimeError, ValueError, TypeError) as err:
+                logger.warning("Deferred vector purge failed for %s; will retry: %s", doc_id, err)
+                remaining.append(doc_id)
+                continue
+            try:
+                doc_store.clear_deletion_tombstone(doc_id)
+            except (sqlite3.Error, OSError, ValueError) as err:
+                logger.warning("Could not clear deletion tombstone for %s; will retry: %s", doc_id, err)
+                remaining.append(doc_id)
+        if remaining:
+            logger.warning("Deferred vector cleanup incomplete for %d document(s).", len(remaining))
+        else:
+            logger.info("Purged deferred vectors for %d tombstoned document(s).", len(tombstones))
+        return not remaining
+    except (OSError, RuntimeError, ValueError, TypeError) as err:
+        logger.warning("Could not initialize retriever for deferred vector cleanup: %s", err)
+        return False
+    finally:
+        if owns_retriever and retriever is not None:
+            try:
+                retriever.close()
+            except Exception as close_err:  # pragma: no cover - best-effort teardown
+                logger.debug("Failed to close temporary retriever after tombstone cleanup: %s", close_err)
+
+
 def hydrate_startup_state(doc_store: DocStore, progress_callback: ProgressCallback | None = None) -> None:
     """Hydrate session state from SQLite and LanceDB on initial browser connection.
 
@@ -62,9 +111,11 @@ def hydrate_startup_state(doc_store: DocStore, progress_callback: ProgressCallba
     for d in failed_docs:
         st.session_state.failed_doc_ids.add(d.doc_id)
 
+    tombstones_cleared = _consume_deletion_tombstones(doc_store)
+
     indexed_docs = [d for d in docs if d.status == "indexed"]
     if not indexed_docs:
-        st.session_state._startup_hydrated = True
+        st.session_state._startup_hydrated = tombstones_cleared
         return
 
     for doc in indexed_docs:
@@ -166,5 +217,5 @@ def hydrate_startup_state(doc_store: DocStore, progress_callback: ProgressCallba
     finally:
         # Mark hydrated only when retriever discovery/repair completed.  A hard
         # failure leaves the flag unset so the next rerun can retry.
-        if retriever_ready:
+        if retriever_ready and tombstones_cleared:
             st.session_state._startup_hydrated = True

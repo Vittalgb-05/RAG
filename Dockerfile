@@ -24,7 +24,7 @@ WORKDIR /app
 # Install dependencies first for Docker layer caching
 COPY requirements.txt requirements-lock.txt ./
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r requirements-lock.txt
 
 # Copy source code and documentation
 COPY . .

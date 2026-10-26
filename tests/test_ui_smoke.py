@@ -353,3 +353,26 @@ def test_clear_cloud_credentials_scrubs_session_and_provider():
     assert st.session_state.active_cloud_provider is None
     assert provider.api_key is None
     assert provider._client is None
+
+
+def test_workspace_navigation_includes_all_primary_destinations():
+    """Sidebar navigation must expose every routed workspace and normalize legacy aliases."""
+    import main
+
+    assert main.WORKSPACES == ["Chat", "Document Library", "Summarizer", "Settings"]
+    assert main.normalize_workspace("Workspace") == "Chat"
+    assert main.normalize_workspace("Ask Documents") == "Chat"
+    assert main.normalize_workspace("Library") == "Document Library"
+    assert main.normalize_workspace("Diagnostics") == "Settings"
+    assert main.normalize_workspace("Settings") == "Settings"
+    assert main.normalize_workspace("unknown") == "Chat"
+
+
+def test_session_reset_clears_shared_embedding_model_cache():
+    """Clear Session must drop the process-level SentenceTransformer cache."""
+    from main import _reset_session_security_state
+
+    with patch("ui.session_state.clear_shared_model_cache") as clear_mock:
+        _reset_session_security_state()
+
+    clear_mock.assert_called_once()

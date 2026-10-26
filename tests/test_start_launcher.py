@@ -200,3 +200,24 @@ def test_main_cli_start_llama_lifecycle(tmp_path):
         mock_start.assert_called_once()
         mock_proc.terminate.assert_called_once()
         mock_proc.wait.assert_called_once_with(timeout=5)
+
+
+def test_refuse_unsafe_bind_warns_when_non_loopback_opted_in(capsys):
+    """Explicitly allowing a non-loopback bind must still surface the exposure warning."""
+    assert start.refuse_unsafe_bind("0.0.0.0", allow_non_loopback=True) is True
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "non-loopback" in captured.err
+    assert "NO authentication" in captured.err
+
+
+def test_refuse_unsafe_bind_warns_when_env_opt_in(monkeypatch, capsys):
+    """The environment opt-in must warn as clearly as the explicit CLI flag."""
+    monkeypatch.setenv("RAG_ALLOW_NON_LOOPBACK", "1")
+
+    assert start.refuse_unsafe_bind("192.168.1.10") is True
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "192.168.1.10" in captured.err

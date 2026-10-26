@@ -201,3 +201,27 @@ def test_finalize_preserves_chunk_cap_signal() -> None:
     assert preparation.chunk_cap_reached is True
     assert result.chunk_cap_reached is True
     assert result.assistant_turn["snippets"][0]["rank"] == 1
+
+
+def test_finalize_persists_auto_attributed_metadata_in_transcript_turn() -> None:
+    preparation = ChatTurnService(_validator([1])).prepare(
+        prompt="What does the document say?",
+        history_before_turn=[],
+        selected_doc=None,
+        document_metadata={"doc_alpha": {"filename": "alpha.pdf", "pages": 3}},
+        retriever=FakeHybridRetriever(_result(_snippet(content="Acid rain lowers soil pH."))),
+        context_window=4096,
+    )
+    result = ChatTurnService(_validator([1])).finalize(
+        preparation,
+        "Acid rain lowers soil pH.",
+        is_cloud=False,
+        model_name="local-model",
+    )
+
+    verification = result.assistant_turn["verification"]
+    assert result.auto_attributed_count == 1
+    assert result.auto_attributed_ranks == [1]
+    assert verification["auto_attributed_count"] == 1
+    assert verification["auto_attributed_ranks"] == [1]
+    assert verification["cited_ranks"] == [1]

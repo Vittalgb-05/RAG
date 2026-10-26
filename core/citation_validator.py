@@ -171,6 +171,10 @@ class CitationVerificationResult(BaseModel):
             "counted toward the stated citation precision target."
         ),
     )
+    auto_attributed_ranks: list[int] = Field(
+        default_factory=list,
+        description="Sorted 1-based snippet ranks whose citations were auto-attributed, not model-generated.",
+    )
 
 
 def detect_adversarial_injection(text: str) -> tuple[bool, str | None]:
