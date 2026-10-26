@@ -3,7 +3,6 @@
 import html
 import logging
 from pathlib import Path
-import re
 import shutil
 from typing import Any
 
@@ -11,13 +10,12 @@ import streamlit as st
 
 from core.doc_store import DocStore
 from retrieval.hybrid_retriever import HybridRetriever
-from core.citation_validator import auto_attribute_citations, should_withhold_answer
 from core.local_llm import AiModel
 from core.models import CONFIG_VERSION
 from core.prompt_budget import bound_chat_history
-from core.query_intent import contextualize_query, resolve_retrieval, whole_document_char_budget
 from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from core.summarizer import Summarizer
+from ui.chat_controller import ChatTurnService
 from ui.components import (
     get_brand_mark_svg,
     get_svg_icon,
@@ -702,72 +700,27 @@ def render_chat_view(
         with st.chat_message("user"):
             st.markdown(effective_prompt)
 
-        history_to_pass = st.session_state.chat_history[:-1][-10:]
-        search_query = contextualize_query(effective_prompt, history_to_pass)
-
-        # Target document: explicit filter or auto-detected from query
-        doc_filter = None if selected_filter == "all" else selected_filter
-        if doc_filter is None and st.session_state.get("document_metadata"):
-            prompt_lower = effective_prompt.lower()
-            for did, meta in st.session_state.document_metadata.items():
-                fn = meta.get("filename", "").lower()
-                stem = Path(fn).stem.lower()
-                if fn in prompt_lower or (len(stem) >= 3 and stem in prompt_lower):
-                    doc_filter = did
-                    break
-
-        sources: list[str] = []
-        retrieval_res = None
         active_retriever = st.session_state.get("hybrid_retriever") or st.session_state.local_embedding
-
-        retrieval_scope = doc_filter
-        if retrieval_scope is None and len(st.session_state.document_metadata) == 1:
-            retrieval_scope = next(iter(st.session_state.document_metadata))
-
-        if active_retriever is not None:
-            if hasattr(active_retriever, "search_hybrid"):
-                retrieval_res = resolve_retrieval(
-                    active_retriever,
-                    search_query,
-                    doc_id=retrieval_scope,
-                    k=8,
-                    max_context_chars=whole_document_char_budget(caps.context_window),
-                )
-                sources = retrieval_res.source_labels()
-
-                # Whole-document intent detected but no single document was scoped.
-                # Rather than silently falling back to an incomplete top-k answer,
-                # inform the user and skip generation.
-                if retrieval_res.search_mode == "intent_mismatch":
-                    with st.chat_message("assistant"):
-                        st.warning(
-                            "📂 To extract all items (e.g. every question), please select a specific "
-                            "document from the filter above, then ask again."
-                        )
-                    append_chat_turn(
-                        {
-                            "role": "assistant",
-                            "content": "[Please select a specific document to run exhaustive extraction.]",
-                            "rejected": False,
-                            "sources": [],
-                            "snippets": [],
-                            "verification": {},
-                            "truncation_warning": {},
-                        }
-                    )
-                    return
-            else:
-                results = active_retriever.search(search_query, k=10)
-                seen_sources = set()
-                for doc, _ in results:
-                    fn = doc.get("filename")
-                    if fn and fn not in seen_sources:
-                        seen_sources.add(fn)
-                        sources.append(fn)
-
-        snippets_data = (
-            [s.model_dump() for s in retrieval_res.snippets] if retrieval_res and retrieval_res.snippets else []
+        chat_service = ChatTurnService(ai_model.validate_response)
+        prepared = chat_service.prepare(
+            prompt=effective_prompt,
+            history_before_turn=st.session_state.chat_history[:-1],
+            selected_doc=None if selected_filter == "all" else selected_filter,
+            document_metadata=st.session_state.document_metadata,
+            retriever=active_retriever,
+            context_window=caps.context_window,
         )
+
+        if prepared.intent_mismatch:
+            with st.chat_message("assistant"):
+                st.warning(
+                    "📂 To extract all items (e.g. every question), please select a specific "
+                    "document from the filter above, then ask again."
+                )
+            append_chat_turn(chat_service.intent_mismatch_result(prepared).assistant_turn)
+            return
+
+        snippets_data = prepared.snippets
 
         with st.chat_message("assistant"):
             try:
@@ -775,9 +728,9 @@ def render_chat_view(
                     pdf_path="",
                     prompt=effective_prompt,
                     local_embedding=active_retriever,
-                    chat_history=history_to_pass,
-                    retrieval_result=retrieval_res,
-                    doc_id=doc_filter,
+                    chat_history=prepared.history,
+                    retrieval_result=prepared.retrieval_result,
+                    doc_id=prepared.doc_filter,
                 )
                 stream_placeholder = st.empty()
                 response_chunks: list[str] = []
@@ -786,49 +739,30 @@ def render_chat_view(
                     stream_placeholder.markdown("".join(response_chunks) + "▌")
                 full_response = "".join(response_chunks)
 
-                # Fallback citation attribution: If model omitted [E#] citations on a non-abstaining
-                # answer, attribute matching candidate snippets by lexical token overlap.
-                auto_attributed_count = 0
-                if retrieval_res and retrieval_res.snippets:
-                    original_citations = set(re.findall(r"\[E(\d+)\]", full_response, re.IGNORECASE))
-                    attributed = auto_attribute_citations(full_response, retrieval_res)
-                    if attributed != full_response:
-                        full_response = attributed
-                        new_citations = set(re.findall(r"\[E(\d+)\]", full_response, re.IGNORECASE))
-                        auto_attributed_count = len(new_citations - original_citations)
+                result = chat_service.finalize(
+                    prepared,
+                    full_response,
+                    truncation_warning=dict(getattr(ai_model, "last_truncation_warning", {}) or {}),
+                    is_cloud=not caps.is_local,
+                    model_name=caps.model_name,
+                    on_response_ready=stream_placeholder.markdown,
+                )
 
-                stream_placeholder.markdown(full_response)
-
-                verification = ai_model.validate_response(full_response, retrieval_res)
-                # Merge auto_attributed_count into verification dict for caption rendering.
-                verification_dict = verification.model_dump()
-                verification_dict["auto_attributed_count"] = auto_attributed_count
-                withheld = should_withhold_answer(verification)
-                is_injection = getattr(verification, "injection_detected", False)
-
-                if is_injection:
+                if result.injection_detected:
                     stream_placeholder.empty()
                     st.error(
                         "Response blocked — adversarial prompt injection directive detected in output. "
                         "Grounding check failed for security."
                     )
-                    content_to_save = "[Response withheld: prompt injection detected.]"
-                    rejected_val = True
-                elif withheld:
-                    # Informative notice: do NOT suppress valid draft from user screen
+                elif result.withheld:
                     st.warning(
                         "⚠️ Grounding Notice: Inline citations ([E#]) were missing or unverified. "
                         "Please verify claims against the candidate sources below."
                     )
-                    content_to_save = full_response
-                    rejected_val = False
                 else:
-                    st.caption(verification_caption(verification_dict))
-                    content_to_save = full_response
-                    rejected_val = False
+                    st.caption(verification_caption(result.verification))
 
-                truncation_warning = dict(getattr(ai_model, "last_truncation_warning", {}) or {})
-                notice = truncation_notice(truncation_warning)
+                notice = truncation_notice(result.truncation_warning)
                 if notice:
                     st.caption(notice)
 
@@ -837,14 +771,14 @@ def render_chat_view(
                 else:
                     st.caption("Generated locally on-device (zero network egress).")
 
-                if retrieval_res and getattr(retrieval_res, "chunk_cap_reached", False):
+                if result.chunk_cap_reached and prepared.retrieval_result is not None:
                     st.caption(
-                        f"⚠️ Document has many chunks — only the first {retrieval_res.total_candidates} "
+                        f"⚠️ Document has many chunks — only the first {prepared.retrieval_result.total_candidates} "
                         "were retrieved. Tail pages may be missing. Re-index or ask a more specific question."
                     )
 
                 if snippets_data:
-                    cited_ranks = set(verification.cited_ranks or [])
+                    cited_ranks = set(result.cited_ranks or [])
                     if cited_ranks:
                         chips = [
                             render_citation_chip(
@@ -878,21 +812,7 @@ def render_chat_view(
                             st.markdown(f"> {snippet_text}")
                             st.divider()
 
-                append_chat_turn(
-                    {
-                        "role": "assistant",
-                        "content": content_to_save,
-                        "rejected": rejected_val,
-                        "unverified": withheld and not is_injection,
-                        "injection_detected": is_injection,
-                        "sources": list(sources),
-                        "verification": verification.model_dump(),
-                        "snippets": snippets_data,
-                        "truncation_warning": truncation_warning,
-                        "is_cloud": not caps.is_local,
-                        "model_name": caps.model_name,
-                    }
-                )
+                append_chat_turn(result.assistant_turn)
                 # Refresh to re-render full chronological conversation uniformly
                 st.rerun()
 
@@ -904,7 +824,7 @@ def render_chat_view(
                         "content": f"*[Response generation interrupted: {err}]*",
                         "rejected": False,
                         "unverified": True,
-                        "sources": list(sources),
+                        "sources": list(prepared.sources),
                         "verification": None,
                         "snippets": snippets_data,
                         "truncation_warning": dict(getattr(ai_model, "last_truncation_warning", {}) or {}),
