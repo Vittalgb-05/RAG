@@ -51,13 +51,13 @@ def get_brand_mark_svg(size: int = 36) -> str:
 
 def render_brand_header() -> None:
     """Render the sidebar brand mark and application identifier."""
-    brand_svg = get_brand_mark_svg(size=32)
+    brand_svg = get_brand_mark_svg(size=28)
     header_html = (
-        f'<div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">'
+        f'<div style="display: flex; align-items: center; gap: 0.65rem; margin-bottom: 0.25rem;">'
         f"{brand_svg}"
         f"<div>"
-        f'<div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.12em; color: #70D9C2; font-weight: 700;">Local Engine</div>'
-        f'<div style="font-size: 1.15rem; font-weight: 700; color: #F5F3FF; letter-spacing: -0.02em;">PAPER / INTELLIGENCE</div>'
+        f'<div style="font-size: 0.95rem; font-weight: 700; color: #F4F4F5; letter-spacing: -0.02em;">PAPER / INTELLIGENCE</div>'
+        f'<div style="font-size: 0.72rem; color: #A1A1AA; font-weight: 500;">Local-First PDF Intelligence</div>'
         f"</div></div>"
     )
     if hasattr(st.sidebar, "html"):
@@ -68,7 +68,7 @@ def render_brand_header() -> None:
 
 def render_stat_card(label: str, value: str | int, subtext: str = "", icon_name: str = "document") -> None:
     """Render a clean metric card with monochrome icon."""
-    icon_svg = get_svg_icon(icon_name, size=18, color="#B9A3FF")
+    icon_svg = get_svg_icon(icon_name, size=18, color="#A78BFA")
     subtext_html = f'<div class="stat-subtext">{html.escape(str(subtext))}</div>' if subtext else ""
     card_html = (
         f'<div class="amoled-card">'
@@ -85,7 +85,7 @@ def render_stat_card(label: str, value: str | int, subtext: str = "", icon_name:
 
 def render_status_pill(text: str, variant: str = "local") -> str:
     """Generate HTML markup for an AMOLED status badge."""
-    color = "#70D9C2" if variant == "local" else ("#B9A3FF" if variant == "cloud" else "#FF7B72")
+    color = "#5EEAD4" if variant == "local" else ("#A78BFA" if variant == "cloud" else "#F87171")
     icon_name = "check" if variant == "local" else ("cloud" if variant == "cloud" else "alert")
     icon_svg = get_svg_icon(icon_name, size=12, color=color)
     safe_text = html.escape(text)
@@ -94,14 +94,14 @@ def render_status_pill(text: str, variant: str = "local") -> str:
 
 def render_empty_state(title: str, message: str, icon_name: str = "document") -> None:
     """Render a clean empty state card."""
-    icon_svg = get_svg_icon(icon_name, size=32, color="#9693A6")
+    icon_svg = get_svg_icon(icon_name, size=28, color="#A1A1AA")
     safe_title = html.escape(title)
     safe_msg = html.escape(message)
     empty_html = (
-        f'<div class="amoled-card" style="text-align: center; padding: 2.5rem 1.5rem;">'
-        f'<div style="margin-bottom: 0.75rem;">{icon_svg}</div>'
-        f'<div style="font-size: 1rem; font-weight: 600; color: #F5F3FF; margin-bottom: 0.25rem;">{safe_title}</div>'
-        f'<div style="font-size: 0.85rem; color: #9693A6; max-width: 400px; margin: 0 auto;">{safe_msg}</div>'
+        f'<div class="amoled-card" style="text-align: center; padding: 2rem 1.25rem;">'
+        f'<div style="margin-bottom: 0.65rem;">{icon_svg}</div>'
+        f'<div style="font-size: 0.95rem; font-weight: 600; color: #F4F4F5; margin-bottom: 0.25rem;">{safe_title}</div>'
+        f'<div style="font-size: 0.825rem; color: #A1A1AA; max-width: 380px; margin: 0 auto;">{safe_msg}</div>'
         f"</div>"
     )
     if hasattr(st, "html"):
@@ -121,13 +121,13 @@ def render_citation_chip(
     prefix = f"[E{rank}] " if rank is not None else ""
     safe_filename = html.escape(filename)
     state = "auto" if auto_attributed else "direct"
-    icon_color = "#D8C8FF" if auto_attributed else "#B9A3FF"
-    background = "#1E172B" if auto_attributed else "#14151D"
-    border = "1px dashed #8C77B8" if auto_attributed else "1px solid #252632"
+    icon_color = "#C4B5FD" if auto_attributed else "#5EEAD4"
+    background = "#18181D"
+    border = "1px dashed #7C3AED" if auto_attributed else "1px solid #29292F"
     label = "Auto-attributed" if auto_attributed else "Direct citation"
     marker = (
         ' <span style="font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; '
-        'opacity: 0.85;">Auto-attributed</span>'
+        'opacity: 0.85;">(auto)</span>'
         if auto_attributed
         else ""
     )
@@ -135,6 +135,7 @@ def render_citation_chip(
     return (
         f'<span data-citation-state="{state}" title="{label}" '
         f'style="display: inline-flex; align-items: center; gap: 0.25rem; background: {background}; '
-        f'border: {border}; border-radius: 4px; padding: 0.15rem 0.45rem; font-size: 0.75rem; color: {icon_color};">'
-        f"{doc_icon} {prefix}{safe_filename} p. {page}{marker}</span>"
+        f'border: {border}; border-radius: 6px; padding: 0.15rem 0.5rem; font-size: 0.75rem; color: {icon_color}; '
+        f'font-weight: 500;">'
+        f"{doc_icon} {prefix}{safe_filename} · p. {page}{marker}</span>"
     )
