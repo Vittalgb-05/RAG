@@ -350,6 +350,38 @@ if st.session_state.get("_show_consent_dialog", False):
     show_consent_dialog()
 
 
+if hasattr(st, "dialog"):
+
+    @st.dialog("Settings")
+    def show_settings_modal() -> None:
+        render_settings_view(
+            ai_model=ai_model,
+            health=health,
+            caps=caps,
+            doc_store=doc_store,
+            cache_dir=CACHE_DIR,
+            is_dialog=True,
+        )
+        if st.button("Close", key="modal_close_settings_btn", use_container_width=True):
+            st.session_state._show_settings_dialog = False
+            st.rerun()
+else:
+
+    def show_settings_modal() -> None:
+        render_settings_view(
+            ai_model=ai_model,
+            health=health,
+            caps=caps,
+            doc_store=doc_store,
+            cache_dir=CACHE_DIR,
+            is_dialog=True,
+        )
+
+
+if st.session_state.get("_show_settings_dialog", False):
+    show_settings_modal()
+
+
 # ------------------------------------------------------------------
 # Sidebar: Brand, Engine Status, Documents & Navigation
 # ------------------------------------------------------------------
@@ -421,6 +453,29 @@ with st.sidebar:
 
     st.divider()
 
+    col_btn_set, col_btn_reset = st.columns(2)
+    with col_btn_set:
+        if st.button(
+            "Settings",
+            key="sidebar_settings_btn",
+            use_container_width=True,
+            help="Configure inference, API keys, and privacy",
+        ):
+            if hasattr(st, "dialog"):
+                st.session_state._show_settings_dialog = True
+            else:
+                st.session_state.active_workspace = "Settings"
+            st.rerun()
+    with col_btn_reset:
+        if st.button(
+            "Clear Session",
+            key="sidebar_clear_session_btn",
+            use_container_width=True,
+            help="Clear in-memory chat and reset upload buffer",
+        ):
+            _reset_session_security_state()
+            st.rerun()
+
     with st.sidebar.expander("System & Privacy", expanded=False):
         proc_info = get_process_memory_info()
         gpu_info = get_gpu_memory_info()
@@ -436,11 +491,6 @@ with st.sidebar:
         if st.button("Open Diagnostics", use_container_width=True):
             st.session_state.active_workspace = "Diagnostics"
             st.rerun()
-
-    # Quick session reset
-    if st.button("Clear Session", use_container_width=True, help="Clear in-memory chat and reset upload buffer"):
-        _reset_session_security_state()
-        st.rerun()
 
     footer_html = (
         "<div style='font-size: 0.72rem; color: #A1A1AA; margin-top: 0.75rem; text-align: center; line-height: 1.4;'>"

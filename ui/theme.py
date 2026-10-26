@@ -20,16 +20,16 @@ THEME_CSS = f"""
 .stApp {{
     background-color: {COLOR_BG};
     color: {COLOR_TEXT_PRIMARY};
-    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }}
 
 /* Main Chat Content Column - Centered 820px max width */
 .block-container {{
     max-width: 820px !important;
-    padding-top: 1.75rem !important;
+    padding-top: 1.5rem !important;
     padding-bottom: 6rem !important;
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
+    padding-left: 1.25rem !important;
+    padding-right: 1.25rem !important;
 }}
 
 [data-testid="stSidebar"] {{
@@ -41,18 +41,58 @@ THEME_CSS = f"""
     display: none;
 }}
 
+/* Clean Sidebar Navigation - Transform Radio into Sleek Workspace Tabs */
+[data-testid="stSidebar"] [data-testid="stRadio"] > div {{
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] label {{
+    display: flex;
+    align-items: center;
+    padding: 0.45rem 0.75rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 140ms ease, color 140ms ease;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: {COLOR_TEXT_MUTED};
+    margin: 0 !important;
+}}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {{
+    background-color: {COLOR_ELEVATED};
+    color: {COLOR_TEXT_PRIMARY};
+}}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {{
+    background-color: {COLOR_ELEVATED};
+    border: 1px solid {COLOR_BORDER};
+    color: #FFFFFF;
+    font-weight: 600;
+}}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] input[type="radio"] {{
+    display: none;
+}}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > label {{
+    display: none; /* Hide 'Navigation' text label */
+}}
+
 /* Typography */
 h1, h2, h3, h4, h5, h6 {{
     color: {COLOR_TEXT_PRIMARY} !important;
     font-weight: 600;
     letter-spacing: -0.02em;
-    line-height: 1.3;
+    line-height: 1.35;
 }}
 
 p, span, label, div {{
     color: {COLOR_TEXT_PRIMARY};
     font-size: 0.95rem;
-    line-height: 1.6;
+    line-height: 1.65;
 }}
 
 small, .text-muted {{
@@ -66,15 +106,15 @@ small, .text-muted {{
     border: none !important;
     padding-left: 0 !important;
     padding-right: 0 !important;
-    margin-bottom: 1.5rem !important;
+    margin-bottom: 1.25rem !important;
 }}
 
 /* User chat message bubble - compact elevated container */
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {{
     background-color: {COLOR_ELEVATED} !important;
     border: 1px solid {COLOR_BORDER} !important;
-    border-radius: 12px !important;
-    padding: 0.75rem 1rem !important;
+    border-radius: 16px !important;
+    padding: 0.75rem 1.15rem !important;
     margin-left: auto !important;
     max-width: 85% !important;
 }}
@@ -90,7 +130,7 @@ small, .text-muted {{
 [data-testid="stChatInput"] {{
     background-color: {COLOR_SURFACE} !important;
     border: 1px solid {COLOR_BORDER} !important;
-    border-radius: 12px !important;
+    border-radius: 14px !important;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4) !important;
     transition: border-color 150ms ease;
 }}
@@ -102,6 +142,31 @@ small, .text-muted {{
 [data-testid="stChatInput"] textarea {{
     color: {COLOR_TEXT_PRIMARY} !important;
     font-size: 0.95rem !important;
+}}
+
+/* ChatGPT Style Citation Pills */
+.chat-citation-pill {{
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background-color: {COLOR_ELEVATED};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 9999px;
+    padding: 0.18rem 0.65rem;
+    font-size: 0.76rem;
+    font-weight: 500;
+    color: #D4D4D8;
+    text-decoration: none;
+    margin-right: 0.35rem;
+    margin-top: 0.35rem;
+    cursor: default;
+    transition: background-color 150ms ease, border-color 150ms ease;
+}}
+
+.chat-citation-pill:hover {{
+    background-color: #27272E;
+    border-color: {COLOR_PRIMARY}80;
+    color: #FFFFFF;
 }}
 
 /* Custom Workspace Cards */

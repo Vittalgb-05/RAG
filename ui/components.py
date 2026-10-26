@@ -139,3 +139,23 @@ def render_citation_chip(
         f'font-weight: 500;">'
         f"{doc_icon} {prefix}{safe_filename} · p. {page}{marker}</span>"
     )
+
+
+def render_chatgpt_citation_pill(
+    filename: str,
+    page: int,
+    excerpt: str = "",
+    rank: int | None = None,
+    auto_attributed: bool = False,
+) -> str:
+    """Render a clean ChatGPT-style citation badge with hover tooltip containing excerpt."""
+    safe_name = html.escape(filename)
+    safe_excerpt = html.escape(excerpt.strip()[:350]) if excerpt else ""
+    doc_svg = get_svg_icon("document", size=12, color="#9CA3AF")
+    title_attr = f'title="{safe_excerpt}"' if safe_excerpt else ""
+    rank_prefix = f"[E{rank}] " if rank is not None else ""
+    return (
+        f'<span class="chat-citation-pill" {title_attr}>'
+        f"{doc_svg}<span>{rank_prefix}{safe_name} · p. {page}</span>"
+        f"</span>"
+    )
