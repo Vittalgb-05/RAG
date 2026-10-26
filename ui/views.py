@@ -499,13 +499,13 @@ def render_chat_view(
     has_docs = bool(st.session_state.document_metadata or st.session_state.indexed_files)
 
     # Focus Filter Dropdown (All Documents vs specific file)
-    doc_options = ["all"] + list(st.session_state.document_metadata.keys())
+    doc_metadata = st.session_state.get("document_metadata", {})
+    doc_options = ["all"] + list(doc_metadata.keys())
 
     def _doc_label(key: str) -> str:
         if key == "all":
-            cnt = len(st.session_state.indexed_files)
-            return f"All Documents ({cnt} file{'s' if cnt != 1 else ''})"
-        meta = st.session_state.document_metadata.get(key, {})
+            return "All Documents"
+        meta = st.session_state.get("document_metadata", {}).get(key, {})
         return f"{meta.get('filename', key)} (p. {meta.get('pages', 1)})"
 
     current_filter_idx = 0
@@ -520,6 +520,7 @@ def render_chat_view(
             options=doc_options,
             format_func=_doc_label,
             index=current_filter_idx,
+            key="chat_focus_filter",
             label_visibility="collapsed",
             help="Filter responses across all uploaded PDFs or restrict to a single document.",
         )
