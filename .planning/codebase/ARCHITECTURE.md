@@ -1,49 +1,42 @@
-<!-- refreshed: 2026-10-22 -->
+<!-- refreshed: 2026-10-26 -->
 # Architecture
 
-**Analysis Date:** 2026-10-22
+**Analysis Date:** 2026-10-26
 
 ## System Overview
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Presentation — Streamlit composition root                                    │
-│ `main.py` · `ui/views.py` · `ui/components.py` · `ui/theme.py`                │
-│ `ui/sanitizer.py` · `ui/session_state.py` · `.streamlit/config.toml`          │
-└───────────────┬──────────────────────────────────────────────┬───────────────┘
-                │                                              │
-                ▼                                              ▼
-┌─────────────────────────────────────┐   ┌──────────────────────────────────────┐
-│ UI Orchestration Services           │   │ Domain Services                      │
-│ `ui/ingestion_service.py`           │   │ `core/local_llm.py` (AiModel, Gate)   │
-│ `ui/lifecycle_service.py`           │   │ `core/summarizer.py`                  │
-│ `ui/hydration.py`                   │   │ `core/query_intent.py`                │
-│                                     │   │ `core/citation_validator.py`          │
-│                                     │   │ `core/prompt_budget.py`               │
-└───────────────┬─────────────────────┘   └──────────────────┬───────────────────┘
-                │                                            │
-                ▼                                            ▼
+│ Presentation — single-page Streamlit script (server-rendered, AMOLED)        │
+│ `main.py` · `ui/views.py` · `ui/components.py` · `ui/theme.py`               │
+│ `ui/sanitizer.py` · `ui/session_state.py` · `assets/icons/*.svg`             │
+└──────────────┬────────────────────────────────────────────┬──────────────────┘
+               │ st.session_state, render_*()                │ upload / delete
+               ▼                                             ▼
+┌──────────────────────────────────────┐  ┌───────────────────────────────────┐
+│ Domain services (`core/`)            │  │ UI orchestration (`ui/`)          │
+│ `core/local_llm.py` (AiModel,        │  │ `ui/ingestion_service.py`         │
+│  InferenceGate)                      │  │ `ui/lifecycle_service.py`         │
+│ `core/summarizer.py`                 │  │ `ui/hydration.py`                 │
+│ `core/query_intent.py`               │  │                                   │
+│ `core/citation_validator.py`         │  │                                   │
+│ `core/prompt_budget.py`              │  │                                   │
+└──────────────┬───────────────────────┘  └───────────────┬───────────────────┘
+               │ RetrievalResult                             │ Chunk/Page/Evidence
+               ▼                                             ▼
+┌──────────────────────────────────────┐  ┌───────────────────────────────────┐
+│ Retrieval (`retrieval/`)             │  │ Ingestion (`ingestion/`)          │
+│ `hybrid_retriever.py` (LanceDB+BM25) │  │ `upload_validation.py`            │
+│ `local_embedding.py` (MiniLM, CPU)   │  │ `docling_reader.py` → `pdf_reader.py`│
+│ `vector_index.py` (fallback)         │  │ `ocr_fallback.py` · `visual_analyzer.py`│
+└──────────────┬───────────────────────┘  └───────────────┬───────────────────┘
+               │                                             │
+               ▼                                             ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Ingestion Pipeline                                                           │
-│ `ingestion/upload_validation.py` → `ingestion/docling_reader.py`              │
-│ → `ingestion/pdf_reader.py` fallback → `ingestion/ocr_fallback.py`            │
-│ → `ingestion/visual_analyzer.py`                                             │
-└───────────────┬──────────────────────────────────────────────┬───────────────┘
-                │                                              │
-                ▼                                              ▼
-┌─────────────────────────────────────┐   ┌──────────────────────────────────────┐
-│ Retrieval & Persistence             │   │ Inference Providers                  │
-│ `retrieval/local_embedding.py`      │   │ `providers/model_provider.py` (ABC)   │
-│ `retrieval/hybrid_retriever.py`     │   │ `providers/llama_cpp_provider.py`     │
-│ `retrieval/vector_index.py`         │   │ `providers/litellm_provider.py`       │
-│ `core/doc_store.py` (SQLite)        │   │ `providers/groq_provider.py`          │
-│ `core/models.py`                    │   │                                      │
-└─────────────────────────────────────┘   └──────────────────────────────────────┘
-                │
-                ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ Local disk: `data/documents.db`, `data/lancedb/`, `data/logs/`                │
-│ Runtime binaries: `tools/llama-server/`, model weights: `models/`             │
+│ Persistence & inference adapters                                             │
+│ `core/doc_store.py` (SQLite WAL) · `data/lancedb/` · `.cache/`               │
+│ `providers/model_provider.py` (ABC) → `llama_cpp_provider.py` /              │
+│ `litellm_provider.py` / `groq_provider.py`                                   │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -51,303 +44,308 @@
 
 | Component | Responsibility | File |
 |-----------|----------------|------|
-| Streamlit composition root | Page config, session defaults, store/model construction, hydration, cloud sync, workspace routing | `main.py` |
-| Chat workspace | Query contextualization, retrieval, streaming, citation chips, evidence drawer | `ui/views.py` (`render_chat_view`) |
-| Summarizer workspace | Five profiles, session/SQLite cache lookup, markdown export | `ui/views.py` (`render_summarizer_view`) |
-| Library workspace | Document inspect, re-index, delete, purge-by-confirmation | `ui/views.py` (`render_library_view`) |
-| Settings workspace | Cloud consent/keys, VRAM/RAM telemetry, store counts, session/cache reset | `ui/views.py` (`render_settings_view`) |
-| Ingestion orchestration | Validate → dedupe/repair → extract → OCR → visual VLM → SQLite → embeddings → vector index | `ui/ingestion_service.py` |
-| Lifecycle orchestration | Atomic delete, full purge with VACUUM, re-index from SQLite chunks | `ui/lifecycle_service.py` |
-| Startup hydration | Restore catalog/metadata, verify vectors, repair only missing docs | `ui/hydration.py` |
-| Session reset | Shared teardown of documents, models, history, summaries, credentials | `ui/session_state.py` |
-| Inference facade | Provider routing, retrieval assembly, prompt budgeting, gate ownership, citation validation | `core/local_llm.py` |
-| Concurrency gate | Process-wide RLock serializing GPU inference | `core/local_llm.py` (`InferenceGate`) |
-| Summary engine | Single-pass or map-reduce with page citations and SQLite cache | `core/summarizer.py` |
-| Query intent | Follow-up rewrite, whole-document detection, page-diverse evidence selection | `core/query_intent.py` |
-| Prompt budgeting | XML context isolation, oldest-first history truncation, truncation flags | `core/prompt_budget.py` |
-| Citation validation | Rank validity, lexical support, abstention, injection detection, auto-attribution | `core/citation_validator.py` |
-| SQLite store | Canonical documents/pages/chunks/evidence/summaries, WAL, migrations v1–v4 | `core/doc_store.py` |
-| Hybrid retrieval | Dense + FTS + RRF, LanceDB persistence, durable fallback mirror, whole-document read | `retrieval/hybrid_retriever.py` |
-| In-memory vector index | Pure-Python cosine/euclidean nearest neighbor | `retrieval/vector_index.py` |
-| CPU embeddings | Shared `all-MiniLM-L6-v2`, 384-dim, L2-normalized | `retrieval/local_embedding.py` |
-| Provider contract | `BaseModelProvider`, `ProviderCapabilities`, `HealthStatus` | `providers/model_provider.py` |
-| Local provider | llama-server HTTP/SSE, loopback enforcement, VLM image payloads | `providers/llama_cpp_provider.py` |
-| Cloud provider | LiteLLM routing with consent gate and key scrubbing | `providers/litellm_provider.py` |
-| Direct Groq provider | Groq SDK adapter with consent gate | `providers/groq_provider.py` |
-| Upload validation | Magic bytes, 50 MB / 500 page caps, SHA-256, `doc_<sha16>` | `ingestion/upload_validation.py` |
-| Structured extraction | Docling layout/tables, markdown table splitting, pypdf fallback | `ingestion/docling_reader.py` |
-| Text extraction fallback | pypdf page extraction and chunking | `ingestion/pdf_reader.py` |
-| OCR fallback | Conditional RapidOCR on low-text pages with raster/time budgets | `ingestion/ocr_fallback.py` |
-| Visual analysis | PyMuPDF region detection, 2x crops, VLM descriptions under the gate | `ingestion/visual_analyzer.py` |
-| Model identity | GGUF metadata parsing and LM/projector pair verification | `core/model_identity.py` |
-| Telemetry | Cached `nvidia-smi`, psutil RSS, stage latency tracking | `core/resource_telemetry.py` |
-| Logging | Idempotent root logging + rotating file, watcher-noise filter | `core/logging_setup.py` |
-| Launcher | Loopback bind guard, llama-server probe/spawn, Streamlit subprocess | `start.py` |
-| Installer | Dependency install, checksum-pinned model/llama-server acquisition | `setup.py` |
+| Composition root | Page config, session defaults, DocStore cache, hydration, provider health, cloud consent, sidebar and view routing | `main.py` |
+| Chat view | Prompt capture, query contextualization, retrieval, streamed generation, citation verification, evidence drawer | `ui/views.py` (`render_chat_view`, line 490) |
+| Summarizer view | Profile selection, session/SQLite cache lookup, markdown export | `ui/views.py` (`render_summarizer_view`, line 923) |
+| Library view | Catalog listing, per-document re-index/delete, purge-all danger zone | `ui/views.py` (`render_library_view`, line 1046) |
+| Settings view | Cloud consent, API-key entry, VRAM/RAM telemetry, session/cache reset | `ui/views.py` (`render_settings_view`, line 1167) |
+| Ingestion orchestration | Validate → dedupe/repair → Docling → pypdf fallback → conditional OCR → VLM → SQLite transaction → LanceDB index | `ui/ingestion_service.py` (`ingest_pdf`, line 54) |
+| Lifecycle orchestration | Vector-first delete, purge across SQLite/LanceDB/cache/session, verified re-index | `ui/lifecycle_service.py` (lines 32, 102, 160) |
+| Startup hydration | Rebuild session catalog from SQLite, detect missing vectors, re-embed only missing documents | `ui/hydration.py` (`hydrate_startup_state`, line 34) |
+| Inference facade | Provider routing, retrieval-context assembly, token streaming, citation validation | `core/local_llm.py` (`AiModel`, line 103) |
+| GPU concurrency gate | Process-wide reentrant lock serializing LLM/VLM/summarizer inference | `core/local_llm.py` (`InferenceGate`, line 26) |
+| Summarization | Five profiles, single-pass vs bounded map-reduce, SQLite cache keyed by model + config version | `core/summarizer.py` (`Summarizer`, line 172) |
+| Query intent | Follow-up rewriting, whole-document detection, page-diverse evidence budgeting | `core/query_intent.py` (lines 77, 110, 147, 227) |
+| Citation validation | `[E#]` extraction, precision gate, abstention detection, injection detection | `core/citation_validator.py` (line 302) |
+| Prompt budgeting | Token estimation, `<document_context>` isolation, oldest-first history truncation | `core/prompt_budget.py` (lines 75, 165) |
+| Canonical models | Pydantic v2 schemas shared across layers, `CONFIG_VERSION`, cache path helper | `core/models.py` |
+| SQLite store | Schema migrations v1–v4, atomic ingestion transaction, summaries, delete/purge | `core/doc_store.py` (`DocStore`, line 139) |
+| Hybrid retrieval | LanceDB dense search + native FTS/BM25, RRF fusion, whole-document fetch, fallback mirror | `retrieval/hybrid_retriever.py` (`search_hybrid`, line 959) |
+| Embeddings | CPU-pinned `all-MiniLM-L6-v2`, process-level model cache, 384-d normalized vectors | `retrieval/local_embedding.py` (line 51) |
+| In-memory fallback index | Pure-stdlib cosine/euclidean search used when LanceDB is unavailable | `retrieval/vector_index.py` (line 15) |
+| Upload validation | `%PDF-` magic bytes, 50 MB / 500 page caps, SHA-256, stable `doc_<sha16>` | `ingestion/upload_validation.py` (line 120) |
+| Layout extraction | Docling CPU layout/table extraction with automatic pypdf fallback | `ingestion/docling_reader.py` (line 143) |
+| pypdf extraction | Memory-safe text extraction and per-page fault isolation | `ingestion/pdf_reader.py` (line 49) |
+| OCR fallback | RapidOCR only for pages under 50 characters, bounded pixels/pages/seconds, thread-pool pages | `ingestion/ocr_fallback.py` (`apply_conditional_ocr`, line 368) |
+| Visual analysis | PyMuPDF region detection, 2× crops, local-only VLM descriptions, `EvidenceElement` output | `ingestion/visual_analyzer.py` (line 217) |
+| Provider contract | `BaseModelProvider` ABC + `ProviderCapabilities` / `HealthStatus` | `providers/model_provider.py` |
+| Local provider | llama-server HTTP/SSE client with loopback-only enforcement | `providers/llama_cpp_provider.py` (line 56) |
+| Cloud providers | LiteLLM multi-vendor adapter and direct Groq adapter, both consent-gated | `providers/litellm_provider.py`, `providers/groq_provider.py` |
 
 ## Pattern Overview
 
-**Overall:** Modular monolith with a Streamlit composition root, layered orchestration/domain/pipeline packages, and a provider abstraction.
+**Overall:** Layered modular monolith with a Streamlit composition root, explicit service objects, immutable Pydantic contracts, and adapter-based inference.
 
 **Key Characteristics:**
-- Single process, single user, loopback-bound UI (`start.py:59` `refuse_unsafe_bind`, `.streamlit/config.toml`).
-- One GPU inference operation at a time enforced by a class-level reentrant lock (`core/local_llm.py:26`).
-- Pydantic v2 models are the canonical boundary between pipeline, persistence, prompts, and UI (`core/models.py`).
-- SQLite is the source of truth; LanceDB is a rebuildable projection of SQLite chunks (`ui/hydration.py`, `ui/lifecycle_service.py`).
-- Retrieval degrades through explicit tiers: LanceDB dense+FTS → in-memory mirror → Python BM25 (`retrieval/hybrid_retriever.py`).
-- Ingestion and retrieval are tolerant of extraction failures but never claim success for unpersisted vectors (`retrieval/hybrid_retriever.py:571` raises `VectorIndexError`).
-- Privacy is enforced at boundaries: local-only provider URL validation, cloud consent assertions, sanitized markdown, no external assets.
+- One deployable process: Streamlit UI, SQLite, LanceDB, and llama-server client all run locally; llama-server is the only external process.
+- Layering is directional in intent: `ui` → `core`/`retrieval`/`ingestion`/`providers` → `core.models`; no package imports `ui`.
+- Construction happens at the edges: `main.py` builds `DocStore`, `AiModel`, and cloud providers; `IngestionService` and `LifecycleService` receive their collaborators via constructor injection.
+- `RetrievalResult` is the single evidence contract shared by prompt assembly and UI citation chips (`core/models.py:171`).
+- Fail-closed persistence: vector writes raise `VectorIndexError` rather than silently reporting success (`retrieval/hybrid_retriever.py:75`, `:571`).
+- Local-first privacy boundary is enforced in code, not only documentation: loopback-only local provider (`providers/llama_cpp_provider.py:82`), consent-gated cloud providers, and Markdown/HTML sanitization (`ui/sanitizer.py`).
+- Every GPU-bound operation goes through `InferenceGate` (`core/local_llm.py:26`); preprocessing is CPU-pinned (Docling, MiniLM, RapidOCR).
 
 ## Layers
 
 **Presentation:**
-- Purpose: Render four workspaces and own all Streamlit interaction/session state.
+- Purpose: Render the four workspaces and capture user intent; own Streamlit session state and widget lifecycle.
 - Location: `main.py`, `ui/views.py`, `ui/components.py`, `ui/theme.py`, `ui/sanitizer.py`, `ui/session_state.py`
-- Contains: page routing, chat feed, uploader, citation chips, consent dialog, telemetry cards, CSS/SVG.
-- Depends on: UI orchestration services, `AiModel`, `DocStore`, `Summarizer`, telemetry.
-- Used by: Streamlit runtime only.
+- Contains: `render_*` functions, CSS injection, local SVG loading, Markdown sanitization, session reset.
+- Depends on: `core`, `retrieval`, `ingestion` (for constants), `ui/ingestion_service.py`, `ui/lifecycle_service.py`.
+- Used by: `streamlit run main.py` only.
 
-**UI Orchestration Services:**
-- Purpose: Encapsulate multi-tier side effects so views stay declarative.
+**UI orchestration services:**
+- Purpose: Execute multi-step document workflows without widget code.
 - Location: `ui/ingestion_service.py`, `ui/lifecycle_service.py`, `ui/hydration.py`
-- Contains: ingestion transaction, delete/purge/re-index ordering, startup repair.
-- Depends on: `DocStore`, `HybridRetriever`, `LocalEmbedding`, ingestion pipeline.
-- Used by: `main.py` and `ui/views.py`.
+- Contains: `IngestionService`, `IngestionResult`, `LifecycleService`, hydration/repair routine.
+- Depends on: `core.doc_store`, `core.models`, `retrieval.hybrid_retriever`, `retrieval.local_embedding`, `ingestion.*`.
+- Used by: `main.py` (hydration) and `ui/views.py` (upload, delete, re-index).
+- Note: `ui/hydration.py` imports `streamlit` directly and mutates `st.session_state`; the other two services are framework-agnostic.
 
-**Domain Services:**
-- Purpose: Provider-independent intelligence behavior.
-- Location: `core/local_llm.py`, `core/summarizer.py`, `core/query_intent.py`, `core/prompt_budget.py`, `core/citation_validator.py`
-- Contains: retrieval resolution, prompt assembly, gate ownership, map-reduce summarization, citation checks.
-- Depends on: `RetrievalResult` models, provider ABC, retriever protocol (`search_hybrid`, `fetch_document_chunks`).
-- Used by: `ui/views.py`, `main.py`, `ui/summarizer` path.
+**Domain services:**
+- Purpose: Retrieval-grounded generation, summarization, intent resolution, citation verification, prompt budgeting, telemetry, logging, model identity.
+- Location: `core/`
+- Contains: `AiModel`, `InferenceGate`, `Summarizer`, `validate_citations`, `assemble_grounded_messages`, `resolve_retrieval`, `DocStore`, `get_gpu_memory_info`, `configure_logging`, `verify_local_model_pair`.
+- Depends on: `core.models`, `providers.model_provider`, `providers.llama_cpp_provider`, `retrieval.hybrid_retriever`, `retrieval.local_embedding`.
+- Used by: presentation and UI orchestration services.
 
-**Ingestion Pipeline:**
-- Purpose: Convert untrusted PDF bytes into canonical pages, chunks, and visual evidence.
+**Ingestion adapters:**
+- Purpose: Turn untrusted PDF bytes into canonical `Chunk`, `Page`, and `EvidenceElement` records.
 - Location: `ingestion/`
-- Contains: validation, Docling/pypdf readers, OCR, visual analyzer.
-- Depends on: pypdf, Docling, RapidOCR, PyMuPDF, `core/models.py`.
+- Contains: validation, Docling reader, pypdf fallback, conditional OCR, visual analyzer.
+- Depends on: `core.models`, `providers.model_provider` (type only), third-party Docling/pypdf/PyMuPDF/RapidOCR.
 - Used by: `ui/ingestion_service.py`.
 
-**Retrieval & Persistence:**
-- Purpose: Persist metadata and serve hybrid evidence.
-- Location: `retrieval/`, `core/doc_store.py`, `core/models.py`
-- Contains: embeddings, LanceDB table management, fallback mirror, BM25, RRF, SQLite schema/migrations.
-- Depends on: LanceDB/PyArrow, sentence-transformers, sqlite3.
-- Used by: ingestion, hydration, lifecycle, chat, summarizer.
+**Retrieval adapters:**
+- Purpose: Persist embeddings and serve dense + keyword evidence.
+- Location: `retrieval/`
+- Contains: `HybridRetriever`, `LocalEmbedding`, `VectorIndex`, RRF implementation, LanceDB schema, fallback mirror.
+- Depends on: `core.models`, LanceDB/PyArrow (optional), sentence-transformers.
+- Used by: `core.local_llm`, `ui.ingestion_service`, `ui.lifecycle_service`, `ui.hydration`, `ui.views`.
 
-**Inference Providers:**
-- Purpose: Normalize local and cloud model access behind one contract.
+**Inference adapters:**
+- Purpose: Implement the `BaseModelProvider` contract for local and cloud backends.
 - Location: `providers/`
-- Contains: `BaseModelProvider` ABC, llama-server client, LiteLLM adapter, Groq adapter.
-- Depends on: httpx, LiteLLM, Groq.
-- Used by: `AiModel`, `Summarizer`, `VisualAnalyzer`.
+- Contains: provider ABC and schemas, llama-server client, LiteLLM adapter, Groq adapter.
+- Depends on: `providers.model_provider`, `httpx`, `litellm`, `groq` (optional).
+- Used by: `core.local_llm`, `core.summarizer` (type only), `ingestion.visual_analyzer` (type only), `main.py` (cloud provider construction).
+
+**Persistence:**
+- Purpose: Durable source of truth and rebuildable vector index.
+- Location: `core/doc_store.py`, `data/documents.db`, `data/lancedb/`, `.cache/`
+- Contains: SQLite schema/migrations, LanceDB table `chunks`, JSON fallback mirror `data/lancedb/fallback_store.json`.
+- Depends on: Python `sqlite3`, LanceDB, filesystem.
+- Used by: all higher layers.
 
 ## Data Flow
 
+### Primary Request Path (Chat Q&A)
+
+1. Streamlit rerun enters the composition root and hydrates catalog/retriever if needed (`main.py:180`).
+2. Chat workspace is rendered (`main.py:443` → `ui/views.py:490`).
+3. User prompt is appended to history and contextualized for short follow-ups (`ui/views.py:701`, `core/query_intent.py:77`).
+4. Document scope is resolved from the focus selector or filename mention in the prompt (`ui/views.py:709`).
+5. Retrieval runs through `resolve_retrieval` (`ui/views.py:729` → `core/query_intent.py:227`):
+   - Ordinary query → `HybridRetriever.search_hybrid` (`retrieval/hybrid_retriever.py:959`).
+   - Exhaustive “list all …” query with one document → `fetch_document_chunks` + page-diverse budgeting (`retrieval/hybrid_retriever.py:641`, `core/query_intent.py:147`).
+   - Exhaustive query with no single document → `search_mode="intent_mismatch"` and generation is skipped (`ui/views.py:741`).
+6. `AiModel.ask_a_question_from_pdf_stream` assembles bounded messages (`core/local_llm.py:247` → `core/prompt_budget.py:75`), acquires `InferenceGate`, and streams provider tokens (`core/local_llm.py:329`).
+7. Provider streams from llama-server or the consented cloud adapter (`providers/llama_cpp_provider.py:231`, `providers/litellm_provider.py:241`).
+8. Tokens are rendered incrementally; missing citations are auto-attributed by lexical overlap (`ui/views.py:791` → `core/citation_validator.py:427`).
+9. Response is verified (`core/citation_validator.py:302`); injection echoes are withheld, ungrounded answers are annotated but not silently deleted (`ui/views.py:802`).
+10. Assistant turn stores content, verification, snippets, truncation metadata, and provider provenance in `st.session_state.chat_history` (`ui/views.py:881`).
+
 ### Ingestion Path
 
-1. Upload widget rotates its key and dispatches files (`ui/views.py:383`, `ui/views.py:391`).
-2. `process_uploaded_files` enforces the 50 MB UI cap, selects a local vision provider, and calls `IngestionService.ingest_pdf` (`ui/views.py:309`, `ui/views.py:317`).
-3. Validation checks `%PDF-`, size, page count, scanned-page ratio, and derives `doc_<sha16>` (`ingestion/upload_validation.py:120`).
-4. Deduplication queries SQLite by SHA-256; an indexed document with missing vectors is repaired from stored chunks before extraction (`ui/ingestion_service.py:98`, `ui/ingestion_service.py:114`).
-5. Docling extracts layout/reading order/tables; failures fall back to `PdfReader` (`ui/ingestion_service.py:147`, `ui/ingestion_service.py:157`).
-6. Low-text pages go through conditional OCR with per-page raster budgets and per-document page/time budgets (`ui/ingestion_service.py:178`, `ingestion/ocr_fallback.py:368`).
-7. PyMuPDF detects visual regions; up to six are cropped and described by the local VLM under `InferenceGate` (`ui/ingestion_service.py:202`, `ingestion/visual_analyzer.py:217`, `ingestion/visual_analyzer.py:290`).
-8. `DocStore.record_ingestion` atomically replaces the document, pages, chunks, and evidence in one SQLite transaction (`core/doc_store.py:352`).
-9. Chunks are embedded on CPU and written to LanceDB; the durable mirror is updated write-through (`ui/ingestion_service.py:285`, `retrieval/hybrid_retriever.py:452`, `retrieval/hybrid_retriever.py:584`).
-10. Visual evidence is indexed as additional chunks with `extraction="vlm"`; failed/placeholder descriptions are skipped (`ui/ingestion_service.py:295`, `retrieval/hybrid_retriever.py:588`).
-
-`IngestionService.cache_dir` is retained for constructor compatibility but ingestion writes no intermediate extraction artifacts to `.cache`. Legacy cache directories are still removed by lifecycle operations (`ui/lifecycle_service.py:68`, `ui/lifecycle_service.py:130`) and by the Settings action (`ui/views.py:1270`).
-
-### Chat / Retrieval Path
-
-1. `render_chat_view` appends the user turn and builds a contextualized search query (`ui/views.py:681`, `ui/views.py:686`).
-2. Document scope is chosen from the focus filter, filename auto-detection, or a single-document library (`ui/views.py:689`, `ui/views.py:703`).
-3. `resolve_retrieval` decides between whole-document extraction and normal hybrid retrieval (`core/query_intent.py:203`).
-4. `AiModel.ask_a_question_from_pdf_stream` assembles a bounded prompt and acquires the gate (`core/local_llm.py:247`, `core/local_llm.py:329`).
-5. Provider tokens stream to the UI placeholder (`ui/views.py:742`).
-6. Missing citations are auto-attributed by lexical overlap, then validated (`ui/views.py:750`, `core/citation_validator.py:418`, `core/citation_validator.py:293`).
-7. Injection or withheld-grounding outcomes change only the UI notice; the response is still stored with verification metadata (`ui/views.py:756`, `ui/views.py:826`).
-8. Citation chips and the evidence drawer render from the same `RetrievalResult` snippets used for generation (`ui/views.py:791`, `core/models.py:185`).
-
-### Whole-Document Extraction Path
-
-1. `is_whole_document_query` matches explicit inventory/enumeration phrasing only (`core/query_intent.py:90`).
-2. `resolve_retrieval` requires a single string `doc_id` and a retriever exposing `fetch_document_chunks` (`core/query_intent.py:222`).
-3. `HybridRetriever.fetch_document_chunks` reads all scoped rows, deduplicates by `chunk_id`, sorts by `(page, chunk_id)`, and falls back to the durable mirror when LanceDB returns nothing (`retrieval/hybrid_retriever.py:641`).
-4. `select_page_diverse_snippets` budgets one snippet per page first, then additional rounds, truncating oversized text and re-ranking from 1 (`core/query_intent.py:123`).
-5. The selected result is returned with `search_mode="document"` so prompt ranks and citation validation stay consistent (`core/query_intent.py:230`, `core/models.py:181`).
+1. Sidebar uploader captures PDFs (`ui/views.py:415` → `render_file_upload_button`, line 387).
+2. `process_uploaded_files` enforces the UI size cap and builds `IngestionService` with the session retriever/embedder (`ui/views.py:307`).
+3. `IngestionService.ingest_pdf` (`ui/ingestion_service.py:54`):
+   - `validate_pdf_bytes` checks `%PDF-`, 50 MB, 1–500 pages, computes SHA-256 and `doc_<sha16>` (`ingestion/upload_validation.py:120`).
+   - SHA-256 dedupe; if SQLite says indexed but LanceDB lacks vectors, re-embed from stored chunks and repair (`ui/ingestion_service.py:98`).
+   - Docling extraction on CPU with pypdf fallback (`ingestion/docling_reader.py:143`, `ui/ingestion_service.py:147`).
+   - Conditional RapidOCR for low-text pages (`ingestion/ocr_fallback.py:368`).
+   - Visual region detection and local-VLM descriptions, capped at 6 regions during ingestion (`ingestion/visual_analyzer.py:217`, `ui/ingestion_service.py:192`).
+   - Atomic SQLite write of document + pages + chunks + evidence (`core/doc_store.py:352`).
+   - Delete stale vectors for the `doc_id`, embed all chunks, upsert into LanceDB, verify retrievability, then index evidence (`ui/ingestion_service.py:272` → `retrieval/hybrid_retriever.py:452`).
+4. Session metadata is updated; `uploader_key` is rotated to avoid reprocessing (`ui/views.py:344`, `ui/views.py:410`).
 
 ### Summarization Path
 
-1. `Summarizer.summarize_document` validates the profile and checks the SQLite cache keyed by `sha256`, `profile`, and `model_name:CONFIG_VERSION` (`core/summarizer.py:487`, `core/summarizer.py:497`).
-2. Pages are reconstructed from chunks and enriched with visual/table evidence (`core/summarizer.py:503`, `core/summarizer.py:548`).
-3. Documents under 2,000 estimated tokens use single-pass; larger documents use token-bundled map-reduce (`core/summarizer.py:558`).
-4. The entire generation runs inside `InferenceGate.hold(timeout=120)` (`core/summarizer.py:559`).
-5. Page references are extracted and clamped, then the result is cached in SQLite (`core/summarizer.py:567`, `core/summarizer.py:587`).
+1. Summarizer view selects document and profile (`ui/views.py:923`).
+2. `Summarizer.summarize_document` validates the profile and checks the SQLite cache keyed by `sha256 + profile + model_version` (`core/summarizer.py:465`).
+3. Pages are reconstructed from chunks and enriched with visual evidence (`core/summarizer.py:503`, `:185`).
+4. `InferenceGate.hold(timeout=120)` wraps generation (`core/summarizer.py:559`).
+5. Documents ≤2,000 estimated tokens use a single pass; larger documents use sequential map-reduce with 2,000-token page bundles and bounded consolidation (`core/summarizer.py:411`).
+6. Page references are extracted and clamped to real pages; `SummaryResult` is persisted and mirrored into session cache (`core/summarizer.py:567`, `ui/views.py:994`).
 
-### Lifecycle Path
+### Startup Hydration Path
 
-1. Views require a retriever before mutating storage (`ui/views.py:128`).
-2. Delete removes vectors first, then SQLite, then legacy cache, then session keys (`ui/lifecycle_service.py:32`).
-3. Purge drops the LanceDB table, VACUUMs SQLite, removes the cache directory, and clears session state; any tier failure raises `RuntimeError` (`ui/lifecycle_service.py:102`).
-4. Re-index deletes stale vectors, re-embeds persisted chunks, re-indexes evidence, and verifies retrievability (`ui/lifecycle_service.py:160`).
+1. `main.py` builds a process-wide `DocStore` via `@st.cache_resource` (`main.py:129`).
+2. `hydrate_startup_state` lists documents, restores session catalog, creates a `HybridRetriever` if absent, and checks vector coverage per indexed document (`ui/hydration.py:34`).
+3. Only documents with missing vectors are re-embedded from SQLite chunks; failures are isolated per document (`ui/hydration.py:98`).
+4. `_startup_hydrated` is set only when retriever discovery/repair completes, so a hard failure retries on the next rerun (`ui/hydration.py:166`).
 
-### Startup / Hydration Path
+### Delete / Purge Path
 
-1. `main.py` installs logging before any UI work (`main.py:49`).
-2. `DocStore` is constructed once per process via `st.cache_resource` (`main.py:129`).
-3. `hydrate_startup_state` loads documents, adds indexed/failed IDs to session state, and constructs the retriever (`ui/hydration.py:34`).
-4. Only documents whose vectors are missing are re-embedded; progress is reported and per-document failures are isolated (`ui/hydration.py:98`, `ui/hydration.py:127`).
-5. `_startup_hydrated` is set only after retriever discovery/repair completes so failures can retry (`ui/hydration.py:166`).
+1. Library or sidebar action delegates to `_delete_document` / `_purge_all` (`ui/views.py:165`, `:238`).
+2. `LifecycleService.delete_document` deletes vectors first (aborts on failure), then SQLite rows, then the `cache_dir_for` directory, then session metadata (`ui/lifecycle_service.py:32`).
+3. `LifecycleService.purge_all` purges vectors, SQLite (including `VACUUM`), `.cache/`, and session state; any tier failure is collected and raised after session cleansing (`ui/lifecycle_service.py:102`).
 
 **State Management:**
-- Streamlit `session_state` owns UI-only state: documents, chat, summaries, cloud credentials, health snapshot, hydration flag.
-- SQLite owns durable document/page/chunk/evidence/summary records.
-- LanceDB owns vectors and FTS rows; `data/lancedb/fallback_store.json` mirrors them for recovery.
-- Process-level singletons: `InferenceGate` lock/counters, the shared SentenceTransformer cache (`retrieval/local_embedding.py:25`), telemetry caches, and the `DocStore` resource cache.
+- Persistent truth: SQLite `data/documents.db` (`core/doc_store.py`); LanceDB `data/lancedb/` is rebuildable from SQLite chunks.
+- Session truth: `st.session_state` holds `doc_ids`, `failed_doc_ids`, `indexed_files`, `document_metadata`, `chat_history`, `hybrid_retriever`, `local_embedding`, `ai_model`, cloud consent/keys, workspace, and summary cache keys.
+- Process truth: one `DocStore` per process (`st.cache_resource`), one SentenceTransformer per `(model, device)` (`retrieval/local_embedding.py:25`), one `InferenceGate` lock (`core/local_llm.py:34`), telemetry caches (`core/resource_telemetry.py:22`).
+- Cross-turn isolation: `AiModel` is session-scoped and `reset_turn_state()` clears prior retrieval/citation/truncation state (`core/local_llm.py:158`, `ui/session_state.py:16`).
 
 ## Key Abstractions
 
-**`InferenceGate` — 4 GB VRAM serialization contract:**
-- Location: `core/local_llm.py:26`
-- State: class-level `threading.RLock`, active-thread counter, state lock.
-- API: `acquire(timeout=60.0) -> bool`, `release()`, `is_locked()`, `hold(timeout=60.0)` context manager that raises `TimeoutError`.
-- Ownership rules: `release()` catches `RuntimeError` for a non-owning thread and logs instead of corrupting the counter (`core/local_llm.py:54`).
-- Call sites: streaming answers (`core/local_llm.py:329` with `try/finally`), non-streaming generation (`core/local_llm.py:367`), summarization (`core/summarizer.py:559`, timeout 120 s), per-visual-element VLM analysis (`ingestion/visual_analyzer.py:290`, timeout 60 s).
-- Contract: every LLM/VLM GPU call must hold the gate; CPU work (Docling, OCR, embeddings, SQLite, LanceDB) does not.
+**Canonical Pydantic models:**
+- Purpose: One validated schema per domain concept, shared by persistence, retrieval, prompts, and UI.
+- Examples: `core/models.py` (`Document`, `Page`, `Chunk`, `EvidenceElement`, `EvidenceSnippet`, `RetrievalResult`, `SummaryResult`, `BBox`).
+- Pattern: `extra="forbid"`, frozen for immutable evidence (`BBox`, `Chunk`, `EvidenceSnippet`, `RetrievalResult`), validators enforce `doc_` prefixes and SHA-256 shape.
 
-**`BaseModelProvider` — provider contract:**
-- Location: `providers/model_provider.py:64`
-- Methods: `generate_text`, `stream_text`, `analyze_image`, `check_health`, `get_capabilities`, `close`.
-- Implementations: `LlamaCppProvider` (`providers/llama_cpp_provider.py:56`), `LiteLLMProvider` (`providers/litellm_provider.py:104`), `GroqProvider` (`providers/groq_provider.py:18`).
-- Capabilities carry `context_window`, `supports_vision`, `is_local`, `supports_streaming`; prompt budgeting keys off `context_window`.
+**RetrievalResult / EvidenceSnippet:**
+- Purpose: Immutable evidence contract with rank, dense/FTS provenance, page, bbox, and character offsets.
+- Examples: produced by `HybridRetriever.search_hybrid` and `fetch_document_chunks`; consumed by `formatted_evidence()` in prompts and citation chips in `ui/components.py`.
+- Pattern: Adapter output normalized into a domain model so UI and prompt assembly cannot drift.
 
-**`RetrievalResult` / `EvidenceSnippet` — shared evidence contract:**
-- Location: `core/models.py:142`, `core/models.py:171`
-- Immutable, ranked from 1, includes page, chunk, extraction backend, optional bbox, dense/FTS ranks.
-- `formatted_evidence()` renders `[E#] (file, p. N)` blocks for prompts; `source_labels()` feeds UI chips.
+**BaseModelProvider:**
+- Purpose: Uniform contract for text generation, streaming, vision analysis, health, and capabilities.
+- Examples: `providers/llama_cpp_provider.py`, `providers/litellm_provider.py`, `providers/groq_provider.py`.
+- Pattern: Abstract base class + frozen capability/health value objects; provider selection remains in `AiModel._detect_provider` and `main.py`.
 
-**`HybridRetriever` — tiered retrieval and durable mirror:**
-- Location: `retrieval/hybrid_retriever.py:169`
-- Canonical URI: `<repo>/data/lancedb`; legacy `<package>/data/lancedb` is copied non-destructively on first default-URI use (`retrieval/hybrid_retriever.py:70`, `retrieval/hybrid_retriever.py:84`).
-- Mirror: `fallback_store.json` under the DB URI; lazy-loaded only when LanceDB is unavailable or a query falls through (`retrieval/hybrid_retriever.py:227`).
-- Write-through merge: `_mirror_upsert` merges by `chunk_id`, updating disk only while LanceDB is healthy; when the mirror is loaded it updates memory then persists (`retrieval/hybrid_retriever.py:312`).
-- Deletion: `_mirror_delete_document` removes all chunks for a doc so stale JSON cannot resurrect deleted documents (`retrieval/hybrid_retriever.py:349`).
-- Scoped search: `_doc_filter_clause` escapes quotes and pushes `doc_id IN (...)` into LanceDB before limits; both dense and BM25 fallbacks score the full scoped set before truncating (`retrieval/hybrid_retriever.py:60`, `retrieval/hybrid_retriever.py:735`, `retrieval/hybrid_retriever.py:830`).
-- Health: `fts_status()` returns `available`, `degraded`, `last_error`, and `mode` (`lancedb-fts` / `bm25-fallback` / `unknown`) at `retrieval/hybrid_retriever.py:799`. The current `render_settings_view` does not display it; it is exercised by `tests/test_hybrid_retriever.py:715` and intended for diagnostics.
+**AiModel facade:**
+- Purpose: Hide provider differences and centralize retrieval-context assembly, budgets, gating, and citation validation.
+- Examples: `core/local_llm.py:103`.
+- Pattern: Facade + strategy (provider), generator-based streaming, explicit per-turn state.
 
-**`query_intent` — retrieval intent and whole-document evidence:**
-- Location: `core/query_intent.py`
-- `contextualize_query` is the single follow-up rewriter used by both UI and `AiModel`.
-- `whole_document_char_budget` derives a character budget from the provider context window.
-- `resolve_retrieval` is the shared UI/`AiModel` entry point, preventing retrieval-policy drift.
+**InferenceGate:**
+- Purpose: Enforce the 4 GB VRAM envelope by allowing one GPU inference at a time across threads and Streamlit sessions.
+- Examples: `core/local_llm.py:26`; used by `AiModel`, `Summarizer`, and `VisualAnalyzer`.
+- Pattern: Class-level `threading.RLock` + context manager with timeout.
 
-**`DocStore` — durable source of truth:**
-- Location: `core/doc_store.py:139`
-- Per-operation connections, WAL, foreign keys, busy timeout, and bounded retry on SQLITE_BUSY/LOCKED (`core/doc_store.py:178`).
-- Migrations v1–v4 applied by `PRAGMA user_version` (`core/doc_store.py:131`, `core/doc_store.py:219`).
-- `record_ingestion` is the atomic write boundary for ingestion (`core/doc_store.py:352`).
+**IngestionService / LifecycleService:**
+- Purpose: Transaction scripts for multi-tier document operations.
+- Examples: `ui/ingestion_service.py:39`, `ui/lifecycle_service.py:17`.
+- Pattern: Constructor injection of store/retriever/embedder/cache; return typed result (`IngestionResult`) or boolean; never touch widgets.
 
-**`SummaryResult` cache key:**
-- Keyed by `sha256 + profile + model_version`, where `model_version = "<provider model_name>:<CONFIG_VERSION>"` (`core/summarizer.py:494`, `core/models.py:14`).
+**DocStore unit of work:**
+- Purpose: Atomic multi-table writes and schema evolution.
+- Examples: `core/doc_store.py:352` (`record_ingestion`), `:219` (`_apply_migrations`), `:178` (`_execute_write`).
+- Pattern: Per-operation connections, WAL, busy retry with jitter, one transaction per ingestion.
+
+**Cache path convention:**
+- Purpose: Stable per-content cache namespace.
+- Examples: `core/models.py:17` (`cache_dir_for(base, sha256) → base/<sha256>/<CONFIG_VERSION>`).
+- Pattern: Content-addressed path used by lifecycle cleanup; no ingestion module currently writes intermediate extraction files there.
 
 ## Entry Points
 
 **Streamlit application:**
 - Location: `main.py`
-- Triggers: `streamlit run main.py` or `start.py` subprocess.
-- Responsibilities: page config, theme, session defaults, `DocStore`/`AiModel` construction, hydration, cloud-provider sync, health probing, sidebar, workspace routing.
+- Triggers: `streamlit run main.py`, `python start.py`, or the Docker `CMD`.
+- Responsibilities: page config, theme injection, session defaults, logging, DocStore/model/hydration initialization, health throttling, cloud consent dialog, sidebar, workspace routing.
 
 **Unified launcher:**
-- Location: `start.py` (`main`, `start.py:273`)
-- Triggers: `python start.py --start-llama`, `rag-assistant`.
-- Responsibilities: Python version check, loopback bind refusal, directory creation, llama-server probe/spawn with GGUF identity verification, Streamlit subprocess, child cleanup.
+- Location: `start.py` (`main`, line 273)
+- Triggers: `python start.py [--start-llama]`
+- Responsibilities: Python version check, loopback bind enforcement, directory creation, llama-server probe/launch, GGUF identity verification, Streamlit subprocess.
 
-**Setup CLI:**
-- Location: `setup.py` (`main_cli`, `download_models_cli`, `setup_llama_server_cli`)
-- Triggers: `python setup.py`, `rag-setup`, `rag-download-models`, `rag-setup-llama`, setuptools commands `download_models` / `setup_llama_server`.
-- Responsibilities: dependency installation, checksum-pinned model and llama-server acquisition, safe archive extraction, editable install.
+**Setup/packaging CLI:**
+- Location: `setup.py`
+- Triggers: `python setup.py`, `download_models`, `install-llama`, `pip install -e .`
+- Responsibilities: dependency install, model/server download with checksum validation, package metadata.
 
-**Streamlit-cached resource:**
-- Location: `main.py:129` `get_doc_store`
-- Triggers: first script run per process.
-- Responsibilities: open/migrate SQLite once and surface startup failures with remediation.
+**Operational scripts:**
+- Location: `scripts/benchmark_baseline.py`, `scripts/benchmark_multimodal.py`, `scripts/profile_resources.py`, `scripts/generate_icons.py`
+- Triggers: manual invocation.
+- Responsibilities: latency/memory benchmarks, multimodal quality evaluation, resource profiling, icon regeneration.
+
+**Test entry point:**
+- Location: `tests/` (pytest, config in `pyproject.toml`)
+- Triggers: `pytest tests/ -v` (CI runs corpus generation first).
+- Responsibilities: offline unit/integration coverage with mocked providers and synthetic PDFs.
 
 ## Architectural Constraints
 
-- **VRAM serialization (`InferenceGate`):** All local LLM text generation, summarization, and VLM image analysis must run under the gate. The lock is process-wide, reentrant per thread, and times out rather than queuing indefinitely.
-- **Threading:** Streamlit runs the script per session/thread; OCR uses a bounded `ThreadPoolExecutor` (`ingestion/ocr_fallback.py:452`); telemetry uses sampling/cache locks (`core/resource_telemetry.py:26`). SQLite uses per-operation connections to avoid Windows file-lock issues (`core/doc_store.py:157`).
-- **Global state:** `InferenceGate` class variables (`core/local_llm.py:34`), shared SentenceTransformer `_MODEL_CACHE` (`retrieval/local_embedding.py:25`), `_LATENCY_HISTORY` (`core/resource_telemetry.py:21`), GPU/telemetry caches, and `st.cache_resource` `DocStore` (`main.py:129`).
-- **Single-user/no auth:** The UI has no authentication. `start.py` refuses non-loopback binds unless explicitly opted in (`start.py:59`); Docker maps only `127.0.0.1:8501` (`docker-compose.yml`).
-- **Local provider endpoint restriction:** `LlamaCppProvider` rejects non-loopback hosts unless `allow_remote=True` (`providers/llama_cpp_provider.py:98`).
-- **Cloud egress gate:** `AiModel` refuses cloud mode without a provider whose `user_consented` is true (`core/local_llm.py:131`); providers re-assert consent per call (`providers/litellm_provider.py:142`, `providers/groq_provider.py:62`).
-- **One-way persistence dependency:** SQLite is authoritative; LanceDB and the mirror are rebuildable from SQLite chunks (`ui/hydration.py:134`, `ui/lifecycle_service.py:169`).
-- **No ingestion extraction cache:** `IngestionService` does not write `.cache` artifacts; `.cache` remains only a legacy-cleaned/UI-cleared directory.
-- **Fallback mirror cost:** the mirror is one JSON file rewritten per ingestion transaction (O(N) I/O), a deliberate tradeoff for crash-safe recovery without duplicate in-RAM vectors.
-- **Streamlit detection points:** `st.session_state`, `st.cache_resource`, `st.status`, `st.rerun` are UI-only concerns and must not leak into `core/`, `ingestion/`, `retrieval/`, or `providers/`.
+- **Threading:** Streamlit executes the script on a single thread per rerun. OCR parallelizes page work with `ThreadPoolExecutor` (`ingestion/ocr_fallback.py`). GPU inference is serialized process-wide by `InferenceGate` (`core/local_llm.py:34`).
+- **Global state:** `InferenceGate._lock` (`core/local_llm.py:34`), `_MODEL_CACHE` (`retrieval/local_embedding.py:25`), `_LATENCY_HISTORY` + GPU cache (`core/resource_telemetry.py:22`), `_ICON_CACHE` (`ui/components.py:10`), process-wide `DocStore` via `@st.cache_resource` (`main.py:129`).
+- **Circular imports:** None at module import time. `ingestion/visual_analyzer.py:288` performs a function-local import of `core.local_llm.InferenceGate` to avoid an ingestion → domain → provider import cycle at startup.
+- **Windows file locking:** SQLite uses per-operation connections and closes them in `finally` (`core/doc_store.py:157`); no long-lived connection is shared across reruns.
+- **VRAM ceiling:** Docling pinned to CPU (`ingestion/docling_reader.py:183`), MiniLM pinned to CPU (`retrieval/local_embedding.py:56`), context window default 4,096 (`providers/llama_cpp_provider.py:67`), output reservation 1,536 (`core/prompt_budget.py:17`).
+- **Local-only inference:** `LlamaCppProvider` rejects non-loopback endpoints unless `allow_remote=True` (`providers/llama_cpp_provider.py:82`); cloud providers refuse generation without `user_consented` (`providers/litellm_provider.py:142`, `providers/groq_provider.py:62`); visual analysis refuses non-local providers (`ingestion/visual_analyzer.py:259`).
+- **No authentication:** the app is single-user; `start.py` refuses non-loopback binds unless explicitly overridden (`start.py:59`), and `.streamlit/config.toml` binds `127.0.0.1`.
+- **Persistence ordering:** vectors are deleted before SQLite rows; vector write failure marks the document `failed` and returns an error rather than claiming success (`ui/lifecycle_service.py:49`, `ui/ingestion_service.py:300`).
 
 ## Anti-Patterns
 
-### Direct unindexed PDF inference
+### Provider construction scattered across the composition root and domain
 
-**What happens:** Passing `pdf_path` to `AiModel.ask_a_question_from_pdf_stream` without an indexed retriever.
-**Why it's wrong:** It bypasses SQLite/LanceDB provenance and citation ranks; the method raises `ValueError` and emits a `DeprecationWarning` (`core/local_llm.py:273`).
-**Do this instead:** Index through `IngestionService` / `HybridRetriever.index_chunks`, then pass a `RetrievalResult` or an indexed retriever (`core/local_llm.py:270`).
+**What happens:** `main.py:221` constructs `LiteLLMProvider` directly, while `AiModel._detect_provider` hardcodes `LlamaCppProvider()` (`core/local_llm.py:223`). There is no provider factory or registry.
+**Why it's wrong:** Adding a provider or changing defaults requires edits in multiple layers; tests must monkeypatch concrete classes; configuration (base URL, context window) is split between `AiModel`, `main.py`, and environment variables.
+**Do this instead:** Add a `providers/factory.py` with `create_provider(config) -> BaseModelProvider`, call it from `main.py` and `AiModel`, and keep provider-specific defaults inside each adapter.
 
-### UI-driven database mutation
+### Presentation layer orchestrates multi-step domain workflows
 
-**What happens:** Deleting rows directly through `DocStore` from a view.
-**Why it's wrong:** Vectors, sessions, and legacy cache would diverge; a deleted document can be resurrected by hydration.
-**Do this instead:** Route all mutations through `LifecycleService` after `_lifecycle_preflight` (`ui/views.py:128`, `ui/lifecycle_service.py:32`).
+**What happens:** `ui/views.py` (1,332 lines) performs retrieval, scope detection, generation, auto-attribution, citation verification, history mutation, and evidence rendering in `render_chat_view` (`ui/views.py:695-897`).
+**Why it's wrong:** The chat workflow cannot be tested without Streamlit; logic is duplicated with `AiModel`’s internal retrieval branch (`core/local_llm.py:289-313`); changes to grounding behavior require editing a renderer.
+**Do this instead:** Extract a framework-free `ChatTurnService` (e.g. `ui/chat_service.py` or `core/chat.py`) that accepts a retriever, `AiModel`, prompt, and history and returns a typed turn result; let `render_chat_view` only render it.
 
-### Reporting indexing success before verification
+### Legacy retrieval facades and duck-typed retriever branches
 
-**What happens:** Treating a vector write as successful without checking retrievability.
-**Why it's wrong:** SQLite would mark a document indexed while LanceDB holds no rows.
-**Do this instead:** Verify `has_document()` after every ingestion/re-index and raise `VectorIndexError` on LanceDB write failure (`ui/ingestion_service.py:289`, `retrieval/hybrid_retriever.py:571`).
+**What happens:** `HybridRetriever.search()` and `.get_context()` are deprecated wrappers (`retrieval/hybrid_retriever.py:1074`, `:1084`); `LocalEmbedding.search_hybrid()` is deprecated (`retrieval/local_embedding.py:114`); `AiModel` still branches on `hasattr(... "get_context")`, `"search_hybrid"`, and `isinstance(..., HybridRetriever)` (`core/local_llm.py:289-313`).
+**Why it's wrong:** Three retrieval shapes produce subtly different evidence objects and ranking semantics; deprecated paths can silently bypass `RetrievalResult` provenance used by citation validation.
+**Do this instead:** Standardize on `search_hybrid(query, k, doc_id) -> RetrievalResult` and `fetch_document_chunks(doc_id) -> RetrievalResult`; delete the compatibility branches after updating callers, or isolate them behind a single adapter function.
 
-### Calling a provider outside the gate
+### Navigation source-of-truth drift
 
-**What happens:** Invoking `provider.generate_text`, `stream_text`, or `analyze_image` directly from a view or service.
-**Why it's wrong:** Concurrent GPU work can exceed the 4 GB VRAM envelope.
-**Do this instead:** Go through `AiModel` (which owns the gate) or wrap explicitly in `InferenceGate.hold(...)` as `Summarizer` and `VisualAnalyzer` do (`core/summarizer.py:559`, `ingestion/visual_analyzer.py:290`).
+**What happens:** The sidebar’s `WORKSPACES` list contains only `Chat` and `Document Library` (`main.py:383-386`), but the router handles four workspaces including `Summarizer` and `Settings` (`main.py:443-470`). The “Open Diagnostics” button sets `active_workspace = "Settings"` (`main.py:419`), which the radio then resets to `Chat` on the next rerun (`main.py:400-402`).
+**Why it's wrong:** Reachable UI state depends on which control ran last; workspaces can become unreachable or silently redirect, and tests can pass while navigation is broken.
+**Do this instead:** Define one `Workspace` enum/list used by both the radio and the router, and render navigation for every routable workspace (or remove unroutable entries).
 
-### Version-agnostic summary reuse
+### Framework leakage into infrastructure adapters
 
-**What happens:** Looking up summaries without the active model version.
-**Why it's wrong:** A summary produced by a different provider/config would render as current.
-**Do this instead:** Key session and SQLite lookups by `model_name:CONFIG_VERSION` (`ui/views.py:51`, `core/summarizer.py:494`).
+**What happens:** `providers/litellm_provider.py:59,76` and `providers/groq_provider.py:44` import `streamlit` to read `st.secrets`; `ui/hydration.py:7` imports `streamlit` and mutates `st.session_state`.
+**Why it's wrong:** Provider and hydration logic cannot run outside a Streamlit runtime (CLI benchmarks, batch jobs, tests), and credential lookup policy is duplicated inside adapters.
+**Do this instead:** Inject a `SecretProvider`/`SessionState` adapter from the composition root, or resolve keys in `main.py` and pass `api_key` into the provider constructor.
+
+### Concurrency primitive hidden inside the LLM facade
+
+**What happens:** `VisualAnalyzer.analyze_visual_elements` imports `InferenceGate` from `core.local_llm` inside the loop (`ingestion/visual_analyzer.py:288`), creating an ingestion → domain → provider dependency only when vision runs.
+**Why it's wrong:** The layering inversion is invisible at import time, makes the ingestion package depend on the LLM facade, and complicates testing/mocking of vision analysis.
+**Do this instead:** Move `InferenceGate` to a small `core/inference_gate.py` (or `core/concurrency.py`) and import it from `local_llm.py`, `summarizer.py`, and `visual_analyzer.py` alike.
+
+### Script-style composition root
+
+**What happens:** `main.py` executes initialization and rendering at module top level (page config, session loop, storage, hydration, provider sync, sidebar, routing) rather than inside a `main()` function.
+**Why it's wrong:** Importing `main.py` for tests triggers Streamlit side effects; startup failures must be handled inline; logic cannot be reused by a non-Streamlit entry point.
+**Do this instead:** Wrap orchestration in `def main()` and keep module-level code to imports/constants; extract startup checks into testable functions (`initialize_store()`, `initialize_model()`, `render_sidebar()`).
 
 ## Error Handling
 
-**Strategy:** Fail at the narrowest boundary, preserve the source of truth, and surface actionable UI errors instead of blank pages.
+**Strategy:** Fail closed at persistence and privacy boundaries; degrade gracefully for enrichment; always leave the UI with an actionable message rather than a blank page.
 
 **Patterns:**
-- Startup failures render remediation and `st.stop()` (`main.py:139`, `main.py:197`).
-- Extraction falls back Docling → pypdf; a document with zero chunks is recorded as `failed` (`ui/ingestion_service.py:154`, `ui/ingestion_service.py:213`).
-- OCR and visual-analysis failures are page/element-local and never abort text ingestion (`ui/ingestion_service.py:186`, `ingestion/visual_analyzer.py:295`).
-- SQLite writes retry only transient busy/locked errors (`core/doc_store.py:194`).
-- Vector deletion failures abort lifecycle operations before SQLite mutation (`ui/lifecycle_service.py:49`).
-- Purge collects per-tier failures and raises a combined `RuntimeError` while still cleansing session state (`ui/lifecycle_service.py:110`).
-- Provider health probes are caught and converted to `HealthStatus`/`ProviderCapabilities` fallbacks (`main.py:261`).
-- Streaming generation releases the gate in `finally`, including abandoned generators (`core/local_llm.py:341`).
-- Cloud errors scrub API keys before logging or re-raising (`providers/litellm_provider.py:135`).
+- Startup boundary: DocStore or model initialization failure renders remediation and calls `st.stop()` (`main.py:139-151`, `:197-207`).
+- Per-stage ingestion isolation: validation, extraction, OCR, visual analysis, SQLite, and vector indexing each have their own `try/except`; enrichment failures are logged and do not discard successfully extracted text (`ui/ingestion_service.py:80-210`).
+- Typed failures: `ValueError`/`TypeError` for invalid inputs, `VectorIndexError` for vector persistence (`retrieval/hybrid_retriever.py:75`), `TimeoutError` from `InferenceGate` (`core/local_llm.py:94`), `PermissionError` for unconsented cloud mode (`core/local_llm.py:134`).
+- Retry policy: SQLite write transactions retry `SQLITE_BUSY`/`SQLITE_LOCKED` up to 3 times with exponential backoff and jitter (`core/doc_store.py:28`, `:178`).
+- Best-effort cleanup: disk-cache deletion failures are warnings, not blockers (`ui/lifecycle_service.py:67`); purge collects tier failures and raises after session cleansing (`ui/lifecycle_service.py:156`).
+- Provider health: throttled to one probe per 5 seconds per session; probe failure produces an offline `HealthStatus` instead of an exception (`main.py:249-283`).
+- Answer grounding: injection echoes are blocked; missing/invalid citations produce a visible warning but the draft remains readable (`ui/views.py:806-828`, `core/citation_validator.py:221`).
 
 ## Cross-Cutting Concerns
 
-**Logging:** `logging.getLogger(__name__)` per module; `configure_logging` installs one idempotent root configuration with rotating `data/logs/app.log` (`core/logging_setup.py:57`). `RAG_LOG_LEVEL` controls level. CLI launchers use `print()` for operator output.
+**Logging:** `configure_logging` installs one idempotent configuration with stderr plus rotating file `data/logs/app.log` (`core/logging_setup.py:57`); level via `RAG_LOG_LEVEL`; every module uses `logging.getLogger(__name__)`. A filter suppresses the benign Streamlit `torch.classes` watcher traceback (`core/logging_setup.py:146`).
 
-**Validation:** Pydantic v2 `extra="forbid"` models at all boundaries (`core/models.py`); `%PDF-` magic bytes and size/page caps before extraction (`ingestion/upload_validation.py:120`); GGUF metadata verification before launching llama-server (`core/model_identity.py:124`, `start.py:184`).
+**Validation:** Pydantic `extra="forbid"` and custom validators (`core/models.py`); PDF magic-byte/size/page validation (`ingestion/upload_validation.py:120`); LanceDB SQL literal escaping (`retrieval/hybrid_retriever.py:55`); GGUF metadata identity verification (`core/model_identity.py:85`); untrusted document text isolated in `<document_context>` with tag escaping (`core/prompt_budget.py:44`).
 
-**Authentication:** None. The application is single-user and loopback-bound; cloud credentials live in session state/environment and are scrubbed on clear (`ui/views.py:244`).
+**Authentication/Authorization:** Not applicable — no user accounts or sessions beyond Streamlit’s browser session. Cloud egress is gated by explicit consent plus provider-level `user_consented` checks; API keys live in session state or environment variables.
 
-**Privacy / egress control:** Local-only provider endpoint validation (`providers/llama_cpp_provider.py:98`), consent assertions (`providers/litellm_provider.py:142`), markdown/HTML sanitization (`ui/sanitizer.py:130`), and no external assets (`assets/icons/*.svg`).
+**Telemetry:** GPU VRAM via `nvidia-smi` with 5-second TTL, process RSS/VMS via psutil, and stage latency tracking (`core/resource_telemetry.py`); surfaced in Settings (`ui/views.py:1284`) and the sidebar (`main.py:406`).
 
-**Observability:** GPU VRAM via cached `nvidia-smi`, process RSS via psutil, latency history and snapshots (`core/resource_telemetry.py:33`, `core/resource_telemetry.py:287`).
-
-**Resource bounds:** 50 MB / 500 pages per upload (`ingestion/upload_validation.py:18`), OCR per-document page/time budgets (`ingestion/ocr_fallback.py:32`), raster pixel/byte budgets (`ingestion/ocr_fallback.py:24`, `ingestion/visual_analyzer.py:20`), max six visual regions during ingestion (`ui/ingestion_service.py:206`).
+**Output sanitization:** `sanitize_markdown_for_local` strips scripts/iframes/objects/embeds/styles, neutralizes event handlers, and blocks external Markdown/HTML destinations unless cloud mode is consented (`ui/sanitizer.py:130`, used at `ui/views.py:619`, `:1032`).
 
 ---
 
-*Architecture analysis: 2026-10-22*
+*Architecture analysis: 2026-10-26*
