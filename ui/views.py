@@ -505,7 +505,7 @@ def render_chat_view(
     def _doc_label(key: str) -> str:
         if key == "all":
             return "All Documents"
-        meta = st.session_state.get("document_metadata", {}).get(key, {})
+        meta = doc_metadata.get(key, {})
         return f"{meta.get('filename', key)} (p. {meta.get('pages', 1)})"
 
     current_filter_idx = 0
@@ -656,9 +656,7 @@ def render_chat_view(
                             is_cited = s.get("rank") in cited_ranks
                             is_auto = s.get("rank") in auto_ranks
                             citation_note = (
-                                " — *(auto-attributed)*"
-                                if is_auto
-                                else (" — *(cited)*" if is_cited else "")
+                                " — *(auto-attributed)*" if is_auto else (" — *(cited)*" if is_cited else "")
                             )
                             header = (
                                 f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
@@ -811,9 +809,7 @@ def render_chat_view(
                             is_cited = s.get("rank") in cited_ranks
                             is_auto = s.get("rank") in auto_ranks
                             citation_note = (
-                                " — *(auto-attributed)*"
-                                if is_auto
-                                else (" — *(cited)*" if is_cited else "")
+                                " — *(auto-attributed)*" if is_auto else (" — *(cited)*" if is_cited else "")
                             )
                             header = (
                                 f"**[E{s['rank']}]** `{s.get('filename', 'doc')}` *(p. {s.get('page', 1)}, score: {s.get('score', 0.0):.3f})*"
@@ -859,14 +855,21 @@ def render_summarizer_view(
         render_empty_state("No documents available", "Upload a PDF in the sidebar to generate structured summaries.")
         return
 
-    doc_options = list(st.session_state.document_metadata.keys())
+    doc_meta_dict = st.session_state.get("document_metadata", {})
+    doc_options = list(doc_meta_dict.keys())
+
+    def _summary_doc_label(k: str) -> str:
+        fn = doc_meta_dict.get(k, {}).get("filename", k)
+        return f"{fn} ({k})"
+
     selected_doc_id = st.selectbox(
         "Select Document",
         options=doc_options,
-        format_func=lambda k: f"{st.session_state.document_metadata[k].get('filename', k)} ({k})",
+        format_func=_summary_doc_label,
         index=0
         if "selected_summary_doc" not in st.session_state or st.session_state.selected_summary_doc not in doc_options
         else doc_options.index(st.session_state.selected_summary_doc),
+        key="summary_select_doc",
     )
     file_meta = st.session_state.document_metadata.get(selected_doc_id, {})
     selected_sha = file_meta.get("sha256", "")
