@@ -27,13 +27,14 @@ from core.local_llm import AiModel
 from core.logging_setup import configure_logging, suppress_torch_classes_scan_warning
 from core.redaction import redact_text
 from providers.model_provider import HealthStatus, ProviderCapabilities
-from ui.components import render_brand_header, render_status_pill
+from ui.components import render_brand_header
 from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from ui.hydration import hydrate_startup_state
 from ui.session_state import reset_in_memory_session
 from ui.theme import inject_custom_theme
 from ui.views import (
     render_chat_view,
+    render_cloud_api_tab,
     render_library_view,
     render_settings_view,
     render_sidebar_documents,
@@ -401,22 +402,27 @@ with st.sidebar:
         st.session_state.active_workspace = "Chat"
         st.rerun()
 
-    # Engine Status Pill (rendered via st.sidebar.html)
+    # One clean indication for server being online or offline
     if is_healthy:
-        if caps.is_local:
-            status_html = render_status_pill(f"Local: {caps.model_name}", variant="local")
-        else:
-            status_html = render_status_pill(f"Cloud: {caps.model_name}", variant="cloud")
+        dot_color = "#10B981"
+        status_text = (
+            f"Server Online · {caps.model_name}" if caps.is_local else f"Server Online (Cloud) · {caps.model_name}"
+        )
     elif health.status == "loading":
-        status_html = render_status_pill(f"Loading: {caps.model_name}", variant="warning")
+        dot_color = "#FBBF24"
+        status_text = f"Server Loading · {caps.model_name}"
     else:
-        status_html = render_status_pill("Inference Offline", variant="error")
+        dot_color = "#EF4444"
+        status_text = "Server Offline"
 
     status_block = (
-        f'<div style="margin-top: 0.35rem; margin-bottom: 0.75rem;">'
-        f'<div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; '
-        f'color: #A1A1AA; margin-bottom: 0.35rem; font-weight: 700;">Engine Status</div>'
-        f"{status_html}</div>"
+        f'<div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; '
+        f"background-color: #18181D; border: 1px solid #29292F; border-radius: 9999px; "
+        f'font-size: 0.78rem; font-weight: 500; color: #F4F4F5; margin-top: 0.35rem; margin-bottom: 0.75rem;">'
+        f'<span style="width: 8px; height: 8px; border-radius: 50%; background-color: {dot_color}; '
+        f'box-shadow: 0 0 6px {dot_color}; display: inline-block;"></span>'
+        f'<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{status_text}</span>'
+        f"</div>"
     )
     if hasattr(st.sidebar, "html"):
         st.sidebar.html(status_block)
@@ -492,6 +498,31 @@ with st.sidebar:
             st.session_state.active_workspace = "Diagnostics"
             st.rerun()
 
+    # Small error logging in the bottom left
+    log_file = LOG_DIR / "app.log"
+    recent_errors = []
+    if log_file.exists():
+        try:
+            with open(log_file, encoding="utf-8", errors="replace") as lf:
+                for line in lf.readlines()[-60:]:
+                    if " ERROR " in line or " CRITICAL " in line:
+                        recent_errors.append(line.strip())
+        except Exception:
+            pass
+
+    st.sidebar.markdown(
+        "<div style='font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; "
+        "color: #71717A; font-weight: 700; margin-top: 1rem; margin-bottom: 0.25rem;'>"
+        "Error Logging</div>",
+        unsafe_allow_html=True,
+    )
+    if recent_errors:
+        with st.sidebar.expander(f"Recent Errors ({len(recent_errors)})", expanded=False):
+            for err in recent_errors[-3:]:
+                st.code(err, language="text")
+    else:
+        st.sidebar.caption("System Log: No errors recorded")
+
     footer_html = (
         "<div style='font-size: 0.72rem; color: #A1A1AA; margin-top: 0.75rem; text-align: center; line-height: 1.4;'>"
         "100% Offline Local Pipeline<br>Qwen2-VL · LanceDB · MiniLM</div>"
@@ -509,13 +540,23 @@ with st.sidebar:
 active_page = normalize_workspace(st.session_state.active_workspace)
 
 if active_page == "Chat":
-    render_chat_view(
-        ai_model=ai_model,
-        health=health,
-        caps=caps,
-        doc_store=doc_store,
-        cache_dir=CACHE_DIR,
-    )
+    tab_chat, tab_lib, tab_cloud = st.tabs(["💬 Chat", "📚 Library", "☁️ Enable Cloud API"])
+    with tab_chat:
+        render_chat_view(
+            ai_model=ai_model,
+            health=health,
+            caps=caps,
+            doc_store=doc_store,
+            cache_dir=CACHE_DIR,
+        )
+    with tab_lib:
+        render_library_view(
+            doc_store=doc_store,
+            hybrid_retriever=st.session_state.hybrid_retriever,
+            cache_dir=CACHE_DIR,
+        )
+    with tab_cloud:
+        render_cloud_api_tab(ai_model=ai_model)
 elif active_page == "Summarizer":
     render_summarizer_view(
         doc_store=doc_store,

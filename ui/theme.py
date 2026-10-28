@@ -126,22 +126,81 @@ small, .text-muted {{
     padding: 0 !important;
 }}
 
-/* Pinned Chat Input at bottom */
+/* Pinned Chat Input at bottom - Modern Pill Container */
 [data-testid="stChatInput"] {{
-    background-color: {COLOR_SURFACE} !important;
-    border: 1px solid {COLOR_BORDER} !important;
-    border-radius: 14px !important;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4) !important;
-    transition: border-color 150ms ease;
+    background-color: #141417 !important;
+    border: 1px solid #27272A !important;
+    border-radius: 26px !important;
+    padding: 0.35rem 0.65rem !important;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5) !important;
+    transition: all 180ms ease !important;
 }}
 
 [data-testid="stChatInput"]:focus-within {{
-    border-color: {COLOR_PRIMARY} !important;
+    border-color: #3F3F46 !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 0 0 1px #52525B !important;
 }}
 
 [data-testid="stChatInput"] textarea {{
     color: {COLOR_TEXT_PRIMARY} !important;
     font-size: 0.95rem !important;
+    background: transparent !important;
+}}
+
+[data-testid="stChatInput"] button {{
+    background-color: #27272A !important;
+    border-radius: 50% !important;
+    color: #F4F4F5 !important;
+    width: 32px !important;
+    height: 32px !important;
+    border: none !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: background-color 150ms ease !important;
+}}
+
+[data-testid="stChatInput"] button:hover {{
+    background-color: #3F3F46 !important;
+}}
+
+/* Modern Pill Navigation Tabs */
+[data-testid="stTabs"] {{
+    margin-bottom: 1.25rem !important;
+}}
+
+[data-testid="stTabs"] [data-baseweb="tab-list"] {{
+    background-color: transparent !important;
+    gap: 0.5rem !important;
+    border-bottom: 1px solid #27272A !important;
+    padding-bottom: 0.4rem !important;
+}}
+
+[data-testid="stTabs"] [data-baseweb="tab"] {{
+    background-color: #18181D !important;
+    border: 1px solid #29292F !important;
+    border-radius: 20px !important;
+    padding: 0.4rem 1.1rem !important;
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
+    color: #A1A1AA !important;
+    transition: all 140ms ease !important;
+}}
+
+[data-testid="stTabs"] [data-baseweb="tab"]:hover {{
+    background-color: #27272A !important;
+    color: #F4F4F5 !important;
+}}
+
+[data-testid="stTabs"] [aria-selected="true"] {{
+    background-color: #27272A !important;
+    border-color: #52525B !important;
+    color: #FFFFFF !important;
+    font-weight: 600 !important;
+}}
+
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] {{
+    display: none !important;
 }}
 
 /* ChatGPT Style Citation Pills */

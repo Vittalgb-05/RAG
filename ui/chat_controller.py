@@ -73,7 +73,7 @@ class ChatTurnResult:
 class ChatTurnService:
     """Resolve chat scope and finalize grounded answers without UI dependencies."""
 
-    def __init__(self, validator: CitationValidator, *, k: int = 8) -> None:
+    def __init__(self, validator: CitationValidator, *, k: int = 10) -> None:
         self._validator = validator
         self._k = k
 

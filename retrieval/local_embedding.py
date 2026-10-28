@@ -21,6 +21,13 @@ from retrieval.vector_index import VectorIndex
 
 logger = logging.getLogger(__name__)
 
+# all-MiniLM-L6-v2 was trained with sequences up to 256 word-pieces (see model card).
+# Encoding longer sequences silently truncates them, producing embeddings that do not
+# represent the tail of a chunk.  We pin this limit here so every encode call —
+# both at indexing time and at query time — uses the same truncation boundary.
+# If the embedding model is changed to one with a higher limit, update this constant.
+EMBEDDING_MAX_LENGTH: int = 256
+
 # Process-level model cache to avoid duplicate SentenceTransformer instances across sessions (P1 audit)
 _MODEL_CACHE: dict[tuple[str, str], SentenceTransformer] = {}
 
@@ -82,9 +89,21 @@ class LocalEmbedding:
     def get_embeddings(self, texts: list[str]):
         """
         Embed a batch of strings locally and return them L2-normalised.
+
+        ``max_length=EMBEDDING_MAX_LENGTH`` mirrors the model's training
+        constraint (256 word-pieces for all-MiniLM-L6-v2) so that the
+        document embeddings stored in LanceDB and the query embedding at
+        retrieval time are produced with the same truncation boundary.
+        Without an explicit cap the tokenizer's model_max_length (often 512)
+        is used, which can cause silent boundary mismatches across sessions.
         """
-        # normalize_embeddings=True applies L2 normalization for cosine similarity
-        return self.model.encode(texts, normalize_embeddings=True)
+        return self.model.encode(
+            texts,
+            normalize_embeddings=True,
+            batch_size=32,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        )
 
     def build_index(self, chunks: list) -> None:
         """

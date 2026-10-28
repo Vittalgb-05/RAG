@@ -12,8 +12,24 @@ from ui.views import verification_caption
 
 
 @pytest.fixture
-def base_app():
+def base_app(monkeypatch):
     """Create an AppTest instance for main.py with mocked llama health/capabilities."""
+    from providers.model_provider import HealthStatus, ProviderCapabilities
+
+    monkeypatch.setattr(
+        "core.local_llm.AiModel.check_health",
+        lambda self: HealthStatus(status="healthy", message="All systems operational"),
+    )
+    monkeypatch.setattr(
+        "core.local_llm.AiModel.get_capabilities",
+        lambda self: ProviderCapabilities(
+            model_name="Qwen2-VL-7B-Instruct",
+            context_window=4096,
+            supports_vision=True,
+            is_local=True,
+            supports_streaming=True,
+        ),
+    )
     at = AppTest.from_file("main.py", default_timeout=45)
     return at
 

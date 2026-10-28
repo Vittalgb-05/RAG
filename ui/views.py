@@ -1223,3 +1223,115 @@ def render_settings_view(
                 except Exception as e:
                     st.error(f"Error clearing cache: {redact_text(str(e))}")
             st.rerun()
+
+
+# =====================================================================
+# 6. DEDICATED CLOUD API TAB
+# =====================================================================
+
+
+def render_cloud_api_tab(ai_model: AiModel) -> None:
+    """Render a dedicated, simplistic Cloud API tab where the user can enable cloud and enter API keys."""
+    st.markdown("### Cloud API Configuration")
+    st.caption(
+        "Optionally route queries through cloud LLMs (Groq, OpenAI, Anthropic). Your documents and embeddings stay 100% on-device."
+    )
+
+    # Synchronize widget toggle state with actual consented cloud_mode
+    if (
+        not st.session_state.cloud_mode
+        and not st.session_state.get("_show_consent_dialog", False)
+        and st.session_state.get("tab_cloud_toggle", False)
+    ):
+        st.session_state.tab_cloud_toggle = False
+
+    col_toggle, col_status = st.columns([2, 1])
+    with col_toggle:
+        cloud_active = st.toggle(
+            "Enable Cloud API",
+            value=st.session_state.cloud_mode,
+            key="tab_cloud_toggle",
+            help="When enabled, user questions and retrieved text excerpts are sent to external cloud APIs for inference.",
+        )
+        if cloud_active != st.session_state.cloud_mode:
+            if cloud_active and not st.session_state.user_consented:
+                st.session_state._show_consent_dialog = True
+            else:
+                st.session_state.cloud_mode = cloud_active
+                st.session_state.cloud_mode_toggle = cloud_active
+                st.session_state.settings_cloud_toggle = cloud_active
+                if not cloud_active:
+                    st.session_state.user_consented = False
+                clear_summary_session_cache()
+            st.rerun()
+
+    with col_status:
+        if st.session_state.cloud_mode and st.session_state.user_consented:
+            status_badge = render_status_pill("Cloud Active", variant="cloud")
+        else:
+            status_badge = render_status_pill("100% Local", variant="local")
+        if hasattr(st, "html"):
+            st.html(status_badge)
+        else:
+            st.markdown(status_badge, unsafe_allow_html=True)
+
+    if st.session_state.cloud_mode and st.session_state.user_consented:
+        st.markdown(
+            '<div style="background:#18181D; border-left:3px solid #A78BFA; border-radius:6px; padding:10px 14px; margin-bottom:1rem;">'
+            '<div style="font-weight:600; font-size:0.85rem; color:#A78BFA;">Cloud Egress Permitted</div>'
+            '<div style="font-size:0.78rem; color:#A1A1AA; margin-top:2px;">'
+            "User prompts and retrieved excerpts are transmitted to your selected cloud API. "
+            "PDF files and embeddings remain local on disk.</div></div>",
+            unsafe_allow_html=True,
+        )
+
+        PROVIDER_CONFIG = {
+            "groq": ("Groq (Llama 3.3 70B)", "groq/llama-3.3-70b-versatile", "GROQ_API_KEY"),
+            "openai": ("OpenAI (GPT-4o mini)", "openai/gpt-4o-mini", "OPENAI_API_KEY"),
+            "anthropic": ("Anthropic (Claude 3.5 Haiku)", "anthropic/claude-3-5-haiku-20241022", "ANTHROPIC_API_KEY"),
+        }
+
+        selected_prov = st.selectbox(
+            "Select Cloud Provider",
+            options=list(PROVIDER_CONFIG.keys()),
+            format_func=lambda k: PROVIDER_CONFIG[k][0],
+            index=list(PROVIDER_CONFIG.keys()).index(st.session_state.cloud_provider)
+            if st.session_state.cloud_provider in PROVIDER_CONFIG
+            else 0,
+            key="cloud_api_tab_prov_select",
+        )
+
+        if selected_prov != st.session_state.cloud_provider:
+            st.session_state.cloud_provider = selected_prov
+            st.session_state.cloud_model = PROVIDER_CONFIG[selected_prov][1]
+            clear_summary_session_cache()
+            st.rerun()
+
+        # API Key input field
+        current_api_key = st.session_state.cloud_api_keys.get(selected_prov, "")
+        env_var_name = PROVIDER_CONFIG[selected_prov][2]
+        api_key_input = st.text_input(
+            f"API Key for {PROVIDER_CONFIG[selected_prov][0]}",
+            value=current_api_key,
+            type="password",
+            placeholder=f"Enter {env_var_name} (stored in browser session memory only)",
+            key=f"cloud_tab_key_{selected_prov}",
+        )
+        if api_key_input != current_api_key:
+            st.session_state.cloud_api_keys[selected_prov] = api_key_input
+            st.rerun()
+
+        col_save, col_revoke = st.columns(2)
+        with col_save:
+            if st.button("Save & Test Connection", type="primary", use_container_width=True, key="cloud_tab_save_btn"):
+                st.toast(f"{PROVIDER_CONFIG[selected_prov][0]} key saved for this session!")
+        with col_revoke:
+            if st.button("Revoke Cloud (Return to Local)", use_container_width=True, key="cloud_tab_revoke_btn"):
+                st.session_state.cloud_mode = False
+                st.session_state.cloud_mode_toggle = False
+                st.session_state.settings_cloud_toggle = False
+                st.session_state.user_consented = False
+                clear_summary_session_cache()
+                st.rerun()
+    else:
+        st.info("Toggle 'Enable Cloud API' above to configure external providers and input API keys.")
