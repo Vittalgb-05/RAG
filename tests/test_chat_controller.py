@@ -84,7 +84,7 @@ def test_prepare_prefers_explicit_document_filter_over_prompt_mention() -> None:
 
     assert prepared.doc_filter == "doc_beta"
     assert prepared.retrieval_scope == "doc_beta"
-    assert retriever.calls == [{"query": "Compare this with alpha.pdf", "k": 8, "doc_id": "doc_beta"}]
+    assert retriever.calls == [{"query": "Compare this with alpha.pdf", "k": 10, "doc_id": "doc_beta"}]
 
 
 def test_prepare_infers_single_document_scope_without_changing_doc_filter() -> None:
