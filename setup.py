@@ -133,19 +133,92 @@ def ensure_project_directories() -> None:
 
 def _safe_destination(dest_dir: Path, member_name: str) -> Path:
     """Resolve an archive member path, rejecting traversal outside dest_dir."""
-    target = (dest_dir / member_name).resolve()
     root = dest_dir.resolve()
-    if target != root and root not in target.parents:
+    # Normalize lexically: resolve() would follow pre-existing symlinks from a
+    # previous extraction and redirect writes to their targets.
+    target = Path(os.path.normpath(root / member_name))
+    if target == root:
+        return target
+    if root not in target.parents:
         raise ValueError(f"Archive member escapes destination: {member_name!r}")
+    for parent in target.parents:
+        if parent == root:
+            break
+        if parent.is_symlink():
+            raise ValueError(f"Archive member would traverse a symlink: {member_name!r}")
     return target
 
 
-def safe_extract_archive(archive_path: Path, dest_dir: Path) -> None:
+def _archive_root_prefix(names: list[str]) -> str | None:
+    """Return the single directory enclosing every archive member, if there is one."""
+    roots: set[str] = set()
+    has_nested_member = False
+    for name in names:
+        parts = Path(name).parts
+        if not parts:
+            continue
+        if parts[0] in {"/", ".."}:
+            return None
+        roots.add(parts[0])
+        has_nested_member = has_nested_member or len(parts) > 1
+    return roots.pop() if has_nested_member and len(roots) == 1 else None
+
+
+def _stripped_member_name(name: str, prefix: str | None) -> str:
+    """Drop the shared archive root from a member name when flattening."""
+    if prefix is None:
+        return name
+    parts = Path(name).parts
+    return str(Path(*parts[1:])) if len(parts) > 1 and parts[0] == prefix else ""
+
+
+def _contained_link_target(link_path: Path, link_name: str, dest_dir: Path) -> Path | None:
+    """Resolve a relative link target, returning None when it escapes *dest_dir*."""
+    candidate = Path(os.path.normpath(link_path.parent / link_name))
+    root = dest_dir.resolve()
+    if candidate != root and root not in candidate.parents:
+        return None
+    # Follow any pre-existing chain only to prove it stays inside the destination.
+    resolved = candidate.resolve()
+    if resolved != root and root not in resolved.parents:
+        return None
+    return candidate
+
+
+def _create_archive_links(pending_links: list[tuple[Path, Path, bool]]) -> None:
+    """Recreate validated symlinks/hardlinks, retrying chained links until stable."""
+    remaining = list(pending_links)
+    while remaining:
+        deferred: list[tuple[Path, Path, bool]] = []
+        progress = False
+        for link_path, link_target, is_hardlink in remaining:
+            if not link_target.exists():
+                deferred.append((link_path, link_target, is_hardlink))
+                continue
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            if link_path.is_symlink() or link_path.is_file():
+                link_path.unlink()
+            with contextlib.suppress(OSError):
+                if is_hardlink:
+                    os.link(link_target, link_path)
+                else:
+                    os.symlink(os.path.relpath(link_target, link_path.parent), link_path)
+            progress = True
+        if not progress:
+            for link_path, link_target, _ in deferred:
+                print(f"  ⚠️ Skipping archive link with missing target: {link_path.name} -> {link_target.name}")
+            return
+        remaining = deferred
+
+
+def safe_extract_archive(archive_path: Path, dest_dir: Path, *, strip_root: bool = False) -> None:
     """Extract a zip/tar archive without allowing path traversal or symlink escapes.
 
     Args:
         archive_path: Path to a ``.zip``, ``.tar.gz``, or ``.tgz`` archive.
         dest_dir: Destination directory.
+        strip_root: If True, drop a single enclosing directory shared by every member
+            (e.g. ``llama-b11960/``) so the archive contents land directly in *dest_dir*.
 
     Raises:
         ValueError: If any member would be written outside *dest_dir*.
@@ -159,13 +232,41 @@ def safe_extract_archive(archive_path: Path, dest_dir: Path) -> None:
         return
 
     with tarfile.open(archive_path, "r:*") as tf:
-        for member in tf.getmembers():
-            if member.issym() or member.islnk():
-                # Links could point outside the extraction root; skip them.
+        members = tf.getmembers()
+        prefix = _archive_root_prefix([m.name for m in members]) if strip_root else None
+        pending_links: list[tuple[Path, Path, bool]] = []
+        for member in members:
+            name = _stripped_member_name(member.name, prefix)
+            if not name:
                 continue
-            if member.isfile() or member.isdir():
-                _safe_destination(dest_dir, member.name)
-        tf.extractall(dest_dir, members=[m for m in tf.getmembers() if not (m.issym() or m.islnk())])
+            target = _safe_destination(dest_dir, name)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = tf.extractfile(member)
+                if source is None:
+                    continue
+                with source, open(target, "wb") as sink:
+                    shutil.copyfileobj(source, sink)
+                with contextlib.suppress(OSError):
+                    os.chmod(target, member.mode & 0o777)
+            elif member.islnk():
+                # Hardlink names are relative to the archive root.
+                link_name = _stripped_member_name(member.linkname, prefix)
+                if not link_name:
+                    print(f"  ⚠️ Skipping unsafe archive link: {member.name} -> {member.linkname}")
+                    continue
+                link_source = _safe_destination(dest_dir, link_name)
+                pending_links.append((target, link_source, True))
+            elif member.issym():
+                # Symlink names are relative to the symlink's own directory.
+                link_source = _contained_link_target(target, member.linkname, dest_dir)
+                if link_source is None:
+                    print(f"  ⚠️ Skipping unsafe archive link: {member.name} -> {member.linkname}")
+                    continue
+                pending_links.append((target, link_source, False))
+        _create_archive_links(pending_links)
 
 
 def validate_gguf_file(path: Path) -> bool:
@@ -444,6 +545,7 @@ def download_and_extract_archive(
     min_size_bytes: int = 1_000_000,
     force: bool = False,
     expected_sha256: str | None = None,
+    strip_root: bool = False,
 ) -> bool:
     """Download an archive and extract its contents into dest_dir.
 
@@ -454,6 +556,7 @@ def download_and_extract_archive(
         min_size_bytes: Minimum expected archive size.
         force: If True, re-download archive.
         expected_sha256: Optional pinned SHA-256 digest for the archive.
+        strip_root: If True, drop a single enclosing directory shared by every member.
 
     Returns:
         True if successfully downloaded and extracted.
@@ -474,7 +577,7 @@ def download_and_extract_archive(
     print(f"  📦 Extracting {archive_name} to {dest_dir.name}...")
     try:
         if archive_name.endswith((".zip", ".tar.gz", ".tgz")):
-            safe_extract_archive(temp_archive, dest_dir)
+            safe_extract_archive(temp_archive, dest_dir, strip_root=strip_root)
         else:
             print(f"  ⚠️ Unsupported archive format: {archive_name}")
             return False
@@ -598,14 +701,19 @@ def setup_llama_server(
             if has_gpu
             else f"llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz"
         )
-        download_and_extract_archive(
+        extract_ok = download_and_extract_archive(
             urls=urls,
             dest_dir=dest_dir,
             archive_name=f"llama-{LLAMA_SERVER_RELEASE}-linux.tar.gz",
             min_size_bytes=10_000_000,
             force=force,
             expected_sha256=LLAMA_ARCHIVE_SHA256.get(linux_archive),
+            strip_root=True,
         )
+        if not extract_ok:
+            print(f"  ❌ Failed to download or extract {linux_archive}.")
+        elif not exe_path.exists():
+            print(f"  ❌ {exe_path.name} was not found after extracting {linux_archive}.")
         if exe_path.exists():
             with contextlib.suppress(Exception):
                 exe_path.chmod(exe_path.stat().st_mode | 0o755)
