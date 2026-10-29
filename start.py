@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import ipaddress
 import json
 import os
@@ -33,6 +34,22 @@ os.environ.setdefault("USE_TORCH", "1")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+# Modules main.py resolves at import time. Checking them before spawning anything is
+# what turns "llama-server is up but Streamlit cannot import" into an immediate,
+# actionable exit.
+REQUIRED_MODULES: tuple[str, ...] = (
+    "streamlit",
+    "dotenv",
+    "pydantic",
+    "httpx",
+    "langchain_text_splitters",
+    "pypdf",
+)
+
+# Must match setup.py's provisioning default so the remediation hint is accurate.
+DEFAULT_VENV_DIRNAME = ".venv"
+VENV_PATH_ENV = "RAG_VENV_PATH"
 
 # Host values that keep the single-user Streamlit UI reachable only from this machine.
 _LOOPBACK_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"}
@@ -105,6 +122,82 @@ def check_python_version() -> bool:
         print(f"❌ Error: Python 3.11+ required. Detected: {sys.version.split()[0]}", file=sys.stderr)
         return False
     return True
+
+
+def repo_venv_dir() -> Path:
+    """Return the isolated environment directory setup.py provisions into."""
+    override = os.environ.get(VENV_PATH_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return REPO_ROOT / DEFAULT_VENV_DIRNAME
+
+
+def repo_venv_python() -> Path:
+    """Return the interpreter path inside the project virtual environment."""
+    venv_dir = repo_venv_dir()
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def missing_required_modules() -> list[str]:
+    """Return the modules main.py needs that this interpreter cannot import."""
+    missing: list[str] = []
+    for name in REQUIRED_MODULES:
+        try:
+            if importlib.util.find_spec(name) is None:
+                missing.append(name)
+        except (ImportError, AttributeError, ValueError):
+            missing.append(name)
+    return missing
+
+
+def check_dependencies() -> bool:
+    """Fail fast when the running interpreter is missing the app's dependencies.
+
+    Called before any subprocess is spawned: if Streamlit cannot be imported there is
+    no point starting llama-server, and doing so would leave an orphan process behind
+    once the UI launch fails.
+
+    Returns:
+        True when every required module is importable, False otherwise.
+    """
+    missing = missing_required_modules()
+    if not missing:
+        return True
+
+    venv_python = repo_venv_python()
+    venv_hint = ""
+    if venv_python.exists():
+        venv_hint = (
+            f"\n   A project environment already exists at {repo_venv_dir()}.\n"
+            f"   Launch with that interpreter instead:\n"
+            f"       {venv_python} start.py"
+        )
+
+    # Echo the user's own intent so the suggested command is a drop-in replacement.
+    relaunch = f"{venv_python} start.py"
+    if "--start-llama" in sys.argv:
+        relaunch += " --start-llama"
+
+    sys.stdout.flush()
+    print(
+        f"❌ Error: this Python interpreter is missing required modules: {', '.join(missing)}\n"
+        f"   Interpreter: {sys.executable}\n"
+        f"   The Streamlit UI cannot start, so llama-server was NOT launched.\n"
+        f"\n"
+        f"   Install the dependencies with:\n"
+        f"       python3 setup.py\n"
+        f"   That command creates {repo_venv_dir()} (or reuses it) and installs every\n"
+        f"   dependency plus this package into it. Then launch with:\n"
+        f"       {relaunch}"
+        f"{venv_hint}\n"
+        f"\n"
+        f"   To install into this interpreter instead:\n"
+        f"       {sys.executable} -m pip install -r requirements.txt",
+        file=sys.stderr,
+    )
+    return False
 
 
 def ensure_directories() -> None:
@@ -322,6 +415,11 @@ def main() -> int:
 
     if not check_python_version():
         return 1
+
+    # Fail before any subprocess exists: a missing dependency would otherwise surface
+    # only after llama-server had been started in the background.
+    if not check_dependencies():
+        return 3
 
     if not refuse_unsafe_bind(args.host, allow_non_loopback=args.allow_non_loopback):
         return 2

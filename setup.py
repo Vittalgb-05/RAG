@@ -9,6 +9,11 @@ Usage:
     python setup.py --models-only   # Download only models via CLI flag
     python setup.py --deps-only     # Install only dependencies via pip
     pip install -e .                # Standard editable package install
+
+On hosts where the system interpreter refuses pip installs (PEP 668
+``EXTERNALLY-MANAGED``, e.g. Ubuntu 24.04), dependency installation is redirected
+into an isolated environment (default ``.venv``, override with ``--venv-path`` or
+``RAG_VENV_PATH``) and the exact launch command is printed for it.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import time
 import urllib.error
@@ -43,6 +49,23 @@ if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+# Isolated-environment provisioning. ``.venv`` in the repo root is the default so the
+# interpreter printed by setup.py is always the one start.py should be run with.
+DEFAULT_VENV_DIRNAME = ".venv"
+VENV_PATH_ENV = "RAG_VENV_PATH"
+
+# Modules that must import for the Streamlit UI to start. These are exactly the
+# top-level imports main.py resolves before it renders anything, so a miss here is
+# the "No module named streamlit" failure mode reported after llama-server starts.
+REQUIRED_RUNTIME_MODULES: tuple[str, ...] = (
+    "streamlit",
+    "dotenv",
+    "pydantic",
+    "httpx",
+    "langchain_text_splitters",
+    "pypdf",
+)
 
 # Read the long description from README.md
 readme_path = REPO_ROOT / "README.md"
@@ -739,18 +762,277 @@ def setup_llama_server(
     return False
 
 
+def resolve_venv_dir(venv_path: str | Path | None = None) -> Path:
+    """Return the isolated environment directory to provision.
+
+    Precedence: explicit ``--venv-path`` argument, then the ``RAG_VENV_PATH``
+    environment variable, then ``.venv`` in the repository root.
+
+    Args:
+        venv_path: Explicit override supplied on the command line.
+
+    Returns:
+        Absolute path to the environment directory (it may not exist yet).
+    """
+    if venv_path:
+        return Path(venv_path).expanduser().resolve()
+
+    env_value = os.environ.get(VENV_PATH_ENV, "").strip()
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+
+    return (REPO_ROOT / DEFAULT_VENV_DIRNAME).resolve()
+
+
+def venv_python_path(venv_dir: Path) -> Path:
+    """Return the interpreter path inside *venv_dir* for the current platform."""
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def externally_managed_marker() -> Path | None:
+    """Return the PEP 668 marker for the running interpreter, when one exists."""
+    candidates: list[Path] = []
+    stdlib_path = sysconfig.get_path("stdlib")
+    if stdlib_path:
+        candidates.append(Path(stdlib_path) / "EXTERNALLY-MANAGED")
+    version_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    candidates.append(Path(sys.base_prefix) / "lib" / version_dir / "EXTERNALLY-MANAGED")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def interpreter_accepts_pip_installs() -> bool:
+    """Return True when pip can install into the running interpreter as-is.
+
+    A virtual environment (or virtualenv) always qualifies. A system interpreter
+    that ships a PEP 668 ``EXTERNALLY-MANAGED`` marker, or whose site-packages is
+    not writable, does not: installing into it either fails outright or needs
+    ``--break-system-packages``, which this installer never forces on a user.
+    """
+    if sys.prefix != sys.base_prefix:
+        return True
+
+    if externally_managed_marker() is not None:
+        return False
+
+    purelib_path = sysconfig.get_path("purelib")
+    if purelib_path:
+        target = Path(purelib_path)
+        if target.exists() and not os.access(target, os.W_OK):
+            return False
+
+    return True
+
+
+def install_blocked_reason() -> str:
+    """Describe why the running interpreter cannot take pip installs."""
+    marker = externally_managed_marker()
+    if marker is not None:
+        return f"PEP 668 externally-managed environment ({marker})"
+    return f"{sys.executable} cannot write to {sysconfig.get_path('purelib')}"
+
+
+_DEPENDENCY_PROBE = """\
+import importlib
+import sys
+
+missing = []
+for name in sys.argv[1:]:
+    try:
+        importlib.import_module(name)
+    except Exception:
+        missing.append(name)
+print(" ".join(missing))
+sys.exit(1 if missing else 0)
+"""
+
+
+def missing_modules(
+    python_executable: str | Path,
+    modules: tuple[str, ...] = REQUIRED_RUNTIME_MODULES,
+) -> list[str]:
+    """Return the modules that fail to import under *python_executable*.
+
+    Runs the probe out-of-process so the answer describes the target interpreter,
+    not whichever environment happens to be importing setup.py.
+
+    Args:
+        python_executable: Interpreter to probe.
+        modules: Import names to verify.
+
+    Returns:
+        Names that failed to import; empty when the interpreter is usable.
+    """
+    try:
+        proc = subprocess.run(
+            [str(python_executable), "-c", _DEPENDENCY_PROBE, *modules],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except Exception:
+        return list(modules)
+
+    if proc.returncode == 0:
+        return []
+
+    reported = [name for name in proc.stdout.split() if name in modules]
+    return reported or list(modules)
+
+
+def launch_command(python_executable: str | Path, *args: str) -> str:
+    """Render a copy-pasteable command that runs the app with *python_executable*."""
+    python = str(python_executable)
+    if " " in python:
+        python = f'"{python}"'
+    return " ".join([python, *args])
+
+
+def app_python_executable(venv_path: str | Path | None = None) -> Path:
+    """Return the interpreter a user should launch the application with.
+
+    A usable isolated environment wins when the system interpreter refuses pip
+    installs; otherwise the running interpreter is already the right one.
+    """
+    if interpreter_accepts_pip_installs():
+        return Path(sys.executable)
+
+    candidate = venv_python_path(resolve_venv_dir(venv_path))
+    if candidate.exists() and not missing_modules(candidate):
+        return candidate
+    return Path(sys.executable)
+
+
+def create_venv(venv_dir: Path) -> bool:
+    """Create an isolated environment at *venv_dir* using the running interpreter."""
+    print(f"  • Creating isolated environment at {venv_dir} ...")
+    try:
+        proc = subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], cwd=str(REPO_ROOT))
+    except Exception as err:
+        print(f"  ❌ Could not create virtual environment: {err}", file=sys.stderr)
+        return False
+
+    if proc.returncode != 0 or not venv_python_path(venv_dir).exists():
+        print("  ❌ Virtual environment creation failed.", file=sys.stderr)
+        print("     On Debian/Ubuntu install the venv module first: sudo apt install python3-venv", file=sys.stderr)
+        return False
+
+    print(f"  ✓ Isolated environment created at {venv_dir}")
+    return True
+
+
+def provision_venv_dependencies(
+    venv_dir: Path,
+    use_lockfile: bool = False,
+    upgrade: bool = False,
+) -> Path | None:
+    """Create or reuse *venv_dir* and install the project into it.
+
+    An environment that already imports every required module is reused untouched,
+    so repeated setup runs cost nothing.
+
+    Args:
+        venv_dir: Environment directory to provision.
+        use_lockfile: Install from requirements-lock.txt instead of requirements.txt.
+        upgrade: Pass --upgrade to the requirements install.
+
+    Returns:
+        The environment's interpreter when all required modules import, else None.
+    """
+    python_executable = venv_python_path(venv_dir)
+    if python_executable.exists() and not missing_modules(python_executable):
+        print(f"  ✓ Reusing isolated environment at {venv_dir} (dependencies already satisfied)")
+        return python_executable
+
+    if not python_executable.exists() and not create_venv(venv_dir):
+        return None
+
+    req_file = REPO_ROOT / ("requirements-lock.txt" if use_lockfile else "requirements.txt")
+    requirements_cmd = [str(python_executable), "-m", "pip", "install", "-r", str(req_file)]
+    if upgrade:
+        requirements_cmd.append("--upgrade")
+
+    install_cmds = [
+        requirements_cmd,
+        [str(python_executable), "-m", "pip", "install", "-e", "."],
+    ]
+    for cmd in install_cmds:
+        try:
+            proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
+        except Exception as err:
+            print(f"\n  ❌ Error running pip in {venv_dir}: {err}", file=sys.stderr)
+            return None
+        if proc.returncode != 0:
+            print(f"\n  ❌ pip install exited with status {proc.returncode}", file=sys.stderr)
+            return None
+
+    missing = missing_modules(python_executable)
+    if missing:
+        print(f"\n  ❌ Still missing inside {venv_dir}: {', '.join(missing)}", file=sys.stderr)
+        return None
+
+    print(f"  ✓ Dependencies verified inside {venv_dir} (streamlit imports cleanly)")
+    return python_executable
+
+
+def report_dependency_preflight(venv_path: str | Path | None = None) -> bool:
+    """Report whether the app's dependencies are ready, with exact next commands.
+
+    ``--llama-server`` is deliberately llama-only, so this never installs anything:
+    it only makes an incomplete environment explicit and names the command that
+    finishes the job.
+
+    Args:
+        venv_path: Explicit environment override (see ``resolve_venv_dir``).
+
+    Returns:
+        True when the launcher interpreter imports every required module.
+    """
+    python_executable = app_python_executable(venv_path)
+    missing = missing_modules(python_executable)
+    if not missing:
+        print(f"\n  ✓ Python dependencies ready for {python_executable}")
+        print(f"     Launch with: {launch_command(python_executable, 'start.py', '--start-llama')}")
+        return True
+
+    venv_dir = resolve_venv_dir(venv_path)
+    print("\n" + "=" * 68)
+    print("  ⚠️ Python dependencies are NOT installed for the launcher interpreter")
+    print(f"     Interpreter: {python_executable}")
+    print(f"     Missing modules: {', '.join(missing)}")
+    print(f"     '{python_executable.name} start.py' would fail with 'No module named {missing[0]}'.")
+    print("  Install them first (creates an isolated environment automatically when the")
+    print("  system Python refuses installs, e.g. PEP 668 externally-managed hosts):")
+    print("      python3 setup.py")
+    print("  Then launch with:")
+    print(f"      {launch_command(venv_python_path(venv_dir), 'start.py', '--start-llama')}")
+    print("=" * 68)
+    return False
+
+
 def install_dependencies(
     use_lockfile: bool = False,
     upgrade: bool = False,
+    venv_path: str | Path | None = None,
 ) -> bool:
-    """Install project dependencies using pip.
+    """Install project dependencies, provisioning an isolated environment if needed.
+
+    On an externally-managed (PEP 668) system interpreter the install is redirected
+    into a virtual environment instead of being attempted and failing, so the
+    reported success always means "the launcher interpreter can import the app".
 
     Args:
         use_lockfile: If True, install from requirements-lock.txt instead of requirements.txt.
         upgrade: If True, pass --upgrade to pip.
+        venv_path: Explicit environment override (see ``resolve_venv_dir``).
 
     Returns:
-        True if pip install exited with code 0.
+        True if the provisioned interpreter imports every required module.
     """
     req_file = REPO_ROOT / ("requirements-lock.txt" if use_lockfile else "requirements.txt")
     if not req_file.exists():
@@ -761,18 +1043,31 @@ def install_dependencies(
     print(f"  📦 INSTALLING DEPENDENCIES ({req_file.name})")
     print("=" * 68)
 
+    if not interpreter_accepts_pip_installs():
+        venv_dir = resolve_venv_dir(venv_path)
+        print(f"  • Cannot install into {sys.executable}: {install_blocked_reason()}")
+        print(f"  • Provisioning an isolated environment instead: {venv_dir}")
+        return provision_venv_dependencies(venv_dir, use_lockfile=use_lockfile, upgrade=upgrade) is not None
+
     cmd = [sys.executable, "-m", "pip", "install", "-r", str(req_file)]
     if upgrade:
         cmd.append("--upgrade")
 
+    print(f"  • Interpreter: {sys.executable}")
     try:
         proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
         if proc.returncode == 0:
+            missing = missing_modules(sys.executable)
+            if missing:
+                print(
+                    f"\n❌ pip succeeded, but these modules still fail to import: {', '.join(missing)}",
+                    file=sys.stderr,
+                )
+                return False
             print(f"\n✓ Successfully installed dependencies from {req_file.name}")
             return True
-        else:
-            print(f"\n❌ pip install exited with status {proc.returncode}", file=sys.stderr)
-            return False
+        print(f"\n❌ pip install exited with status {proc.returncode}", file=sys.stderr)
+        return False
     except Exception as err:
         print(f"\n❌ Error running pip: {err}", file=sys.stderr)
         return False
@@ -784,18 +1079,43 @@ def run_full_setup(
     use_lockfile: bool = False,
     skip_llama: bool = False,
     cpu_only: bool = False,
+    venv_path: str | Path | None = None,
 ) -> int:
-    """Execute complete initial setup: directories, dependencies, models, and native llama-server."""
+    """Execute complete initial setup: directories, dependencies, models, and native llama-server.
+
+    Args:
+        skip_vlm: Skip the large VLM GGUF downloads.
+        force_models: Re-download artifacts that already exist.
+        use_lockfile: Install from requirements-lock.txt instead of requirements.txt.
+        skip_llama: Skip native llama-server acquisition.
+        cpu_only: Force the CPU llama-server build.
+        venv_path: Explicit isolated-environment override.
+
+    Returns:
+        Process exit code: 0 only when dependencies are verified importable.
+    """
     print("=" * 68)
     print("  🚀 Local-First Multimodal PDF Intelligence System — Setup")
     print("=" * 68)
 
     ensure_project_directories()
 
-    # Step 1: Install dependencies
-    deps_ok = install_dependencies(use_lockfile=use_lockfile)
-    if not deps_ok:
-        print("⚠️ Warning: Dependency installation reported issues. Continuing with setup...")
+    # Step 1: Install dependencies into an interpreter that can actually run the app
+    if not install_dependencies(use_lockfile=use_lockfile, venv_path=venv_path):
+        print("\n❌ Setup failed: Python dependencies are not installed for a usable interpreter.", file=sys.stderr)
+        print("   start.py cannot launch the Streamlit UI without them, so no launch hint is printed.", file=sys.stderr)
+        print("   Fix the pip error above (or install python3-venv on Debian/Ubuntu) and re-run:", file=sys.stderr)
+        print("       python3 setup.py", file=sys.stderr)
+        print("   To provision the environment manually instead:", file=sys.stderr)
+        print(f"       python3 -m venv {resolve_venv_dir(venv_path)}", file=sys.stderr)
+        print(
+            f"       {launch_command(venv_python_path(resolve_venv_dir(venv_path)), 'setup.py', '--deps-only')}",
+            file=sys.stderr,
+        )
+        return 1
+
+    launch_python = app_python_executable(venv_path)
+    installed_in_venv = launch_python != Path(sys.executable)
 
     # Step 2: Download models
     download_all_models(
@@ -810,19 +1130,22 @@ def run_full_setup(
     else:
         print("  ℹ️ Skipping llama-server setup (--skip-llama-server).")
 
-    # Step 4: Install current package in editable mode
-    print("\n📦 Registering local package...")
-    with contextlib.suppress(Exception):
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", "."],
-            cwd=str(REPO_ROOT),
-            check=False,
-        )
+    # Step 4: Install current package in editable mode into the launcher interpreter.
+    # The venv path already did this while provisioning, so do not repeat it there.
+    if not installed_in_venv:
+        print("\n📦 Registering local package...")
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-e", "."],
+                cwd=str(REPO_ROOT),
+                check=False,
+            )
 
     print("\n" + "=" * 68)
     print("  🎉 Setup Complete!")
+    print(f"  Dependencies are installed into: {launch_python}")
     print("  To launch the application, run:")
-    print("      python start.py --start-llama")
+    print(f"      {launch_command(launch_python, 'start.py', '--start-llama')}")
     print("=" * 68 + "\n")
     return 0
 
@@ -969,6 +1292,7 @@ if __name__ == "__main__":
         "--cpu-only",
         "--lockfile",
         "--force",
+        "--venv-path",
     }
     subcommands = {
         "setup",
@@ -979,7 +1303,7 @@ if __name__ == "__main__":
         "setup-llama",
     }
     is_custom_invocation = bool(
-        not raw_args or raw_args[0] in subcommands or any(arg in custom_flags for arg in raw_args)
+        not raw_args or raw_args[0] in subcommands or any(arg.split("=", 1)[0] in custom_flags for arg in raw_args)
     )
 
     if is_custom_invocation:
@@ -1012,12 +1336,21 @@ if __name__ == "__main__":
         parser.add_argument("--cpu-only", action="store_true", help="Force CPU build for llama-server")
         parser.add_argument("--force", action="store_true", help="Force re-download existing files")
         parser.add_argument("--lockfile", action="store_true", help="Use requirements-lock.txt for install")
+        parser.add_argument(
+            "--venv-path",
+            type=str,
+            default=None,
+            help=f"Isolated environment directory (default: {DEFAULT_VENV_DIRNAME} or ${VENV_PATH_ENV})",
+        )
 
         parsed, _ = parser.parse_known_args(filtered_args)
 
         if parsed.deps_only:
             ensure_project_directories()
-            sys.exit(0 if install_dependencies(use_lockfile=parsed.lockfile) else 1)
+            deps_ok = install_dependencies(use_lockfile=parsed.lockfile, venv_path=parsed.venv_path)
+            if deps_ok:
+                report_dependency_preflight(venv_path=parsed.venv_path)
+            sys.exit(0 if deps_ok else 1)
         elif parsed.models_only or is_download_cmd:
             ensure_project_directories()
             target_dir = REPO_ROOT / parsed.models_dir
@@ -1027,9 +1360,12 @@ if __name__ == "__main__":
         elif parsed.llama_only or is_llama_cmd:
             ensure_project_directories()
             target_tools = REPO_ROOT / parsed.tools_dir
-            sys.exit(
-                0 if setup_llama_server(tools_dir=target_tools, force=parsed.force, cpu_only=parsed.cpu_only) else 1
-            )
+            llama_ok = setup_llama_server(tools_dir=target_tools, force=parsed.force, cpu_only=parsed.cpu_only)
+            if llama_ok:
+                # llama-only setup intentionally installs no Python packages, but it must
+                # never leave the user believing the app is launchable when it is not.
+                report_dependency_preflight(venv_path=parsed.venv_path)
+            sys.exit(0 if llama_ok else 1)
         else:
             sys.exit(
                 run_full_setup(
@@ -1038,6 +1374,7 @@ if __name__ == "__main__":
                     use_lockfile=parsed.lockfile,
                     skip_llama=parsed.skip_llama,
                     cpu_only=parsed.cpu_only,
+                    venv_path=parsed.venv_path,
                 )
             )
 
