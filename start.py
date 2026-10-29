@@ -12,7 +12,6 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import contextlib
 import sys
@@ -92,10 +91,11 @@ def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
 
 
 def print_banner() -> None:
-    """Print ASCII startup banner."""
+    """Print ASCII startup banner with the detected native runtime version."""
     print("=" * 68)
     print("  📄 Local-First Multimodal PDF Intelligence System")
-    print("  Hybrid Search • RapidOCR • Docling • Qwen2-VL 2B • Verifiable Citations")
+    print("  Hybrid Search • RapidOCR • Docling • Qwen3.5-2B • Verifiable Citations")
+    print(f"  Runtime: {runtime_status_label()}")
     print("=" * 68)
 
 
@@ -119,17 +119,26 @@ def ensure_directories() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+# Local artifacts: Qwen3.5-2B weights plus its F16 vision projector.
+LOCAL_GGUF_FILENAME = "qwen3.5-2b-q4_k_m.gguf"
+LOCAL_MMPROJ_FILENAME = "qwen3.5-2b-mmproj-f16.gguf"
+
+
+def runtime_status_label() -> str:
+    """Describe the installed native runtime relative to the expected build."""
+    try:
+        from core.runtime_info import runtime_status_line
+
+        return runtime_status_line(REPO_ROOT)
+    except Exception:
+        return "llama-server not detected (run 'python setup.py --llama-server')"
+
+
 def get_llama_server_binary() -> Path | None:
     """Locate llama-server executable on system PATH or local tools/ directory."""
-    on_path = shutil.which("llama-server")
-    if on_path:
-        return Path(on_path)
-    local_bin = (
-        REPO_ROOT / "tools" / "llama-server" / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
-    )
-    if local_bin.exists():
-        return local_bin
-    return None
+    from core.runtime_info import find_llama_server_binary
+
+    return find_llama_server_binary(REPO_ROOT)
 
 
 def check_llama_server(host: str = "127.0.0.1", port: int = 8080) -> None:
@@ -158,8 +167,8 @@ def check_llama_server(host: str = "127.0.0.1", port: int = 8080) -> None:
     print(f"  ℹ️ Local llama-server not detected at http://{host}:{port}")
     print("     The UI will launch in local offline mode (or user-consented cloud mode).")
     print(
-        f"     To launch llama-server, run: {bin_cmd} -m models/qwen3-vl-2b-instruct-q4_k_m.gguf "
-        f"--mmproj models/mmproj-f16.gguf -c 4096 -ngl 28 --port {port}"
+        f"     To launch llama-server, run: {bin_cmd} -m models/{LOCAL_GGUF_FILENAME} "
+        f"--mmproj models/{LOCAL_MMPROJ_FILENAME} -c 4096 -ngl 28 --port {port}"
     )
     print("     (Or start both together with: python start.py --start-llama)")
 
@@ -177,9 +186,9 @@ def start_llama_server_process(
         print("   Run 'python setup.py --llama-server' to install it automatically.", file=sys.stderr)
         return None
 
-    # Legacy artifact filename; GGUF metadata reports Qwen2-VL-2B-Instruct.
-    model_path = REPO_ROOT / "models" / "qwen3-vl-2b-instruct-q4_k_m.gguf"
-    mmproj_path = REPO_ROOT / "models" / "mmproj-f16.gguf"
+    # Qwen3.5-2B weights and its matching Qwen3-VL merger projector.
+    model_path = REPO_ROOT / "models" / LOCAL_GGUF_FILENAME
+    mmproj_path = REPO_ROOT / "models" / LOCAL_MMPROJ_FILENAME
 
     if not model_path.exists():
         print(f"⚠️ Warning: Model weights not found at {model_path}.", file=sys.stderr)
