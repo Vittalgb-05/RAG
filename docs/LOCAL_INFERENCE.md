@@ -1,6 +1,6 @@
-# Local Inference Runbook: Qwen2-VL 2B on RTX 3050 Laptop GPU (4 GB VRAM)
+# Local Inference Runbook: Qwen3.5-2B on RTX 3050 Laptop GPU (4 GB VRAM)
 
-This runbook guides running local multimodal inference for the PDF Intelligence System on an **NVIDIA GeForce RTX 3050 Laptop GPU (4 GB VRAM)** using `llama-server` (llama.cpp) with zero cloud network egress.
+This runbook guides running local multimodal inference for the PDF Intelligence System on an **NVIDIA GeForce RTX 3050 Laptop GPU (4 GB VRAM)** using `llama-server` (llama.cpp **v0.8.0**, build `b11960`) with zero cloud network egress.
 
 ---
 
@@ -8,23 +8,28 @@ This runbook guides running local multimodal inference for the PDF Intelligence 
 
 The system is calibrated to execute safely within a **4,096 MB VRAM ceiling** on Windows 11 without triggering shared GPU system memory paging:
 
+Measured on the target machine (`nvidia-smi`, Windows 11, driver 592.82) with the server idle after model load:
+
 | Component | VRAM Allocation | Notes |
 | :--- | :--- | :--- |
-| **Model Weights (`Q4_K_M`)** | ~1,450 MB | Qwen2-VL 2B quantized base weights offloaded to GPU |
-| **Vision Projector (`mmproj-f16`)** | ~450 MB | Multimodal projector for diagram and image analysis |
-| **KV Cache (`-c 4096`)** | ~510 MB | 4K token bounded context window |
-| **CUDA Runtime Overhead** | ~350 MB | Driver context and cuBLAS buffers |
-| **Windows Desktop Window Manager** | ~500 MB | OS display compositor reserved VRAM |
-| **Total Peak VRAM Footprint** | **~3,260 MB** | **Headroom: ~830 MB (Well under 4 GB ceiling)** |
+| **Qwen3.5-2B Q4_K_M weights** | ~1,310 MB | 25-block hybrid DeltaNet/attention backbone, `-ngl 28` |
+| **Vision projector F16** | ~668 MB | `qwen3vl_merger` projector, offloaded to GPU by default |
+| **KV cache (`-c 4096`)** | ~250 MB | bounded context; the checkpoint itself supports 262,144 tokens |
+| **CUDA runtime + desktop compositor** | ~430 MB | driver context, cuBLAS buffers, Windows DWM |
+| **Total measured** | **2,658 MiB of 4,096 MiB** | **Headroom ~1.4 GB.** The previous Qwen2-VL-2B pair measured 2,987 MiB on the same machine, so this migration reduced VRAM pressure by ~330 MiB. |
+
+If VRAM is contended (other GPU applications open), add `--no-mmproj-offload` to keep the projector on CPU; image analysis slows down but loading still succeeds.
 
 ---
 
 ## 2. Prerequisites
 
 1. **NVIDIA Driver**: 550.x or higher with CUDA 12.x support.
-2. **llama.cpp**: Release with CUDA support (e.g., `llama-bXXXX-bin-win-cuda-cu12.4-x64.zip`).
-   - Download from [llama.cpp releases](https://github.com/ggerganov/llama.cpp/releases).
-   - Extract `llama-server.exe` and dependent `.dll` files into your PATH or a tools directory.
+2. **llama.cpp v0.8.0 (build `b11960`)**: Windows x64 CUDA 12.4 build `llama-b11960-bin-win-cuda-12.4-x64.zip` plus the matching `cudart-llama-bin-win-cuda-12.4-x64.zip` runtime.
+   - Download from the [b11960 release](https://github.com/ggml-org/llama.cpp/releases/tag/b11960) (the `v0.8.0` release itself attaches only `nightly-tag.txt`, which names `b11960`).
+   - `python setup.py --llama-server` performs the download, SHA-256 verification, extraction, and a `--version` smoke check.
+   - Verified digests: `8d9d819261de10cc2f03921b8b79c779c5c458e21edb60c170ee30a7d462d684` (binaries) and `8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6` (cudart).
+   - Extract `llama-server.exe` and dependent `.dll` files into `tools/llama-server` or your PATH. The v0.8.0 loader resolves `ggml-cuda.dll`/`cudart64_12.dll` from the same directory.
 
 ---
 
@@ -37,16 +42,16 @@ mkdir -p models
 ```
 
 1. **Text & Vision Model (`Q4_K_M`)**:
-   - Filename: `qwen3-vl-2b-instruct-q4_k_m.gguf` (~1.45 GB; legacy name, GGUF metadata reports Qwen2-VL)
+   - Filename: `qwen3.5-2b-q4_k_m.gguf` (1,312,165,056 bytes; GGUF `general.architecture=qwen35`, `general.name="Qwen3.5 2B"`)
 2. **Vision Projector**:
-   - Filename: `mmproj-f16.gguf` (~450 MB)
+   - Filename: `qwen3.5-2b-mmproj-f16.gguf` (668,227,136 bytes; `clip.projector_type=qwen3vl_merger`, 768 px images, patch 16, 24 vision blocks)
 
-*(Weights can be downloaded directly from Hugging Face repositories hosting quantized Qwen-VL GGUF models).*
+Both come from `SoAIHQ/Qwen3.5-2B-GGUF` at revision `377fa65bb36aa83414de1ab3b40f6f15b0324cdc`, licensed Apache-2.0 (inherited from `Qwen/Qwen3.5-2B`). Their SHA-256 digests match the publisher's `SHA256SUMS`: `a8b50de0…1523b` (weights) and `044a0ea1…d36` (projector). `llama.cpp` v0.8.0 recognises both the `qwen35` architecture and the `qwen3vl_merger` projector.
 
 Verify the pair before launching (the launcher also refuses mismatched artifacts):
 
 ```powershell
-python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3-vl-2b-instruct-q4_k_m.gguf', 'models/mmproj-f16.gguf') or 'identity OK')"
+python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3.5-2b-q4_k_m.gguf', 'models/qwen3.5-2b-mmproj-f16.gguf') or 'identity OK')"
 ```
 
 ---
@@ -57,12 +62,13 @@ Run the following command in PowerShell:
 
 ```powershell
 llama-server `
-  -m models/qwen3-vl-2b-instruct-q4_k_m.gguf `
-  --mmproj models/mmproj-f16.gguf `
+  -m models/qwen3.5-2b-q4_k_m.gguf `
+  --mmproj models/qwen3.5-2b-mmproj-f16.gguf `
   -c 4096 `
   -ngl 28 `
   -b 512 `
   -ub 512 `
+  --reasoning-budget 0 `
   --port 8080 `
   --host 127.0.0.1
 ```
@@ -71,7 +77,8 @@ llama-server `
 - `-m`: Path to the quantized GGUF model weights (`Q4_K_M`).
 - `--mmproj`: Path to the multimodal projector for visual document reading (`mmproj-f16`).
 - `-c 4096`: Bounds the context window to 4,096 tokens, preventing VRAM overflow.
-- `-ngl 28`: Offloads all 28 transformer layers to the NVIDIA GPU.
+- `-ngl 28`: Offloads every model layer (the checkpoint has 25) to the NVIDIA GPU.
+- `--reasoning-budget 0`: Stops the default Qwen3.5 thinking pass so grounded answers are not crowded out of the bounded context. (`--reasoning off` is equivalent; the app sends `reasoning_effort: "none"` per request instead of relying on the server default.)
 - `-b 512`: Sets logical batch size to 512 tokens to prevent transient VRAM allocation spikes during prompt ingestion.
 - `-ub 512`: Sets physical micro-batch size to 512 tokens for bounded CUDA workspace memory.
 - `--port 8080`: Local REST API endpoint.
@@ -81,8 +88,8 @@ llama-server `
 To expand context window from 4,096 to 8,192 tokens while remaining within the 4 GB VRAM ceiling, enable Q8_0 KV cache quantization and Flash Attention:
 ```powershell
 llama-server `
-  -m models/qwen3-vl-2b-instruct-q4_k_m.gguf `
-  --mmproj models/mmproj-f16.gguf `
+  -m models/qwen3.5-2b-q4_k_m.gguf `
+  --mmproj models/qwen3.5-2b-mmproj-f16.gguf `
   -c 8192 `
   -ctk q8_0 `
   -ctv q8_0 `
@@ -93,7 +100,7 @@ llama-server `
   --port 8080 `
   --host 127.0.0.1
 ```
-*Note: With `-ctk q8_0 -ctv q8_0`, the 8K KV cache occupies ~510 MB VRAM, identical to a 4K FP16 KV cache.*
+*Note: `-ctk q8_0 -ctv q8_0` halves KV-cache bytes relative to FP16, which is what made the 8K profile fit on the previous model. Qwen3.5-2B uses a hybrid DeltaNet/attention backbone, so its KV footprint is smaller than a same-size dense model at the same context; re-measure with `nvidia-smi` before relying on 8K in production.*
 
 ---
 
@@ -122,7 +129,7 @@ If `llama-server` is not running or if GPU memory is occupied by other tasks, th
 GROQ_API_KEY=gsk_your_groq_api_key_here
 ```
 
-When Groq is used, the sidebar badge indicates `🔵 Inference: Groq Cloud (openai/gpt-oss-20b)`. When local `llama-server` is active, it indicates `🟢 Inference: Local (qwen2-vl-2b)`.
+The sidebar status reflects the active provider's reported capabilities: it shows `Local · qwen3.5-2b` when the local server answers `/health` with 200, `Provider loading` on HTTP 503, and `Cloud · <model>` only after consented cloud mode is enabled. The Settings and Diagnostics workspaces additionally report the runtime version detected from the installed `llama-server` binary (for example `llama.cpp 0.8.0-dev (build 11960) - matches expected v0.8.0 (b11960)`).
 
 ---
 

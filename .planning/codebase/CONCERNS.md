@@ -1,9 +1,9 @@
-<!-- refreshed: 2026-10-28 -->
+<!-- refreshed: 2026-10-29 -->
 # Codebase Concerns
 
-**Analysis Date:** 2026-10-28
+**Analysis Date:** 2026-10-29
 
-Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`, `retrieval/`, `providers/`, `ui/`, `tests/`, `scripts/`, packaging + CI). 21,638 Python lines across `core ingestion retrieval providers ui tests`. Every item below was read in source; line references are current at analysis time.
+Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`, `retrieval/`, `providers/`, `ui/`, `tests/`, `scripts/`, packaging + CI). Approximately 26,800 Python lines across application code, tests, and scripts. Every item below was read in source; line references are current at analysis time.
 
 ## Tech Debt
 
@@ -14,10 +14,10 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Fix approach: Introduce typed degradation (`DegradationEvent(code, stage, doc_id, detail)`) collected per ingestion/turn and surfaced in `IngestionResult` (`ui/ingestion_service.py:28-40`) and the Diagnostics workspace. Narrow `except` clauses to the exceptions actually expected (`OSError`, `ValueError`, `ImportError`, `sqlite3.OperationalError`, `lancedb` errors). Reserve `except Exception` only where a doc must never abort others, and always `logger.warning(..., exc_info=True)`.
 
 **C2 — `CONFIG_VERSION` is overloaded as both chunking and LLM-cache version (High):**
-- Issue: `core/models.py:14` defines `CONFIG_VERSION = "docling-1000-200-v1"`, which only describes chunking (1000/200). It is reused as the summary/prompt cache discriminator at `core/summarizer.py:494` and `core/summarizer.py:573` (`model_version = f"{model_name}:{CONFIG_VERSION}"`), and duplicated in two places.
-- Files: `core/models.py:14`, `core/summarizer.py:494,573`, `core/doc_store.py:744-747`, `ui/views.py:39-41`.
-- Impact: Editing `PROFILE_SYSTEM_INSTRUCTIONS` or `MAP_PROMPT_TEMPLATE`/`REDUCE_PROMPT_TEMPLATE` (`core/summarizer.py:44,125,137`) does not invalidate cached summaries → users see stale text produced by an older prompt. Conversely, bumping the chunking version nukes all summaries and the whole `.cache/` tree unnecessarily. `SummaryResult.model_version` therefore does not mean what it claims.
-- Fix approach: Split into `CHUNKING_VERSION` (cache dir only, `core/models.py:17-30`) and `PROMPT_VERSION`/`SUMMARY_LOGIC_VERSION`; compose `model_version` from `model_name + PROMPT_VERSION` via a single helper used by both call sites.
+- Issue: `core/models.py:14` defines `CONFIG_VERSION = "docling-1000-200-v1"`, which only describes chunking (1000/200). It is reused as the summary/prompt cache discriminator at `core/summarizer.py:504` and `core/summarizer.py:583` (`model_version = f"{model_name}:{CONFIG_VERSION}:{length}"`), and duplicated in two places.
+- Files: `core/models.py:14`, `core/summarizer.py:504,583`, `core/doc_store.py:690-701`, `ui/views.py:948`.
+- Impact: Editing `PROFILE_SYSTEM_INSTRUCTIONS` or `MAP_PROMPT_TEMPLATE`/`REDUCE_PROMPT_TEMPLATE` (`core/summarizer.py:44,127,139`) does not invalidate cached summaries → users see stale text produced by an older prompt. Conversely, bumping the chunking version nukes all summaries and the whole `.cache/` tree unnecessarily. `SummaryResult.model_version` therefore does not mean what it claims.
+- Fix approach: Split into `CHUNKING_VERSION` (cache dir only, `core/models.py:17-30`) and `PROMPT_VERSION`/`SUMMARY_LOGIC_VERSION`; compose `model_version` from `model_name + PROMPT_VERSION + length` via a single helper used by both call sites.
 
 **C3 — Summary prompt/instruction drift between code and docs (Medium):**
 - Issue: `docs/EVALUATION.md` §6–7 still describes personas "Executive, Technical, Action Items, ELI5, TL;DR" and JSON summary files; the implementation ships `overview / detailed / study_notes / tables_figures / findings` (`core/summarizer.py:5-6,44`) persisted in SQLite (`core/doc_store.py:679-712`).
@@ -38,8 +38,8 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Fix approach: Rename to `extract_page_range(self, start_page=0, end_page=None)`, delete the commented demo block.
 
 **C6 — Duplicated constants that must stay in sync (Low):**
-- Issue: `MAX_CHAT_TURNS = 50` is defined twice (`main.py:57`, `ui/views.py:36`), and the 50 MB upload cap exists three times: `ingestion/upload_validation.py:22` (`MAX_FILE_MB`), `.streamlit/config.toml` (`maxUploadSize = 50`), and README copy.
-- Files: `main.py:57`, `ui/views.py:36,293-297`, `ingestion/upload_validation.py:22`, `.streamlit/config.toml`.
+- Issue: `MAX_CHAT_TURNS = 50` is defined twice (`main.py:58`, `ui/views.py:38`), and the 50 MB upload cap exists three times: `ingestion/upload_validation.py:18` (`MAX_FILE_MB`), `.streamlit/config.toml` (`maxUploadSize = 50`), and README copy.
+- Files: `main.py:58`, `ui/views.py:38,300-304`, `ingestion/upload_validation.py:18`, `.streamlit/config.toml`.
 - Impact: Changing one leaves a hidden second cap that rejects or accepts unexpectedly (Streamlit rejects before `validate_upload` runs, producing a different error message).
 - Fix approach: Single source in `core/models.py` (already home to `CONFIG_VERSION`), imported by UI and used to document the config.toml value; note the duplication in `config.toml` comment.
 
@@ -49,18 +49,30 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Impact: Core inference code depends on the web framework; it cannot be unit-tested without a Streamlit runtime, and key precedence (session → secrets → env) is invisible at the call site. Silent env fallback can transmit to a cloud provider using a key the user forgot exists.
 - Fix approach: Pass the resolved key explicitly from `main.py`/`ui/views.py` into `LiteLLMProvider(api_key=...)`; keep env fallback only when `RAG_ALLOW_ENV_KEYS=1` and log which source won.
 
+**C8 — `EMBEDDING_MAX_LENGTH` is documented but not applied (Low):**
+- Issue: `retrieval/local_embedding.py:29` defines `EMBEDDING_MAX_LENGTH = 256`, and the `get_embeddings()` docstring at `:93-98` claims it passes `max_length=EMBEDDING_MAX_LENGTH` to `encode()`, but the actual call at `:100-106` omits it. `tests/test_retrieval_semantic.py:59-64` only asserts the constant's value.
+- Files: `retrieval/local_embedding.py:29,93-106`, `tests/test_retrieval_semantic.py:59-64`.
+- Impact: The truncation boundary is whatever the tokenizer/model defaults to, not the documented 256; long chunks can embed differently than the comment promises, and the test gives false confidence.
+- Fix approach: Pass `max_length=EMBEDDING_MAX_LENGTH, truncation=True` to `encode()`, or delete the constant/docstring claim and document the model default; add a test that encodes a >256-token string and asserts the expected truncation behavior.
+
+**C9 — Unused `safe_has_secret` helper in the startup path (Low):**
+- Issue: `main.py:74-78` defines `safe_has_secret()` but no caller exists. It also catches only `FileNotFoundError`, `KeyError`, and `AttributeError`, not `RuntimeError`, which Streamlit raises when secrets are accessed without a `secrets.toml`.
+- Files: `main.py:74-78`, `providers/groq_provider.py:48`, `providers/litellm_provider.py:77-83`.
+- Impact: Dead code suggests a safety check that is not actually used; a future caller can still crash on missing secrets.
+- Fix approach: Remove it, or fix it to catch `RuntimeError` and use it consistently in every `st.secrets` access.
+
 ## Known Bugs
 
 **B1 — Live chat streaming renders unsanitized model output (High):**
-- Symptoms: During generation, tokens are written straight to markdown with no sanitization (`stream_placeholder.markdown("".join(response_chunks) + "▌")`), so an `![](http://attacker/x.png)` or `[x](http://attacker)` emitted by the model or echoed from a poisoned document triggers an outbound browser request before `sanitize_display_markdown` ever runs (it is applied only when history is re-rendered).
-- Files: `ui/views.py:716-721` (raw stream), `ui/views.py:603` (sanitized history path), `ui/sanitizer.py:130`.
+- Symptoms: During generation, tokens are written straight to markdown with no sanitization (`stream_placeholder.markdown("".join(response_chunks))` at `ui/views.py:778`), so an `![](http://attacker/x.png)` or `[x](http://attacker)` emitted by the model or echoed from a poisoned document triggers an outbound browser request before `sanitize_display_markdown` ever runs (it is applied only when history is re-rendered at `ui/views.py:620,683`).
+- Files: `ui/views.py:774-778` (raw stream), `ui/views.py:620,683` (sanitized history path), `ui/sanitizer.py:130`.
 - Trigger: Upload a PDF containing an image link or injection text that asks the model to reproduce it; observe the browser devtools network tab during streaming.
 - Workaround: None; the post-`st.rerun()` render is safe, but the leak already happened.
 - Fix: Sanitize each accumulated buffer before `markdown()` (throttle to every N tokens to bound cost), or stream into `st.write_stream` with a sanitizing wrapper. Add a regression test asserting `sanitize_display_markdown` is on the streaming path.
 
 **B2 — User prompt is echoed with `st.markdown` unescaped (Medium):**
 - Symptoms: `st.markdown(effective_prompt)` renders the raw user string, so a pasted question containing markdown image syntax or HTML triggers rendering/egress and can visually spoof UI chrome.
-- Files: `ui/views.py:679-683`.
+- Files: `ui/views.py:715-718`.
 - Trigger: Paste `![](https://example.com/pixel.png)` as a question.
 - Fix: Render prompts via `st.text`/`st.markdown(html.escape(...))` or through `sanitize_display_markdown`; prompts are user-authored and never need rich rendering.
 
@@ -89,27 +101,70 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Fix: Memoize the converted `DoclingDocument` per reader instance keyed by sha256, or have the ingestion service convert once and pass page chunks down.
 
 **B7 — Duplicate `model_version` computation and a non-unique summary cache key (Medium):**
-- Symptoms: `ON CONFLICT(sha256, profile)` (`core/doc_store.py:695`) means only one model version per (document, profile) can exist; the second model overwrites the first, and `get_summary` then reports a version mismatch (`:744-747`) and re-summarizes on every switch back. `model_version` is also computed twice (`core/summarizer.py:494,573`).
-- Files: `core/doc_store.py:679-712,715-760`, `core/summarizer.py:468-600`, `ui/views.py:39-79`.
-- Impact: A/B-ing local vs cloud models silently destroys the other's cache; `cached=True` results are unreachable after a switch.
+- Symptoms: `ON CONFLICT(sha256, profile)` (`core/doc_store.py:695`) means only one model version and one summary length per (document, profile) can exist; the second model or length overwrites the first, and `get_summary` then reports a version mismatch (`:738-743`) and re-summarizes on every switch back. `model_version` is also computed twice (`core/summarizer.py:504,583`) and includes `length` (`ui/views.py:948`).
+- Files: `core/doc_store.py:679-760`, `core/summarizer.py:486-600`, `ui/views.py:41-81,948`.
+- Impact: A/B-ing local vs cloud models, or generating a concise summary after a detailed one, silently destroys the other cache; `cached=True` results are unreachable after a switch.
 - Fix: `ON CONFLICT(sha256, profile, model_version)` with the extra column in the unique index (migration v6) and a retention policy (keep N most recent per profile).
 
 **B8 — Placeholder visual elements are persisted but never indexed (Low):**
-- Symptoms: `[Visual element: ...]` fallback `EvidenceElement` rows are written to SQLite (`core/doc_store.py:623` path) yet filtered out of the vector index, so citations can point at evidence ranks that retrieve as empty text.
-- Files: `ingestion/visual_analyzer.py` (placeholder construction + filtering), `core/citation_validator.py` (rank validation).
-- Fix: Do not persist placeholders (or mark `indexed=False` and exclude them from the evidence pool used to compute ranks).
+- Symptoms: `[Visual element: ...]` fallback `EvidenceElement` rows are written to SQLite (`ui/ingestion_service.py:252-259`) yet filtered out of the vector index (`retrieval/hybrid_retriever.py:601-603`). SQLite and the retrieval index therefore disagree about which evidence exists; a later reindex can change the evidence pool without changing the catalog.
+- Files: `ingestion/visual_analyzer.py:297-305`, `ui/ingestion_service.py:252-259`, `retrieval/hybrid_retriever.py:588-618`.
+- Fix: Do not persist placeholders (or mark `indexed=False` and exclude them from every evidence query), and assert SQLite evidence count equals indexed evidence count after ingestion.
 
 **B9 — `Document.model_validate(dict(row))` breaks on unknown columns (Low):**
 - Symptoms: `Document` uses `extra="forbid"`; adding a column to `documents` and selecting `*` makes every read raise `ValidationError`.
-- Files: `core/doc_store.py` (`_row_to_document` construction), `core/models.py` (`model_config`).
+- Files: `core/doc_store.py:290-295` (`SELECT *` + `Document.model_validate`), `core/models.py` (`model_config`).
 - Fix: Select explicit columns, or switch the read model to `extra="ignore"`.
+
+**B10 — Location heuristic misclassifies “currently working” as a location question (High):**
+- Symptoms: `asks_for_current_location()` matches the bare word `currently` anywhere in a `where is …` question. Verified: `asks_for_current_location("where is Omprakash currently working")` returns `True`. When the résumé evidence has employment text but no explicit `based in`/`located in`/`lives in` phrase, `ChatTurnService.prepare()` abstains before generation (`ui/chat_controller.py:211-216`). Contractions are false negatives: `"where's Omprakash"` and `"what's his location"` both return `False`.
+- Files: `core/query_intent.py:108-141` (question patterns), `ui/chat_controller.py:211-216,291-292` (guard and post-answer override), `tests/test_grounding_contract.py:230-243` (only tests `where does … work`).
+- Trigger: Ask “Where is Omprakash currently working?” against a résumé that lists an employer but no residence line.
+- Impact: A legitimate employment question is converted into “insufficient evidence”, which looks like a retrieval failure to the user.
+- Fix: Exclude employment verbs/nouns (`work`, `working`, `employed`, `job`, `role`, `company`) from the location pattern; add contraction variants (`where's`, `what's`); add positive/negative tests for “currently working”, “where's X”, and “what's his location”.
+
+**B11 — Markdown headings can force summaries to `partial` (Medium):**
+- Symptoms: `_evaluate_lexical_support()` splits the entire response into sentences and counts every uncited sentence with at least three content tokens as an uncited claim (`core/citation_validator.py:370-403`). Summaries are markdown-heavy; a heading such as `## Technical Skills & Projects` yields three tokens (`technical`, `skills`, `projects`), increments `uncited_claims`, and forces `grounding_status = "partial"` (`:531-533`) even when every prose claim is cited.
+- Files: `core/citation_validator.py:331-408,515-548`, `core/summarizer.py:44-125` (markdown heading templates), `ui/views.py:84-133` (caption rendering).
+- Impact: Users see “Partially supported … uncited claim(s)” on well-grounded summaries; the signal loses credibility.
+- Fix: Skip markdown heading lines and list labels during claim evaluation, or evaluate only sentences that end with terminal punctuation; add a regression test with a cited summary containing headings.
+
+**B12 — Summary page references are never support-validated (High):**
+- Symptoms: The dedicated Summarizer path trusts `(p. X)` strings. `core/summarizer.py` never calls `validate_citations`; `ui/views.py:1003-1021` only checks that page references exist and compares their count to the page total. A model can emit a plausible page number that is not in the evidence or does not support the adjacent sentence.
+- Files: `core/summarizer.py:486-600`, `core/citation_validator.py:411-577`, `ui/views.py:1003-1021`.
+- Impact: The UI labels a summary “partial coverage” but not “unsupported claim”; wrong page numbers survive into exported markdown, breaking the verifiable-citation promise.
+- Fix: Add a summary-specific grounding pass that maps each `(p. X)` to the source page/evidence and checks lexical support, or emit `[E#]`-style evidence IDs during summarization and reuse `validate_citations`.
+
+**B13 — Visual evidence vectors are not repaired during hydration (Medium):**
+- Symptoms: Startup repair re-embeds text chunks only (`ui/hydration.py:178-197`); it never calls `get_evidence_for_doc()` or `index_evidence_elements()`. If the LanceDB evidence table is lost or corrupted, a “repaired” library silently loses figure/table retrieval. Manual `LifecycleService.reindex_document()` does reindex evidence (`ui/lifecycle_service.py:191-196`).
+- Files: `ui/hydration.py:146-197`, `ui/lifecycle_service.py:162-206`, `core/doc_store.py` (`get_evidence_for_doc`).
+- Impact: Figure/table questions return “not found” after a partial index loss even though the evidence rows still exist in SQLite.
+- Fix: Include evidence elements in the hydration repair set and verify both text and evidence coverage before setting `_startup_hydrated`.
+
+**B14 — Documents are marked `indexed` before vectors and evidence are written (Medium):**
+- Symptoms: `IngestionService` commits SQLite with `status="indexed"` (`ui/ingestion_service.py:239-259`) and only then writes LanceDB (`:272-290`). A crash or LanceDB failure leaves an indexed catalog entry with no vectors until the next startup hydration. Evidence indexing failure is caught and logged without changing document status (`:292-299`).
+- Files: `ui/ingestion_service.py:239-319`, `ui/hydration.py:146-197`, `retrieval/hybrid_retriever.py:588-618`.
+- Impact: Chat can show the document in the library but retrieve nothing; visual evidence can be permanently absent even though the document says “indexed”.
+- Fix: Persist `status="indexing"`, flip to `indexed` only after both vector writes verify, and surface evidence-index failures as a degraded status that repair can target.
+
+**B15 — Environment and lockfile have drifted from each other (High):**
+- Symptoms: `requirements-lock.txt` pins `docling==2.138.0` and `torch==2.14.1`, while the active Python 3.13.5 environment has `docling 2.140.0` and `torch 2.6.0+cu124`. `CLAUDE.md:36` still says `pypdf 5.3.0` while `requirements.txt:4` and the installed package are `6.21.4`. `docs/AUDIT_SUMMARY.md:32` still lists Streamlit `1.42.0`; `.planning/research/STACK.md` and several phase research files also reference `1.42.0`.
+- Files: `requirements.txt`, `requirements-lock.txt:82,539`, `CLAUDE.md:24-36`, `docs/AUDIT_SUMMARY.md:32`, `docs/DEPENDENCY_AUDIT.md:15-16`, `.planning/research/STACK.md`.
+- Impact: The verified lockfile is not what the host runs; Docling minor-version behavior and PyTorch/CUDA differences can change extraction and VRAM use. Documentation claims about the stack are not trustworthy.
+- Fix: Reinstall from the lockfile on a clean Python 3.11 environment, regenerate the lock for 3.11 and 3.13, update `CLAUDE.md`/`AUDIT_SUMMARY.md` to the observed versions, and add a CI check that installed versions match the lock.
+
+**B16 — Some summary profiles still force a research-paper structure onto résumés (Medium):**
+- Symptoms: The `overview` profile explicitly adapts to résumés (`core/summarizer.py:45-46`), but `detailed` mandates “Background & Problem Context / Methodology / Critical Implications” (`:62-77`) and `findings` mandates risks and recommendations (`:108-124`). A résumé has none of those sections, so the model is invited to invent a “core thesis”, methodology, or limitations.
+- Files: `core/summarizer.py:44-125`, `ui/views.py:913-919` (profile choices).
+- Impact: The exact “core thesis / environmental studies / benchmarks” failure mode can recur under the `detailed` or `findings` profile even though `overview` is guarded.
+- Fix: Add a document-type classifier (résumé, paper, exam, report) and select/adapt the profile template; add a “do not invent sections” guard to every profile; add a résumé fixture regression test for all five profiles.
 
 ## Security Considerations
 
 **S1 — Zero-egress invariant is enforced by regex, not by an allowlist renderer (High):**
 - Risk: `ui/sanitizer.py` decodes/rewrites destinations with regexes (`_decode_destination:19`, `_is_dangerous_destination:30`, `_is_external_destination:35`, `:130-200`). Known bypass classes: nested/encoded parens in reference definitions, `<style>` blocks with `url()`, CSS `@import`, SVG `<image href>`, and any HTML tag not in the strip list.
-- Files: `ui/sanitizer.py`, `ui/views.py:779-782`, `ui/components.py:66,83,110` (all `unsafe_allow_html=True` or `st.html`).
-- Current mitigation: `<script>/<iframe>/<object>/<embed>/<style>` stripped; external markdown/HTML links neutralized; document-derived strings passed through `html.escape` (`ui/views.py:769,966`, `ui/components.py:152-153`).
+- Files: `ui/sanitizer.py`, `ui/views.py:407-463,569-571,654-678`, `ui/components.py` (multiple `unsafe_allow_html=True` or `st.html` calls).
+- Current mitigation: `<script>/<iframe>/<object>/<embed>/<style>` stripped; external markdown/HTML links neutralized; document-derived strings passed through `html.escape` (`ui/views.py:1001`, `ui/components.py`).
 - Recommendations: Post-render HTML through a real allowlist sanitizer (e.g. `bleach`/`nh3`) before `st.html`, or ban raw HTML in model output entirely (escape everything, render only markdown). Add a fuzz test corpus of bypass strings (`javascript:`, `data:text/html`, `&#x6a;avascript:`, `//evil`, `\\evil`).
 
 **S2 — Cloud API keys live in plaintext session state and env (Medium):**
@@ -119,8 +174,8 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Recommendations: Store keys only in `st.secrets`/keyring, drop session persistence on consent revoke (`ui/session_state.py:reset_in_memory_session`), extend redaction with a generic `(sk|gsk|api)[-_]?[A-Za-z0-9]{16,}` pattern, and add a test that no provider logs contain the key.
 
 **S3 — No authentication, and non-loopback exposure is one env var away (Medium):**
-- Risk: The app has no auth. `start.py:38-40` refuses non-loopback binds unless `RAG_ALLOW_NON_LOOPBACK=1`, and `.streamlit/config.toml` binds `127.0.0.1`, but the Dockerfile `CMD` binds `0.0.0.0` (`Dockerfile:44`) with `enableCORS = true`. `docker run -p 8501:8501` (rather than the provided compose file, which maps `127.0.0.1:8501`) publishes an unauthenticated document store to the LAN.
-- Files: `Dockerfile:44`, `docker-compose.yml:6-9`, `.streamlit/config.toml`, `start.py:38-40`.
+- Risk: The app has no auth. `start.py:38-40` refuses non-loopback binds unless `RAG_ALLOW_NON_LOOPBACK=1`, and `.streamlit/config.toml` binds `127.0.0.1`, but the Dockerfile `CMD` binds `0.0.0.0` (`Dockerfile:46`) with `enableCORS = true`. `docker run -p 8501:8501` (rather than the provided compose file, which maps `127.0.0.1:8501`) publishes an unauthenticated document store to the LAN.
+- Files: `Dockerfile:46`, `docker-compose.yml:6-9`, `.streamlit/config.toml`, `start.py:38-40`.
 - Recommendations: Bind `127.0.0.1` in the Dockerfile and document overriding it; print a loud startup warning when `RAG_ALLOW_NON_LOOPBACK=1`; consider a local-only auth token for non-loopback mode.
 
 **S4 — Untrusted-PDF resource amplification is only partially bounded (Medium):**
@@ -148,8 +203,8 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Improvement path: Emit progress (`st.status`) per batch; enforce a per-profile max batch count with a clear "summarize first N pages / narrow the selection" message; support `stop` via a session flag checked each iteration; consider a cheaper reduce-first strategy for very long docs.
 
 **P2 — Intra-process-only VRAM gate (Medium):**
-- Issue: `InferenceGate` is a class-level `threading.RLock` (`core/local_llm.py:26`), so it serializes only within one Python process. Multiple Streamlit processes (or `streamlit run` plus scripts) can hit the same `llama-server` concurrently and exceed the 4 GB envelope.
-- Files: `core/local_llm.py:20-120,329,345,367`; `core/summarizer.py:559`; `ingestion/visual_analyzer.py:288-290`.
+- Issue: `InferenceGate` is a class-level `threading.RLock` (`core/local_llm.py:35-43`), so it serializes only within one Python process. Multiple Streamlit processes (or `streamlit run` plus scripts) can hit the same `llama-server` concurrently and exceed the 4 GB envelope.
+- Files: `core/local_llm.py:35-43,329,345,367`; `core/summarizer.py:559`; `ingestion/visual_analyzer.py:288-290`.
 - Improvement path: Add a filesystem lock (`msvcrt`/`filelock` on `data/.inference.lock`) around gate acquisition, or make `llama-server` the authority via `--parallel 1 --cont-batching` and document that the app must be single-instance.
 
 **P3 — Multiple unsynchronized LanceDB writers (Medium):**
@@ -167,7 +222,7 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 **P5 — Eager embedding-model load and never-released global cache (Medium):**
 - Issue: `_MODEL_CACHE` in `retrieval/local_embedding.py` is module-global and only cleared by `clear_shared_model_cache()`; the `SentenceTransformer` is constructed eagerly on first use and never unloaded, holding several hundred MB of RSS for the whole Streamlit process lifetime.
 - Files: `retrieval/local_embedding.py` (`_MODEL_CACHE`, `ensure_model_loaded`, `clear_shared_model_cache`), `ui/session_state.py`.
-- Improvement path: Lazily load on first query (not on view render), bound the cache to one entry, and drop it on idle/provider switch. Also remove the deprecated `search_hybrid` path still reachable via `core/query_intent.py:277-278`.
+- Improvement path: Lazily load on first query (not on view render), bound the cache to one entry, and drop it on idle/provider switch.
 
 **P6 — Telemetry subprocess on a 5 s cadence (Low):**
 - Issue: `nvidia-smi` is spawned with a 2 s timeout every 5 s per session (`core/resource_telemetry.py:89-142`, `main.py:_HEALTH_TTL_SECONDS = 5.0`). On laptops without a GPU each call still pays process-spawn cost and is swallowed at debug level.
@@ -179,13 +234,19 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Files: `ingestion/docling_reader.py:90-140`, `ui/ingestion_service.py`.
 - Improvement path: Module-level singleton converter guarded by a lock, with `DOCLING_ARTIFACTS_PATH` honored.
 
+**P8 — BM25 fallback loads every row on every query (Medium):**
+- Issue: `_bm25_candidate_docs()` calls `query_builder.limit(total)` to materialize every chunk in the scope before Python scoring (`retrieval/hybrid_retriever.py:832-857`). For an unscoped query this is the entire library; with the JSON mirror it copies every document dict per query.
+- Files: `retrieval/hybrid_retriever.py:832-877`, `retrieval/vector_index.py`.
+- Impact: Query latency and memory grow linearly with library size; at tens of thousands of chunks, hybrid search becomes CPU-bound and can stall a Streamlit rerun.
+- Improvement path: Use LanceDB's native FTS/BM25 index for the primary path, keep a precomputed token-count/term-frequency cache for the fallback, and only materialize the top-N candidate rows.
+
 ## Fragile Areas
 
-**F1 — `ui/views.py` is a 1,225-line monolith (High):**
+**F1 — `ui/views.py` is a 1,548-line monolith (High):**
 - Files: `ui/views.py`.
-- Why fragile: It mixes chat streaming, citation rendering, library lifecycle, summarizer orchestration, settings, and diagnostics. Chat streaming (`:660-798`) contains the unsanitized render (B1), the `st.rerun()` re-render contract, and the exception path all in one 140-line block; any edit risks breaking citation/session invariants.
+- Why fragile: It mixes chat streaming, citation rendering, library lifecycle, summarizer orchestration, settings, and diagnostics. Chat streaming (`:710-856`) contains the unsanitized render (B1), the `st.rerun()` re-render contract, and the exception path all in one block; any edit risks breaking citation/session invariants.
 - Safe modification: Add new UI behavior as a `render_*` function in a new module (`ui/views_chat.py`, `ui/views_settings.py`) and import it; do not extend the existing functions. Preserve the "session state only through `ui/session_state.py`" rule.
-- Test coverage: None for view functions (no Streamlit `AppTest` suite).
+- Test coverage: `tests/test_ui_redesign_apptest.py` exercises the shell, workspace navigation, and citation captions via `AppTest`, but not the streaming sanitizer path, CSS selectors, or narrow viewport behavior.
 
 **F2 — Retrieval degradation chain (Medium):**
 - Files: `retrieval/hybrid_retriever.py:219,264,396,548,569,632,829-849`; `retrieval/vector_index.py`; `ui/hydration.py:34`.
@@ -204,14 +265,19 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Safe modification: Wrap `future.result()` in `try/except`, assert `page_results` covers every page index, and keep the per-page fallback-to-primary-output invariant.
 
 **F5 — Provider/model identity assumptions (Medium):**
-- Files: `core/model_identity.py:1-60`, `setup.py:57-82`, `providers/llama_cpp_provider.py:49-53`, `start.py:196`.
-- Why fragile: `read_gguf_metadata` catches only `OSError`/`ValueError`, so a truncated header raises `struct.error` and crashes the launcher instead of producing a friendly message. The canonical filename is a legacy `qwen3-vl-*` alias for Qwen2-VL, hardcoded in three places plus `docker-compose.yml` (`models/qwen3-vl-2b-instruct-q4_k_m.gguf`, `mmproj-f16.gguf`).
-- Safe modification: Catch `struct.error` and `EOFError`, and derive the filename from a single `MODEL_SPEC` constant used by `setup.py`, the launcher, and compose.
+- Files: `core/model_identity.py:95-160`, `setup.py:63-84`, `providers/llama_cpp_provider.py:88-116`, `start.py:190-227`.
+- Why fragile: `read_gguf_metadata` catches only `OSError`/`ValueError`, so a truncated header raises `struct.error` and crashes the launcher instead of producing a friendly message. The canonical filenames (`qwen3.5-2b-q4_k_m.gguf`, `qwen3.5-2b-mmproj-f16.gguf`) are duplicated in `start.py`, `setup.py`, `docker-compose.yml`, and older `.planning`/debug docs still reference the retired `qwen3-vl-*` pair.
+- Safe modification: Catch `struct.error` and `EOFError` in `read_gguf_metadata`/`verify_local_model_pair`, and derive filenames from a single `MODEL_SPEC` constant used by `setup.py`, the launcher, and compose.
 
 **F6 — Streamlit rerun/session-state contract (Low):**
 - Files: `main.py:200-300,380-538`, `ui/session_state.py`, `ui/views.py:142-160`.
 - Why fragile: Health snapshots are keyed on provider identity (`main.py:272-276`) and throttled by a session timestamp; `st.rerun()` after every chat turn re-executes the whole script. `_active_retriever()` falls back to `local_embedding` (`ui/views.py:142-144`), which has no `delete_document`, so the lifecycle preflight can block deletion in a session where only the embedding helper exists.
 - Safe modification: Keep all persistence decisions in `LifecycleService`; do not read/write `st.session_state` from `core/`; add a session-reset test.
+
+**F7 — AMOLED theme depends on undocumented Streamlit DOM selectors (Medium):**
+- Files: `ui/theme.py` (`[data-testid=...]`, `:has(...)`, `.st-key-terminal_notifications`), `ui/components.py`, `.streamlit/config.toml`.
+- Why fragile: Streamlit does not guarantee test IDs or DOM structure across releases. The code already carries a compatibility branch for the 1.66 avatar test-id rename (`ui/theme.py:120`); the next rename silently drops styling, and the fixed 960 px content width/narrow layout has no automated assertion. `tests/test_ui_redesign_apptest.py` asserts text/widget presence, not computed CSS or viewport behavior.
+- Safe modification: Scope new styling through stable `st.container(key=...)` wrappers where possible, keep a selector inventory with the pinned Streamlit version, and add a browser-level visual smoke test (Playwright) for desktop and narrow widths before upgrading Streamlit.
 
 ## Scaling Limits
 
@@ -233,10 +299,10 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 ## Dependencies at Risk
 
 **D1 — Loose pins in `requirements.txt` vs pinned lockfile (High):**
-- Risk: `requirements.txt` allows `docling>=2.0.0`, `lancedb>=0.17.0`, `pymupdf>=1.24.0`, `litellm>=1.50.0`, `pandas`-free but `pyarrow>=14.0.0`, `pillow>=10.2.0`. The Docker image installs `requirements-lock.txt`, but local README flows install `requirements.txt`, so users can land on versions the code's `hasattr` guards were never tested against (LanceDB FTS API and `create_fts_index` deprecation already required a warning filter, `pyproject.toml:23-30`).
-- Files: `requirements.txt`, `requirements-lock.txt`, `Dockerfile:24-26`, `pyproject.toml`.
-- Impact: Divergent behavior between Docker and native installs; hard-to-reproduce ingestion/retrieval bugs.
-- Migration plan: Make `requirements-lock.txt` the only supported install path (README + CI), and generate it for both 3.11 and 3.13 given the `rapidocr` split.
+- Risk: `requirements.txt` allows `docling>=2.0.0`, `lancedb>=0.17.0`, `litellm>=1.50.0`, `pyarrow>=14.0.0`, `pillow>=10.2.0,<13`, and `pymupdf>=1.24.0,<2.0`. The Docker image installs `requirements-lock.txt`, but local README flows install `requirements.txt` (and `setup.py` reads it for `install_requires`), so users can land on versions the code's `hasattr` guards were never tested against (LanceDB FTS API and `create_fts_index` deprecation already required a warning filter, `pyproject.toml:23-30`).
+- Files: `requirements.txt`, `requirements-lock.txt`, `Dockerfile:24-26`, `setup.py:53-58`, `pyproject.toml`.
+- Impact: Divergent behavior between Docker and native installs; hard-to-reproduce ingestion/retrieval bugs. Observed on this host: lockfile `docling==2.138.0` / `torch==2.14.1` vs installed `docling 2.140.0` / `torch 2.6.0+cu124`.
+- Migration plan: Make `requirements-lock.txt` the only supported install path (README + CI), generate it for both 3.11 and 3.13 given the `rapidocr` split, and add a CI check that the installed environment matches the lock.
 
 **D2 — Two OCR packages gated by Python version (Medium):**
 - Risk: `rapidocr-onnxruntime` (<3.13) vs `rapidocr` (>=3.13) have different APIs; only the 3.11 path is exercised in CI (`ubuntu-latest`, 3.11).
@@ -244,9 +310,9 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Migration plan: Add a 3.13 CI leg or drop 3.13 support explicitly; assert the shim resolves on both.
 
 **D3 — `docling` is a large, fast-moving dependency (Medium):**
-- Risk: 2.x minors have changed `DocumentConverter` result shape; the code defensively probes attributes (`ingestion/docling_reader.py:140-224`), which hides breakage rather than failing at import.
-- Files: `requirements.txt:10`, `ingestion/docling_reader.py`.
-- Migration plan: Pin a tested `docling==2.138.0` in the lockfile (already implied), add an integration test that converts a fixture PDF and asserts non-empty markdown.
+- Risk: 2.x minors have changed `DocumentConverter` result shape; the code defensively probes attributes (`ingestion/docling_reader.py:140-224`), which hides breakage rather than failing at import. The lockfile pins `2.138.0`, but the host has `2.140.0`, and `CLAUDE.md` still claims `2.138.0`.
+- Files: `requirements.txt:10`, `requirements-lock.txt:82`, `ingestion/docling_reader.py`.
+- Migration plan: Pin a tested `docling==2.140.0` (or reinstall the locked `2.138.0`) consistently across the lockfile and docs, add an integration test that converts a fixture PDF and asserts non-empty markdown, and verify table/reading-order behavior on the chosen version.
 
 **D4 — Cloud SDK surface pulled in unconditionally (Low):**
 - Risk: `litellm` drags in `boto3`, `botocore`, `aiohttp`, `openai`, `tokenizers` etc. (visible in `requirements-lock.txt`), inflating install size and attack surface for a local-first tool.
@@ -282,7 +348,7 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 
 **T2 — Streaming sanitizer path untested (High):**
 - What's not tested: The invariant "no unsanitized model text reaches the browser" has no test, which is why B1 exists.
-- Files: `ui/views.py:716-721`, `ui/sanitizer.py`, `tests/`.
+- Files: `ui/views.py:774-778`, `ui/sanitizer.py`, `tests/`.
 - Risk: Regression of the core privacy promise.
 - Priority: High.
 
@@ -304,10 +370,10 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Risk: Unintended external transmission with a stale env key.
 - Priority: Medium.
 
-**T6 — UI/theme and scripts untested (Low):**
-- What's not tested: `ui/theme.py` CSS injection, `ui/components.py` SVG formatting, `scripts/*.py` (excluded from some lint paths via `pyproject.toml:18`).
-- Files: `ui/theme.py`, `ui/components.py`, `scripts/`.
-- Risk: Broken rendering and stale benchmark scripts that silently report wrong numbers.
+**T6 — UI/theme and scripts are only partially tested (Low):**
+- What's not tested: `AppTest` covers shell/navigation/captions, but not `ui/theme.py` CSS selectors, `ui/components.py` SVG formatting, narrow viewports, or `scripts/*.py` (excluded from some lint paths via `pyproject.toml:18`).
+- Files: `ui/theme.py`, `ui/components.py`, `tests/test_ui_redesign_apptest.py`, `scripts/`.
+- Risk: Broken rendering after Streamlit test-id changes and stale benchmark scripts that silently report wrong numbers.
 - Priority: Low.
 
 **T7 — Cross-store lifecycle invariants untested (Low):**
@@ -316,6 +382,13 @@ Scope: full repository (`main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`
 - Risk: Resurrection of deleted documents or orphaned vectors.
 - Priority: Low.
 
+**T8 — Recent grounding, repair, and embedding regressions are untested (High):**
+- What's not tested: “where is X currently working” false positive (B10), markdown-heading `partial` false positive (B11), summary `(p. X)` support validation (B12), evidence-vector hydration repair (B13), ingestion status ordering (B14), résumé behavior under the `detailed`/`findings` profiles (B16), and the `EMBEDDING_MAX_LENGTH` wiring (the test at `tests/test_retrieval_semantic.py:59-64` only asserts the constant).
+- Files: `tests/test_grounding_contract.py:230-243`, `tests/test_ui_smoke.py`, `tests/test_retrieval_semantic.py`, `ui/hydration.py`, `ui/ingestion_service.py`.
+- Risk: The exact live failures that motivated this audit can return without a failing test.
+- Priority: High.
+- Fix: Add one regression per item above; assert the location heuristic returns `False` for employment questions, a cited heading-bearing summary is `grounded`, an out-of-evidence page reference is rejected, and a lost evidence table is repaired on hydration.
+
 ---
 
-*Concerns audit: 2026-10-28*
+*Concerns audit: 2026-10-29*

@@ -17,7 +17,7 @@
 | STORE-02 Typed Pydantic canonical models | Met | `core/models.py` | `tests/test_models.py` (20) |
 | STORE-03 SHA/config-versioned disk cache | Met | `core/models.py::cache_dir_for`, `ui/ingestion_service.py`, `ui/hydration.py` | `test_cache_invalidation`, `test_hydration` |
 | INF-01 Unified provider interface | Met | `providers/model_provider.py` | `tests/test_model_provider.py` (12) |
-| INF-02 Local llama-server 2B VLM, 4K–8K | Met (manual) | `providers/llama_cpp_provider.py`, `core/model_identity.py`; actual weights are Qwen2-VL 2B | `test_llama_cpp_provider` (17), `test_audit_repairs::test_local_model_identity...`; live generation **UNTESTED** |
+| INF-02 Local llama-server 2B VLM, 4K–8K | Met (verified live) | `providers/llama_cpp_provider.py`, `core/model_identity.py`, `core/runtime_info.py`; weights are Qwen3.5-2B Q4_K_M (arch `qwen35`) on llama.cpp v0.8.0 (`b11960`) | `test_llama_cpp_provider` (21), `test_runtime_info` (16), `test_audit_repairs::test_local_model_identity...`; live text + image + streaming verified 2026-10-29 (see `docs/EVALUATION.md` §5) |
 | INF-03 100% offline local mode | Met | local provider only; sanitizer; no telemetry; cloud gated | `test_cloud_privacy`, `test_sanitizer`, `test_local_llm`, `test_audit_repairs` |
 | INF-04 Optional consented LiteLLM routing | Met | `providers/litellm_provider.py`, `core/local_llm.py` | `test_litellm_provider` (11), `test_cloud_privacy` (8) |
 | VIS-01 Visual element detection/crops | Met | `ingestion/visual_analyzer.py` | `tests/test_visual_analyzer.py` (9) |
@@ -50,7 +50,7 @@
 | FR-01 Robust PDF ingestion | Met | INGEST-01/02/05 |
 | FR-02 Structured Docling extraction | Met | INGEST-03, P1-3 table splitting |
 | FR-03 Conditional local OCR | Met (manual) | INGEST-04 |
-| FR-04 Selective visual understanding | Met (manual) | VIS-01/02/03; corrected to Qwen2-VL in docs |
+| FR-04 Selective visual understanding | Met (verified live) | VIS-01/02/03; Qwen3.5-2B VLM descriptions verified on chart/diagram/table corpus pages |
 | FR-05 Storage and provenance | Met | STORE-01/02/03, atomic ingestion |
 | FR-06 Hierarchical summarization | Met | SUMM-01/02 |
 | FR-07 Grounded QA + ≥95% citations | Met | QA-01..04 |
