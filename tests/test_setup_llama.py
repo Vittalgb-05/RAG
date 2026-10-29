@@ -1,6 +1,8 @@
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import setup as setup_mod
 
 
@@ -76,3 +78,112 @@ def test_run_full_setup_orchestration(tmp_path):
         mock_deps.assert_called_once()
         mock_models.assert_called_once()
         mock_llama.assert_called_once()
+
+
+def _write_tar(path, entries):
+    """Create a tar.gz from (name, kind, payload) entries for extraction tests."""
+    import io
+    import tarfile
+
+    with tarfile.open(path, "w:gz") as tf:
+        for name, kind, payload in entries:
+            info = tarfile.TarInfo(name)
+            if kind == "dir":
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                tf.addfile(info)
+            elif kind == "sym":
+                info.type = tarfile.SYMTYPE
+                info.linkname = payload
+                info.mode = 0o777
+                tf.addfile(info)
+            elif kind == "lnk":
+                info.type = tarfile.LNKTYPE
+                info.linkname = payload
+                info.mode = 0o644
+                tf.addfile(info)
+            else:
+                data = payload.encode("utf-8")
+                info.size = len(data)
+                info.mode = 0o644
+                tf.addfile(info, io.BytesIO(data))
+
+
+def test_safe_extract_archive_strips_root_and_restores_links(tmp_path):
+    """Verify strip_root flattens the archive and recreates contained soname links."""
+    archive = tmp_path / "llama.tar.gz"
+    _write_tar(
+        archive,
+        [
+            ("pkg-b1/", "dir", ""),
+            ("pkg-b1/llama-server", "file", "binary"),
+            ("pkg-b1/libllama-common.so.0.8.0", "file", "lib"),
+            ("pkg-b1/libllama-common.so.0", "sym", "libllama-common.so.0.8.0"),
+            ("pkg-b1/libllama-common.so", "sym", "libllama-common.so.0"),
+            ("pkg-b1/hardlink.so", "lnk", "pkg-b1/libllama-common.so.0.8.0"),
+        ],
+    )
+    dest = tmp_path / "out"
+    setup_mod.safe_extract_archive(archive, dest, strip_root=True)
+
+    assert (dest / "llama-server").read_text(encoding="utf-8") == "binary"
+    assert not (dest / "pkg-b1").exists()
+    assert (dest / "libllama-common.so").resolve() == (dest / "libllama-common.so.0.8.0").resolve()
+    assert (dest / "hardlink.so").read_text(encoding="utf-8") == "lib"
+
+
+def test_safe_extract_archive_reextracts_over_existing_links(tmp_path):
+    """Verify re-extraction replaces stale links instead of following them."""
+    archive = tmp_path / "pkg.tar.gz"
+    _write_tar(
+        archive,
+        [
+            ("pkg/", "dir", ""),
+            ("pkg/libfoo.so.1.0", "file", "lib"),
+            ("pkg/libfoo.so.1", "sym", "libfoo.so.1.0"),
+            ("pkg/libfoo.so", "sym", "libfoo.so.1"),
+        ],
+    )
+    dest = tmp_path / "out"
+    setup_mod.safe_extract_archive(archive, dest, strip_root=True)
+    setup_mod.safe_extract_archive(archive, dest, strip_root=True)
+
+    assert (dest / "libfoo.so.1.0").is_file()
+    assert (dest / "libfoo.so").resolve() == (dest / "libfoo.so.1.0").resolve()
+
+
+def test_safe_extract_archive_zip_stays_flat(tmp_path):
+    """Verify the zip path (Windows builds) still extracts without flattening."""
+    import zipfile
+
+    archive = tmp_path / "llama-win.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("llama-server.exe", "bin")
+        zf.writestr("ggml.dll", "dll")
+    dest = tmp_path / "out"
+    setup_mod.safe_extract_archive(archive, dest)
+    assert (dest / "llama-server.exe").read_text(encoding="utf-8") == "bin"
+    assert (dest / "ggml.dll").is_file()
+
+
+def test_safe_extract_archive_rejects_escaping_members(tmp_path, capsys):
+    """Verify escaping symlinks are skipped and traversal members are rejected."""
+    archive = tmp_path / "evil.tar.gz"
+    _write_tar(
+        archive,
+        [
+            ("pkg/", "dir", ""),
+            ("pkg/libgood.so.1", "file", "good"),
+            ("pkg/libgood.so", "sym", "libgood.so.1"),
+            ("pkg/evil", "sym", "../../etc/passwd"),
+            ("pkg/evil-hard", "lnk", "../../etc/passwd"),
+            ("pkg/../escape.txt", "file", "escaped"),
+        ],
+    )
+    dest = tmp_path / "out"
+    with pytest.raises(ValueError, match="escapes destination"):
+        setup_mod.safe_extract_archive(archive, dest, strip_root=True)
+    assert not (dest / "evil").exists()
+    assert not (dest / "evil-hard").exists()
+    assert not (tmp_path / "escape.txt").exists()
+    assert "Skipping unsafe archive link" in capsys.readouterr().out
