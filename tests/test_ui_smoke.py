@@ -73,7 +73,7 @@ def test_status_pill_rendering():
     """Verify monochrome status pill markup for local and cloud states."""
     local_pill = render_status_pill("Local Mode", variant="local")
     assert "status-badge local" in local_pill
-    assert "#5EEAD4" in local_pill
+    assert "#34D399" in local_pill
     assert "Local Mode" in local_pill
 
     cloud_pill = render_status_pill("Cloud Active", variant="cloud")
@@ -293,14 +293,16 @@ def test_verification_caption_separates_validity_from_support():
         "support_checked": True,
         "support_precision": 0.0,
     }
-    caption = verification_caption(valid_but_unsupported)
-    assert "Citation validity 100%" in caption
-    assert "support not confirmed" in caption
-    assert "Verified Grounding" not in caption
+    unsupported = dict(valid_but_unsupported, grounding_status="unsupported")
+    caption = verification_caption(unsupported)
+    assert "Citations 100% in range" in caption
+    assert "Unsupported" in caption
+    assert "Grounded" not in caption
 
-    supported = dict(valid_but_unsupported, support_precision=1.0)
-    assert "support confirmed" in verification_caption(supported)
+    supported = dict(valid_but_unsupported, support_precision=1.0, grounding_status="grounded", support_verified=True)
+    assert "grounded (100% claim support)" in verification_caption(supported)
 
+    # Rank existence alone is never allowed to render as grounded.
     unchecked = dict(valid_but_unsupported, support_checked=False, support_precision=0.0)
     assert "support not verified" in verification_caption(unchecked)
 
@@ -313,10 +315,12 @@ def test_verification_caption_separates_validity_from_support():
         "precision": 1.0,
         "support_checked": True,
         "support_precision": 0.4,
+        "grounding_status": "partial",
+        "support_verified": False,
     }
     auto_caption = verification_caption(auto_attributed)
     assert "Auto-attributed citations (2/2)" in auto_caption
-    assert "partially supported" in auto_caption
+    assert "Partially supported" in auto_caption
 
     # Mixed citations
     mixed = {
@@ -327,6 +331,8 @@ def test_verification_caption_separates_validity_from_support():
         "precision": 1.0,
         "support_checked": True,
         "support_precision": 0.8,
+        "grounding_status": "grounded",
+        "support_verified": True,
     }
     mixed_caption = verification_caption(mixed)
     assert "Mixed citations (2 model-generated, 1 auto-attributed)" in mixed_caption

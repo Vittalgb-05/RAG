@@ -2,6 +2,9 @@
 
 import html
 from pathlib import Path
+import time
+import uuid
+
 import streamlit as st
 
 ICONS_DIR = Path(__file__).resolve().parent.parent / "assets" / "icons"
@@ -84,8 +87,8 @@ def render_stat_card(label: str, value: str | int, subtext: str = "", icon_name:
 
 
 def render_status_pill(text: str, variant: str = "local") -> str:
-    """Generate HTML markup for an AMOLED status badge."""
-    color = "#5EEAD4" if variant == "local" else ("#A78BFA" if variant == "cloud" else "#F87171")
+    """Generate HTML markup for a status badge using the central theme tokens."""
+    color = "#34D399" if variant == "local" else ("#A78BFA" if variant == "cloud" else "#F87171")
     icon_name = "check" if variant == "local" else ("cloud" if variant == "cloud" else "alert")
     icon_svg = get_svg_icon(icon_name, size=12, color=color)
     safe_text = html.escape(text)
@@ -159,3 +162,79 @@ def render_chatgpt_citation_pill(
         f"{doc_svg}<span>{rank_prefix}{safe_name} · p. {page}</span>"
         f"</span>"
     )
+
+
+NOTIFICATION_TTL_SECONDS = 120.0
+NOTIFICATION_DEDUPE_SECONDS = 30.0
+NOTIFICATION_MAX_VISIBLE = 3
+
+
+def push_notification(kind: str, message: str) -> None:
+    """Queue a real backend event for the terminal-style notification panel.
+
+    Identical messages are deduplicated, and only the newest five events are kept.
+    This never invents an event: callers push only after an actual action result.
+
+    Args:
+        kind: One of ``success``, ``warning``, ``error``, or ``info``.
+        message: Redacted, user-facing event text.
+    """
+    entries = list(st.session_state.get("notifications", []))
+    now = time.time()
+    clean = message.strip()
+    if not clean:
+        return
+    for entry in entries:
+        if entry.get("message") == clean and (now - float(entry.get("ts", 0.0))) < NOTIFICATION_DEDUPE_SECONDS:
+            entry["ts"] = now
+            st.session_state.notifications = entries[-5:]
+            return
+    entries.append(
+        {
+            "id": uuid.uuid4().hex[:8],
+            "kind": kind if kind in {"success", "warning", "error", "info"} else "info",
+            "message": clean,
+            "ts": now,
+        }
+    )
+    st.session_state.notifications = entries[-5:]
+
+
+def render_notifications() -> None:
+    """Render dismissible, auto-collapsing terminal notifications in the lower right."""
+    entries = [
+        entry
+        for entry in st.session_state.get("notifications", [])
+        if (time.time() - float(entry.get("ts", 0.0))) < NOTIFICATION_TTL_SECONDS
+    ]
+    st.session_state.notifications = entries
+    if not entries:
+        return
+
+    visible = entries[-NOTIFICATION_MAX_VISIBLE:]
+    hidden = len(entries) - len(visible)
+    with st.container(key="terminal_notifications"):
+        for entry in visible:
+            kind = entry.get("kind", "info")
+            color = {
+                "success": "#34D399",
+                "warning": "#FBBF24",
+                "error": "#F87171",
+                "info": "#A1A1AA",
+            }.get(kind, "#A1A1AA")
+            stamp = time.strftime("%H:%M:%S", time.localtime(float(entry.get("ts", time.time()))))
+            st.markdown(
+                f'<div class="terminal-line" style="border-left: 2px solid {color};">'
+                f'<span class="terminal-time">{stamp}</span> '
+                f'<span class="terminal-kind" style="color: {color};">{html.escape(kind.upper())}</span> '
+                f'<span class="terminal-message">{html.escape(entry.get("message", ""))}</span></div>',
+                unsafe_allow_html=True,
+            )
+        if hidden > 0:
+            st.markdown(
+                f'<div class="terminal-more">+{hidden} earlier event(s)</div>',
+                unsafe_allow_html=True,
+            )
+        if st.button("Clear", key="clear_terminal_notifications"):
+            st.session_state.notifications = []
+            st.rerun()

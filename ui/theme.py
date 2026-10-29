@@ -2,13 +2,14 @@
 
 import streamlit as st
 
-# AMOLED Design Tokens (Stage 6 Contract)
+# AMOLED design tokens (single source of truth for the rebuilt UI).
+# 8px spacing scale; 12-16px radii; restrained violet accent, green success.
 COLOR_BG = "#09090B"
 COLOR_SURFACE = "#111114"
-COLOR_ELEVATED = "#18181D"
+COLOR_ELEVATED = "#19191D"
 COLOR_BORDER = "#29292F"
 COLOR_PRIMARY = "#A78BFA"
-COLOR_SECONDARY = "#5EEAD4"
+COLOR_SECONDARY = "#34D399"
 COLOR_TEXT_PRIMARY = "#F4F4F5"
 COLOR_TEXT_MUTED = "#A1A1AA"
 COLOR_DANGER = "#F87171"
@@ -23,18 +24,24 @@ THEME_CSS = f"""
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }}
 
-/* Main Chat Content Column - Centered 820px max width */
+/* Main content column - centered ~960px */
 .block-container {{
-    max-width: 820px !important;
-    padding-top: 1.5rem !important;
-    padding-bottom: 6rem !important;
-    padding-left: 1.25rem !important;
-    padding-right: 1.25rem !important;
+    max-width: 960px !important;
+    padding-top: 24px !important;
+    padding-bottom: 104px !important;
+    padding-left: 24px !important;
+    padding-right: 24px !important;
 }}
 
 [data-testid="stSidebar"] {{
     background-color: {COLOR_SURFACE};
     border-right: 1px solid {COLOR_BORDER};
+    min-width: 240px !important;
+    max-width: 280px !important;
+}}
+
+[data-testid="stSidebar"] > div:first-child {{
+    padding-top: 16px;
 }}
 
 [data-testid="stSidebar"] [data-testid="stSidebarHeader"] {{
@@ -109,7 +116,10 @@ small, .text-muted {{
     margin-bottom: 1.25rem !important;
 }}
 
-/* User chat message bubble - compact elevated container */
+/* User chat message bubble - compact elevated container.
+   Streamlit 1.66 renamed the avatar test ids (chatAvatarIcon-* -> stChatMessageAvatar*);
+   both spellings are matched so the bubble styling survives the version it runs on. */
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]),
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {{
     background-color: {COLOR_ELEVATED} !important;
     border: 1px solid {COLOR_BORDER} !important;
@@ -120,25 +130,26 @@ small, .text-muted {{
 }}
 
 /* Assistant chat message - readable uncluttered flow */
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]),
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {{
     background-color: transparent !important;
     border: none !important;
     padding: 0 !important;
 }}
 
-/* Pinned Chat Input at bottom - Modern Pill Container */
+/* Pinned Composer - one wide rounded dark surface */
 [data-testid="stChatInput"] {{
-    background-color: #141417 !important;
-    border: 1px solid #27272A !important;
-    border-radius: 26px !important;
+    background-color: {COLOR_ELEVATED} !important;
+    border: 1px solid {COLOR_BORDER} !important;
+    border-radius: 16px !important;
     padding: 0.35rem 0.65rem !important;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5) !important;
     transition: all 180ms ease !important;
 }}
 
 [data-testid="stChatInput"]:focus-within {{
-    border-color: #3F3F46 !important;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 0 0 1px #52525B !important;
+    border-color: {COLOR_PRIMARY}80 !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55) !important;
 }}
 
 [data-testid="stChatInput"] textarea {{
@@ -148,7 +159,7 @@ small, .text-muted {{
 }}
 
 [data-testid="stChatInput"] button {{
-    background-color: #27272A !important;
+    background-color: {COLOR_BORDER} !important;
     border-radius: 50% !important;
     color: #F4F4F5 !important;
     width: 32px !important;
@@ -360,6 +371,104 @@ small, .text-muted {{
     border: 1px solid {COLOR_BORDER};
     border-radius: 8px;
     margin-bottom: 0.75rem;
+}}
+
+
+/* Terminal-style backend notifications, lower-right, non-overlapping */
+.st-key-terminal_notifications {{
+    position: fixed !important;
+    right: 24px !important;
+    bottom: 104px !important;
+    width: 360px !important;
+    max-width: calc(100vw - 48px) !important;
+    z-index: 9999 !important;
+    background-color: {COLOR_SURFACE} !important;
+    border: 1px solid {COLOR_BORDER} !important;
+    border-radius: 12px !important;
+    padding: 8px 12px !important;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55) !important;
+}}
+
+.terminal-line {{
+    font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace !important;
+    font-size: 0.72rem !important;
+    line-height: 1.45 !important;
+    color: {COLOR_TEXT_MUTED} !important;
+    padding: 4px 8px !important;
+    margin: 2px 0 !important;
+    word-break: break-word !important;
+}}
+
+.terminal-time {{ color: #71717A !important; }}
+.terminal-kind {{ font-weight: 700 !important; letter-spacing: 0.04em !important; }}
+.terminal-message {{ color: {COLOR_TEXT_PRIMARY} !important; }}
+.terminal-more {{ font-size: 0.68rem !important; color: #71717A !important; padding-left: 8px !important; }}
+
+/* Sidebar sections and truthful provider status */
+.sidebar-section-label {{
+    font-size: 0.68rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    color: {COLOR_TEXT_MUTED} !important;
+    font-weight: 700 !important;
+    margin: 1.1rem 0 0.4rem !important;
+}}
+
+.provider-status {{
+    display: flex !important;
+    align-items: center !important;
+    gap: 0.5rem !important;
+    font-size: 0.78rem !important;
+    color: {COLOR_TEXT_PRIMARY} !important;
+    padding: 0.35rem 0 !important;
+}}
+
+.provider-dot {{
+    width: 7px !important;
+    height: 7px !important;
+    border-radius: 50% !important;
+    flex: 0 0 auto !important;
+}}
+
+.sidebar-meta {{
+    font-size: 0.72rem !important;
+    color: {COLOR_TEXT_MUTED} !important;
+}}
+
+/* Compact sidebar rhythm so Settings remains reachable at laptop heights */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{
+    gap: 0.45rem !important;
+}}
+[data-testid="stSidebar"] hr {{
+    margin: 0.25rem 0 !important;
+}}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {{
+    margin-bottom: 0 !important;
+}}
+
+/* Keep the sidebar scrollbar visually quiet on dark backgrounds */
+[data-testid="stSidebar"] *::-webkit-scrollbar {{
+    width: 6px;
+    height: 6px;
+}}
+[data-testid="stSidebar"] *::-webkit-scrollbar-thumb {{
+    background: {COLOR_BORDER};
+    border-radius: 3px;
+}}
+[data-testid="stSidebar"] *::-webkit-scrollbar-track {{
+    background: transparent;
+}}
+
+/* Suggestion grid stays readable without overlaps on narrow viewports */
+@media (max-width: 900px) {{
+    .st-key-hero_suggestions [data-testid="stHorizontalBlock"] {{
+        flex-wrap: wrap !important;
+        gap: 0.5rem !important;
+    }}
+    .st-key-hero_suggestions [data-testid="stColumn"] {{
+        flex: 1 1 calc(50% - 0.5rem) !important;
+        min-width: calc(50% - 0.5rem) !important;
+    }}
 }}
 
 /* Reduced Motion Override */
