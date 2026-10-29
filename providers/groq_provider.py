@@ -45,7 +45,9 @@ class GroqProvider(BaseModelProvider):
                 import streamlit as st
 
                 api_key = st.secrets.get("GROQ_API_KEY")
-            except (KeyError, FileNotFoundError, AttributeError):
+            except (KeyError, FileNotFoundError, AttributeError, RuntimeError):
+                # Streamlit >= 1.5x raises RuntimeError outside a script run context
+                # (for example when the provider is constructed from a test or CLI).
                 api_key = None
 
             if not api_key:

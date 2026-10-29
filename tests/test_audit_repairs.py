@@ -207,15 +207,17 @@ def test_long_markdown_table_split_repeats_header() -> None:
 
 
 @pytest.mark.skipif(
-    not (REPO_ROOT / "models" / "qwen3-vl-2b-instruct-q4_k_m.gguf").exists(),
+    not (REPO_ROOT / "models" / "qwen3.5-2b-q4_k_m.gguf").exists(),
     reason="local GGUF artifacts are not installed",
 )
 def test_local_model_identity_matches_declared_architecture() -> None:
-    """The shipped files must be a compatible Qwen-VL LM/projector pair."""
-    lm_path = REPO_ROOT / "models" / "qwen3-vl-2b-instruct-q4_k_m.gguf"
-    proj_path = REPO_ROOT / "models" / "mmproj-f16.gguf"
+    """The shipped files must be a compatible Qwen3.5-2B LM/projector pair."""
+    lm_path = REPO_ROOT / "models" / "qwen3.5-2b-q4_k_m.gguf"
+    proj_path = REPO_ROOT / "models" / "qwen3.5-2b-mmproj-f16.gguf"
     lm = read_gguf_metadata(lm_path)
-    assert lm.architecture == "qwen2vl"
+    assert lm.architecture == "qwen35"
+    proj = read_gguf_metadata(proj_path)
+    assert proj.metadata.get("clip.projector_type") == "qwen3vl_merger"
     assert verify_local_model_pair(lm_path, proj_path) == []
 
 

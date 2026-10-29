@@ -11,9 +11,19 @@ from dataclasses import dataclass
 from pathlib import Path
 import struct
 
-# Expected identities for the bundled local model.
-EXPECTED_LM_ARCHITECTURES = {"qwen2vl", "qwen3vl"}
-EXPECTED_PROJECTOR_MARKERS = ("qwen2vl_merger", "qwen3vl_merger")
+# Supported language-model architecture -> projector types it accepts.
+#
+# The bundled local model is Qwen3.5-2B: GGUF architecture ``qwen35`` paired with a
+# ``qwen3vl_merger`` vision projector. Qwen2-VL (``qwen2vl`` + ``qwen2vl_merger``)
+# stays in the mapping so an existing installation can be rolled back to the
+# previous weights without editing code, while a cross-generation pairing (for
+# example new Qwen3.5 weights with the old Qwen2-VL projector) is still rejected.
+SUPPORTED_MODEL_PAIRS: dict[str, tuple[str, ...]] = {
+    "qwen35": ("qwen3vl_merger",),
+    "qwen2vl": ("qwen2vl_merger",),
+}
+EXPECTED_LM_ARCHITECTURES = set(SUPPORTED_MODEL_PAIRS)
+EXPECTED_PROJECTOR_MARKERS = tuple(sorted({marker for markers in SUPPORTED_MODEL_PAIRS.values() for marker in markers}))
 
 _GGUF_MAGIC = b"GGUF"
 _NUMERIC_FORMATS: dict[int, tuple[str, int]] = {
@@ -152,11 +162,15 @@ def verify_local_model_pair(model_path: str | Path, mmproj_path: str | Path) -> 
             problems.append(
                 "Vision projector type is "
                 f"{proj.metadata.get('clip.projector_type', proj.architecture)!r}; "
-                "expected a Qwen2-VL/Qwen3-VL merger."
+                "expected a Qwen3.5-VL/Qwen2-VL merger."
             )
-        if lm is not None and "qwen2" in lm.architecture.lower() and "qwen3" in proj.architecture.lower():
-            problems.append("Architecture mismatch: Qwen2 language model paired with a Qwen3 projector.")
-        if lm is not None and "qwen3" in lm.architecture.lower() and "qwen2" in proj.architecture.lower():
-            problems.append("Architecture mismatch: Qwen3 language model paired with a Qwen2 projector.")
+        if lm is not None:
+            expected_markers = SUPPORTED_MODEL_PAIRS.get(lm.architecture.lower())
+            projector_type = str(proj.metadata.get("clip.projector_type", "") or proj.architecture).lower()
+            if expected_markers is not None and not any(m in projector_type for m in expected_markers):
+                problems.append(
+                    f"Architecture mismatch: {lm.architecture!r} language model expects projector "
+                    f"{list(expected_markers)}, got {projector_type!r}."
+                )
 
     return problems
