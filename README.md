@@ -7,15 +7,15 @@
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-Local_Inference-000000?logo=cplusplus)](https://github.com/ggerganov/llama.cpp)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Hybrid_Vector_DB-black)](https://lancedb.com/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-318%20Passed-success)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-479%20Passed-success)](tests/)
 
 ---
 
 ## Highlights
 
 - **Local-first privacy (zero data egress by default).** Ingestion, OCR, embeddings, vector search, and inference all run on your hardware. No document text, embeddings, or queries leave the machine unless you explicitly enable Cloud Mode.
-- **Multimodal document intelligence.** Parses digital text and tables with Docling, conditionally invokes RapidOCR on low-text pages, crops visual figures and charts, and describes them with the Qwen2-VL 2B vision-language model.
-- **Tuned for 4 GB VRAM (RTX 3050).** Quantized Qwen2-VL 2B weights (kept under the legacy `qwen3-vl-2b-instruct-q4_k_m.gguf` filename) with `mmproj-f16` profile at ~3.45 GB projected peak VRAM with ~646 MB headroom, under the 3.8 GB safety target.
+- **Multimodal document intelligence.** Parses digital text and tables with Docling, conditionally invokes RapidOCR on low-text pages, crops visual figures and charts, and describes them with the Qwen3.5-2B vision-language model.
+- **Tuned for 4 GB VRAM (RTX 3050).** Qwen3.5-2B Q4_K_M weights (`qwen3.5-2b-q4_k_m.gguf`, 1.31 GB) plus the F16 vision projector (`qwen3.5-2b-mmproj-f16.gguf`, 668 MB) measured at **2,658 MiB** of 4,096 MiB VRAM at a 4K context window with `-ngl 28`, leaving ~1.4 GB headroom. See `docs/LOCAL_INFERENCE.md`.
 - **Hybrid dense + lexical retrieval.** Semantic embeddings (`all-MiniLM-L6-v2`, 384-dim, CPU-pinned) combined with BM25 keyword search via Reciprocal Rank Fusion (RRF), persisted in LanceDB with SQLite metadata.
 - **Verifiable page citations.** XML-framed grounded prompts with an automated citation validator (precision gate) and abstention behavior for unanswerable questions. The UI renders citation badges, source chips, and an evidence drawer.
 - **Multi-profile summarization.** Five profiles — Overview, Detailed, Study Notes, Tables & Figures, Findings — generated via single-pass or map-reduce paths with SHA-256 content-hash caching in SQLite.
@@ -40,7 +40,7 @@ flowchart TD
         Hash --> Docling["Docling Layout and Table Parsing"]
         Docling -->|Low-text pages| OCR["RapidOCR Conditional Fallback"]
         Docling -->|Visual figures and charts| Crop["Visual Element Cropper"]
-        Crop --> VLM["Qwen2-VL 2B Image Analysis"]
+        Crop --> VLM["Qwen3.5-2B Image Analysis"]
         Docling & OCR & VLM --> Chunks["Structured Chunks and Bounding Boxes"]
     end
 
@@ -59,7 +59,7 @@ flowchart TD
 
     subgraph Generation ["Local and Cloud Inference"]
         Context --> Prompt["XML Prompt Assembly and Token Budgeting"]
-        Prompt -->|Default: local| LlamaServer["llama-server (Qwen2-VL 2B GGUF)"]
+        Prompt -->|Default: local| LlamaServer["llama-server v0.8.0 (Qwen3.5-2B GGUF)"]
         Prompt -->|Consented cloud| LiteLLM["LiteLLM (Groq / OpenAI / Anthropic)"]
         LlamaServer & LiteLLM --> Stream["Streaming SSE Response"]
         Stream --> Verify["Citation Validator and Page Tagging"]
@@ -145,17 +145,28 @@ pip install -e .
 
 ### 3. Acquire Local Models
 
-Download the GGUF model and multimodal projector into a `models/` directory:
+Download the GGUF model and multimodal projector into a `models/` directory, or let the installer do it with pinned revisions and SHA-256 verification:
+
+```bash
+python setup.py download_models
+```
+
+Manual equivalent — `SoAIHQ/Qwen3.5-2B-GGUF` at revision `377fa65bb36aa83414de1ab3b40f6f15b0324cdc` (Apache-2.0), whose `SHA256SUMS` matches the digests below:
 
 ```bash
 mkdir models
 
-# Download Qwen2-VL 2B Instruct GGUF (~1.4 GB; saved under the legacy filename
-# the app expects)
-curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/qwen2-vl-2b-instruct-q4_k_m.gguf
+# Qwen3.5-2B Q4_K_M (1,312,165,056 bytes) — GGUF architecture "qwen35"
+curl -L -o models/qwen3.5-2b-q4_k_m.gguf \
+  https://huggingface.co/SoAIHQ/Qwen3.5-2B-GGUF/resolve/377fa65bb36aa83414de1ab3b40f6f15b0324cdc/Qwen3.5-2B-Q4_K_M.gguf
 
-# Download Multimodal Projector mmproj-f16 (~600 MB)
-curl -L -o models/mmproj-f16.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-qwen2-vl-2b-instruct-f16.gguf
+# Vision projector F16 (668,227,136 bytes) — clip.projector_type "qwen3vl_merger"
+curl -L -o models/qwen3.5-2b-mmproj-f16.gguf \
+  https://huggingface.co/SoAIHQ/Qwen3.5-2B-GGUF/resolve/377fa65bb36aa83414de1ab3b40f6f15b0324cdc/mmproj-Qwen3.5-2B-f16.gguf
+
+# Expected digests
+# a8b50de00b780c0f3c16f07cb041a1ecd678b6e22fd8cde91e57fe4b5031523b  models/qwen3.5-2b-q4_k_m.gguf
+# 044a0ea136cca70711ae16e23b24d754b44eab6f2462d187aee4d7c7a9503d36  models/qwen3.5-2b-mmproj-f16.gguf
 ```
 
 ### 4. Verify and Start Local `llama-server`
@@ -163,22 +174,31 @@ curl -L -o models/mmproj-f16.gguf https://huggingface.co/Qwen/Qwen2-VL-2B-Instru
 Verify that the filename and projector actually describe the same architecture before launching (the launcher also enforces this):
 
 ```bash
-python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3-vl-2b-instruct-q4_k_m.gguf', 'models/mmproj-f16.gguf') or 'identity OK')"
+python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3.5-2b-q4_k_m.gguf', 'models/qwen3.5-2b-mmproj-f16.gguf') or 'identity OK')"
 ```
 
+The expected native runtime is **llama.cpp v0.8.0 (build `b11960`)**. Install the pinned Windows CUDA 12.4 build and verify it reports itself:
+
+```bash
+python setup.py --llama-server
+./tools/llama-server/llama-server.exe --version
+# version: 0.8.0-dev (build 11960, commit 8642541b2)
+```
 
 Run `llama-server` with parameters tuned for 4 GB VRAM (batch caps prevent transient spikes during prompt ingestion; see `docs/LOCAL_INFERENCE.md` for 8K-context and Flash Attention options):
 
 ```bash
 llama-server \
-  -m models/qwen3-vl-2b-instruct-q4_k_m.gguf \
-  --mmproj models/mmproj-f16.gguf \
+  -m models/qwen3.5-2b-q4_k_m.gguf \
+  --mmproj models/qwen3.5-2b-mmproj-f16.gguf \
   -c 4096 \
   -ngl 28 \
   -b 512 -ub 512 \
   --host 127.0.0.1 \
   --port 8080
 ```
+
+Qwen3.5 enables reasoning tokens by default; the app's local provider sends `reasoning_effort: "none"` so grounded answers are not crowded out of the bounded context. When calling the server by hand, add `--reasoning-budget 0` or send the same request field.
 
 ### 5. Launch RAG Assistant
 

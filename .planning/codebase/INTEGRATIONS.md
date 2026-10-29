@@ -1,162 +1,166 @@
 # External Integrations
 
-**Analysis Date:** 2026-10-28
-
-<!-- refreshed: 2026-10-28 -->
+**Analysis Date:** 2026-10-29
 
 ## APIs & External Services
 
-**Local Inference (default, loopback-only):**
-- **llama-server (llama.cpp release `b11718`)** — the primary LLM/VLM backend.
-  - SDK/Client: `httpx==0.28.1`
-  - Implementation: `providers/llama_cpp_provider.py`
-  - Base URL resolution: `LLAMA_SERVER_URL` → else `http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}` → else `http://127.0.0.1:8080` (`providers/llama_cpp_provider.py:76-83`)
-  - Endpoints used:
-    - `GET /health` — `check_health()`; `200` → healthy, `503` → `loading` ("loading the model into VRAM") (`providers/llama_cpp_provider.py:126-145`)
-    - `POST /v1/chat/completions` — `generate_text()` (`providers/llama_cpp_provider.py:222`)
-    - `POST /v1/chat/completions` with `stream=true` — SSE `stream_text()`, parsing `choices[0].delta.content` (`providers/llama_cpp_provider.py:271-284`)
-    - `POST /v1/chat/completions` with `image_url` data URI — `analyze_image()` (`providers/llama_cpp_provider.py:347`)
-    - `GET /v1/models` — manual diagnostics only (documented in `docs/ENDPOINT_INTEGRATION_MATRIX.md`)
-  - Auth: none. Egress is constrained by a loopback allowlist: `{"localhost","127.0.0.1","::1","host.docker.internal","llama-server"}` plus `ipaddress.is_loopback`; anything else raises `ValueError` unless `allow_remote=True` (`providers/llama_cpp_provider.py:90-102`).
-  - Timeouts: `connect=2.0, read=60.0, write=10.0, pool=5.0`; `/health` uses a 2.0s override.
-  - Model: `qwen3-vl-2b-instruct-q4_k_m.gguf` + `mmproj-f16.gguf`, context `4096`, `-ngl 28`.
+**Local inference (default, loopback only):**
+- llama-server (`llama.cpp` v0.8.0 / build `b11960`) — the sole inference backend in local mode.
+  - SDK/Client: `httpx==0.28.1` in `providers/llama_cpp_provider.py:120-124`.
+  - Base URL resolution: `LLAMA_SERVER_URL`, else `http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}`, else `http://127.0.0.1:8080` (`providers/llama_cpp_provider.py:88-95`).
+  - Endpoints used: `GET /health` (`:138`), `POST /v1/chat/completions` for both blocking and SSE streaming (`:232`, `:282`).
+  - Health semantics: HTTP 200 → `healthy`, HTTP 503 → `loading`, connect error → `unreachable` with a copy-paste launch command (`:141-179`).
+  - Loopback enforcement: hosts `localhost`, `127.0.0.1`, `::1`, `host.docker.internal`, `llama-server` plus `ipaddress.is_loopback`; anything else raises `ValueError` unless `allow_remote=True` (`:101-114`). This is the SSRF guard for the provider.
+  - Vision: base64 `data:` URLs with MIME sniffed from magic bytes (`:25-44`, `:326-348`).
+  - Reasoning disabled per request via `reasoning_effort: "none"` and `chat_template_kwargs.enable_thinking=False` (`:62-65`).
+  - Auth: **none** — trusted loopback service, no API key or token.
+- Native binary management:
+  - Binary discovery: PATH first, then `tools/llama-server/llama-server[.exe]` (`core/runtime_info.py:63-76`).
+  - Version probing: runs `<binary> --version` with a 5s timeout and parses `version: X (build N, commit H)` (`core/runtime_info.py:94-127`), cached per process.
+  - Process launch: `start.py:176-256` spawns the binary with `-m models/qwen3.5-2b-q4_k_m.gguf --mmproj models/qwen3.5-2b-mmproj-f16.gguf -c 4096 -ngl 28 --port 8080`, then polls `/health` for up to 10s.
+  - Server log file: `data/logs/llama-server.log`.
 
-**Cloud Inference (optional, explicit consent required):**
-- **Groq / OpenAI / Anthropic via LiteLLM** — `providers/litellm_provider.py`
-  - SDK/Client: `litellm==1.105.0` (1.102.4 on Python ≥3.14)
-  - Default model: `groq/llama-3.3-70b-versatile` (`DEFAULT_CLOUD_MODEL`, `providers/litellm_provider.py:29`)
-  - Configured cloud models (`ui/views.py:1124-1128`):
-    - `groq` → `groq/llama-3.3-70b-versatile`, auth `GROQ_API_KEY`
-    - `openai` → `openai/gpt-4o-mini`, auth `OPENAI_API_KEY`
-    - `anthropic` → `anthropic/claude-3-5-haiku-20241022`, auth `ANTHROPIC_API_KEY`
-  - Context windows: `groq 131072`, `openai 128000`, `anthropic 200000` (`KNOWN_CONTEXT_WINDOWS`)
-  - Vision-capable prefixes: `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3`, `anthropic/claude-3-5` (`VISION_SUPPORTED_PREFIXES`)
-  - Key resolution order (`_resolve_api_key_for_model`, `providers/litellm_provider.py:45-89`): explicit arg → `st.session_state.cloud_api_keys[provider]` → `st.secrets[<PROVIDER>_API_KEY]` → `os.environ[<PROVIDER>_API_KEY]`
-  - Consent gate: constructors accept `user_consented`; generation raises `PermissionError` when False (`providers/groq_provider.py:63-69`)
-  - Telemetry disabled: `os.environ.setdefault("LITELLM_TELEMETRY","False")` and `litellm.telemetry = False` (`providers/litellm_provider.py:20-25`)
-  - Error scrubbing: `_scrub_credentials()` routes error text through `core/redaction.py::redact_text(..., extra_secrets=(resolved_key,))`
-- **Groq direct SDK** — `providers/groq_provider.py`
-  - SDK/Client: `groq==0.15.0`
-  - Default model: `openai/gpt-oss-20b`, `context_window=8192` (`providers/groq_provider.py:25-26`)
-  - Key source: `st.secrets.get("GROQ_API_KEY")` → `os.environ["GROQ_API_KEY"]`
-  - Cannot be auto-constructed by `AiModel`; must be injected explicitly.
+**Local model weights (first-run download only):**
+- Hugging Face Hub — `SoAIHQ/Qwen3.5-2B-GGUF` at revision `377fa65bb36aa83414de1ab3b40f6f15b0324cdc` (`setup.py:63-84`).
+  - `Qwen3.5-2B-Q4_K_M.gguf` → `models/qwen3.5-2b-q4_k_m.gguf` (~1.31 GB), SHA-256 `a8b50de0…1523b`.
+  - `mmproj-Qwen3.5-2B-f16.gguf` → `models/qwen3.5-2b-mmproj-f16.gguf` (~668 MB), SHA-256 `044a0ea1…d36`.
+  - Downloader: `urllib.request` with streaming progress, size floor, SHA-256 verification, and atomic `.tmp` → final rename (`setup.py:196-308`).
+  - GGUF magic-byte validation (`b"GGUF"`) at `setup.py:171-184`; architecture/projector pairing verified by `core/model_identity.py` (`qwen35` + `qwen3vl_merger`; rollback pair `qwen2vl` + `qwen2vl_merger`).
+- Hugging Face model cache (via `sentence-transformers`) — `all-MiniLM-L6-v2` pre-cached on CPU (`setup.py:311-328`).
+- RapidOCR ONNX weights — pre-cached locally by instantiating `RapidOCR()` (`setup.py:331-348`).
 
-**Model / Binary Distribution (setup-time, explicit CLI only):**
-- **Hugging Face** — GGUF weights (`setup.py:54-77`):
-  - `https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q4_K_M.gguf` → saved as `models/qwen3-vl-2b-instruct-q4_k_m.gguf`, SHA-256 `4ef095263343fc1237e8ca879790bb262bcf209f082e0a9bfce219b7ece55e8b`
-  - `.../mmproj-Qwen2-VL-2B-Instruct-f16.gguf` → `models/mmproj-f16.gguf`, SHA-256 `05cc3ae461a7b6aa4023312ccab549ecab77cf8677efee04f049fcbab55b8bc3`
-- **GitHub Releases (ggml-org/llama.cpp)** — native server archives for `b11718` (`setup.py:413-415`):
-  - Base: `https://github.com/ggml-org/llama.cpp/releases/download/b11718`
-  - Mirror: `https://github.com/ggerganov/llama.cpp/releases/download/b11718`
-  - Artifacts: `llama-b11718-bin-win-cuda-12.4-x64.zip`, `cudart-llama-b11718-win.zip`, `llama-b11718-bin-win-cpu-x64.zip`, `llama-b11718-bin-ubuntu-x64.tar.gz`, `llama-b11718-bin-ubuntu-cuda-12.8-x64.tar.gz`
-  - Integrity: `LLAMA_ARCHIVE_SHA256` map (`setup.py:79-85`); `RAG_REQUIRE_CHECKSUMS=1` makes a missing pin fatal (`setup.py:220`)
-- **Docling model artifacts** — resolved from package default or `DOCLING_ARTIFACTS_PATH` (`ingestion/docling_reader.py:192`).
+**llama.cpp release binaries (first-run download only):**
+- GitHub Releases from two mirrors: `ggml-org/llama.cpp` primary, `ggerganov/llama.cpp` fallback (`setup.py:96-97`).
+- Pinned archives with SHA-256 (`setup.py:89-95`): Windows CUDA 12.4 (`llama-b11960-bin-win-cuda-12.4-x64.zip`, `cudart-llama-bin-win-cuda-12.4-x64.zip`), Windows CPU (`llama-b11960-bin-win-cpu-x64.zip`), Linux CPU (`llama-b11960-bin-ubuntu-x64.tar.gz`), Linux CUDA 12.8 (`llama-b11960-bin-ubuntu-cuda-12.8-x64.tar.gz`).
+- Extraction is traversal-safe: zip members are resolved and rejected outside the destination, tar symlinks/hardlinks are skipped (`setup.py:134-168`).
+- `RAG_REQUIRE_CHECKSUMS=1` makes a missing pin a hard failure (`setup.py:100-102`, `:232-234`).
 
-**Embedding Model (local, in-process):**
-- `sentence-transformers` `all-MiniLM-L6-v2`, `device="cpu"`, 384-dim, cosine; cached per process in `_MODEL_CACHE` (`retrieval/local_embedding.py:25-47`).
+**Optional cloud text generation (explicit opt-in):**
+- LiteLLM `1.105.0` — `providers/litellm_provider.py`.
+  - Default model: `groq/llama-3.3-70b-versatile` (`:29`).
+  - UI-selectable models (`ui/views.py:1270-1274`, duplicated at `:1499-1503`): `groq/llama-3.3-70b-versatile`, `openai/gpt-4o-mini`, `anthropic/claude-3-5-haiku-20241022`.
+  - Context windows assumed: groq 131072, openai 128000, anthropic 200000 (`:31-35`).
+  - Vision allow-list: `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3`, `anthropic/claude-3-5` (`:37-42`).
+  - Timeouts/retries: 30s timeout, 2 retries for non-streaming, 0 for streaming (`:112-115`).
+- Groq SDK `0.15.0` — `providers/groq_provider.py`.
+  - Default model `openai/gpt-oss-20b`, context 8192, `supports_vision=False` (`:19`, `:104-116`).
+  - `analyze_image` raises `NotImplementedError` by design (`:186-194`).
+- Consent gate (both cloud providers): every `generate_text`, `stream_text`, and `analyze_image` call begins with `_assert_consent()`, raising `PermissionError` until `user_consented=True` (`providers/litellm_provider.py:141-147`, `:210`, `:260`, `:313`; `providers/groq_provider.py:65-71`).
+- Key scrubbing: LiteLLM disables telemetry globally (`LITELLM_TELEMETRY=False`, `litellm.telemetry = False` at `providers/litellm_provider.py:19-27`) and every cloud error string passes through `core/redaction.py:34-60` (`redact_text`) before logging or display.
+- Mode wiring: `AiModel` defaults to local `LlamaCppProvider()`; cloud mode is only entered through `set_cloud_mode(True, cloud_provider=...)` and re-validates `user_consented` (`core/local_llm.py:123-186`, `:232`). `main.py:227-266` synchronizes the session's `LiteLLMProvider` and falls back to local mode on any error.
+
+**Hardware telemetry:**
+- `nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv,noheader,nounits`, 2s timeout, 5s TTL cache (`core/resource_telemetry.py:62-90`). Returns `None` on headless/CI hosts; no error surfaces to the UI.
+- Process RSS/VMS via `psutil` (`core/resource_telemetry.py`).
+
+**Priming/metadata lookups:**
+- No package-index, analytics, crash-reporting, or advertising endpoint is contacted at runtime. All outbound hosts observed in source: `huggingface.co`, `github.com` (setup only), and the three cloud provider APIs (consented cloud mode only).
 
 ## Data Storage
 
 **Databases:**
-- **SQLite** — metadata, chunks, pages, evidence elements, summaries.
-  - Location: `data/documents.db` (`main.py:44`)
-  - Client: stdlib `sqlite3`, per-operation connections, `journal_mode=WAL`, `busy_timeout=5000`, `foreign_keys=ON` (`core/doc_store.py:167-186`)
-  - Migrations: v1–v4 applied on `DocStore.__init__` via `_apply_migrations`; physical `VACUUM` on purge (`ui/lifecycle_service.py`)
-  - Indexes include `chunks(doc_id)` and `pages(doc_id)`.
-- **LanceDB (embedded, no server)** — dense vectors + native FTS/BM25 index.
-  - Location: `data/lancedb/` (`DEFAULT_DB_URI`, `retrieval/hybrid_retriever.py:70`); legacy path `retrieval/data/lancedb/` migrated on first init (`_migrate_legacy_index`)
-  - Client: `lancedb.connect(str(self.db_uri))` → `retrieval/hybrid_retriever.py:216`
-  - Fusion: Reciprocal Rank Fusion over dense + FTS ranks, `RRF_score(d) = Σ 1/(k_rrf + rank)` (`retrieval/hybrid_retriever.py:126-148`)
-  - Degradation: in-process `VectorIndex` + durable `fallback_store.json` mirror when LanceDB or FTS is unavailable; FTS health exposed via `fts_status()` (`retrieval/hybrid_retriever.py:196-225,783-797`)
+- SQLite — `data/documents.db` (`DOC_STORE_PATH` in `main.py:46`).
+  - Connection: per-operation connections, `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout=5000`, `PRAGMA foreign_keys=ON` (`core/doc_store.py:171-182`).
+  - Client: stdlib `sqlite3` only — no ORM.
+  - Schema migrations tracked by `PRAGMA user_version` (`core/doc_store.py:232-247`), v1–v5:
+    - v1: `documents`, `pages`, `chunks`
+    - v2: `evidence_elements`
+    - v3: `document_summaries` (+ `idx_summaries_sha256`, `idx_summaries_doc_id`)
+    - v4: `idx_chunks_doc_id`, `idx_pages_doc_id`
+    - v5: `deletion_tombstones`
+  - Concurrency: bounded retry (3 attempts, 50 ms base + jitter) for `SQLITE_BUSY`/`SQLITE_LOCKED` codes 5/6 (`core/doc_store.py:25-41`).
+- LanceDB 0.40.0 — `data/lancedb/`.
+  - Connection: `lancedb.connect(str(self.db_uri))` (`retrieval/hybrid_retriever.py:216`); canonical path resolved as `<repo_root>/data/lancedb` (`:70`).
+  - Table: `chunks`, explicit PyArrow schema with `vector: float32[384]` (`:31-45`, `:542-544`).
+  - FTS: `table.create_fts_index("content", replace=True)` for BM25 keyword search (`:821-826`).
+  - Observed on disk: `data/lancedb/chunks.lance`, `data/lancedb/fallback_store.json`.
+  - Legacy migration: copies from `retrieval/data/lancedb` non-destructively when the target is empty (`:84-118`).
 
 **File Storage:**
-- **Local filesystem only.**
-  - `data/` — SQLite DB, LanceDB dir, logs (`data/logs/`)
-  - `models/` — GGUF weights (gitignored, present in this checkout)
-  - `.cache/<sha256>/<CONFIG_VERSION>/` — extraction cache (`pages.json`, `chunks.json`, `manifest.json`); `CACHE_DIR = <app>/.cache` (`main.py:46`), path builder `core/models.py:17-31`
-  - `tools/llama-server/` — native llama-server binary + DLLs (gitignored, present)
-- No S3/GCS/Azure Blob client is used directly; `boto3` is a transitive LiteLLM dependency only.
+- Local filesystem only.
+- `models/` — GGUF weights. Observed: `qwen3.5-2b-q4_k_m.gguf` (1.31 GB), `qwen3.5-2b-mmproj-f16.gguf` (668 MB), plus stale `qwen3-vl-2b-instruct-q4_k_m.gguf` and `mmproj-f16.gguf` from the previous model pair.
+- `tools/llama-server/` — unpacked native runtime (≈1.2 GB of DLLs/EXEs observed); `tools/llama-server-b11718-rollback/` retained for rollback (`core/runtime_info.py` expectation is `b11960`).
+- `.cache/<sha256>/<CONFIG_VERSION>/` — per-document intermediate artifacts (pages/chunks/manifest); path contract in `core/models.py:17-30` (`cache_dir_for`), base directory set in `ui/ingestion_service.py:52`. Observed: two SHA-256-named directories (currently empty of files).
+- `data/logs/` — `app.log` (rotating: 5 MB × 3 backups, `core/logging_setup.py:33-35`) and `llama-server.log`.
+- Uploaded PDFs are **not** stored as files; the bytes are hashed (`doc_<sha16>` id, `ingestion/upload_validation.py:90-102`) and content persists only in SQLite/LanceDB.
 
 **Caching:**
-- **Persistent disk cache** at `.cache/<sha256>/docling-1000-200-v1/`, keyed by document SHA-256 plus `CONFIG_VERSION`; purged through `ui/lifecycle_service.py`.
-- **Summary cache in SQLite**, invalidated by model version (`core/summarizer.py`).
-- **In-process caches:** `@st.cache_resource` for `DocStore`/retriever (`main.py:143`), `_MODEL_CACHE` for the embedder (`retrieval/local_embedding.py:25`), 5s TTL GPU telemetry cache (`core/resource_telemetry.py:25`).
-- No Redis/Memcached or external cache service.
+- LanceDB FTS + vector index (persistent).
+- In-memory `VectorIndex` fallback serialized to `data/lancedb/fallback_store.json` when LanceDB is unavailable (`retrieval/hybrid_retriever.py:201-285`).
+- Process-level `SentenceTransformer` cache (`retrieval/local_embedding.py:36-58`).
+- SQLite `document_summaries` acts as a summary cache keyed on `(sha256, profile)` with `model_version` invalidation (`core/doc_store.py:100-120`).
+- GPU telemetry TTL cache, 5s (`core/resource_telemetry.py:26-29`).
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- **None.** The Streamlit UI has zero authentication and is single-user by design. `start.py::refuse_unsafe_bind` blocks non-loopback binds unless `--allow-non-loopback` or `RAG_ALLOW_NON_LOOPBACK=1` (`start.py:40-91`).
-- Cloud provider credentials are the only identity material: API keys held in `st.session_state.cloud_api_keys`, `st.secrets`, or environment variables; entered via a `type="password"` field in Settings (`ui/views.py:1148-1156`) and kept in session memory only.
-- Consent is modeled as per-provider state: `st.session_state.cloud_mode`, `user_consented`, `cloud_api_keys` (`main.py:120-133`), with a revoke flow in `ui/views.py:1158-1163`.
-- Secret scrubbing before surfacing errors/logs: `core/redaction.py::redact_text` with `_SECRET_ENV_VARS` (`core/redaction.py:46`).
+- None. The application has **no user authentication** and no session identity provider.
+  - Single-user assumption documented in `.streamlit/config.toml` and enforced by `start.py:58-90` (`refuse_unsafe_bind`), which aborts a non-loopback bind unless `--allow-non-loopback` or `RAG_ALLOW_NON_LOOPBACK=1`.
+  - Docker overrides the bind to `0.0.0.0` inside the container but publishes only `127.0.0.1:8501` on the host (`docker-compose.yml:8`, `Dockerfile:46`).
+- Cloud credentials are the only identity material:
+  - Resolution order: explicit argument → `st.session_state.cloud_api_keys[provider]` → `st.secrets[VAR]` → `os.environ[VAR]` (`providers/litellm_provider.py:45-89`).
+  - UI accepts a per-provider key into session memory only (`ui/views.py:1290-1305`), never persisted to disk.
+  - Mapping: `groq` → `GROQ_API_KEY`, `openai` → `OPENAI_API_KEY`, `anthropic` → `ANTHROPIC_API_KEY`.
+- Trust boundary for document content: cloud transmission requires the user toggling cloud mode **and** consenting; the status pill flips from `100% Local` to `Cloud Active` and an explicit "Cloud Egress Permitted" card is rendered (`ui/views.py:1240-1268`).
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- None (no Sentry/Datadog/OTel exporter). Privacy constraint forbids egress.
+- None. No Sentry, OpenTelemetry, Datadog, or equivalent SDK.
 
 **Logs:**
-- Structured `logging` with `logger = logging.getLogger(__name__)` throughout.
-- Central setup: `core/logging_setup.py::configure_logging(log_dir=..., level=...)`; format `"%(asctime)s %(levelname)s [%(name)s] %(message)s"`, rotating file handler capped at 5 MB × 3 backups, idempotent handler installation via `_HANDLER_MARKER`.
-- Config: `RAG_LOG_LEVEL` (default `INFO`), `RAG_LOG_DIR` (default `data/logs`); initialized at `main.py:50`.
-- Streamlit usage stats disabled (`.streamlit/config.toml:21` → `gatherUsageStats = false`; Dockerfile `--browser.gatherUsageStats=false`).
+- Structured stdlib logging with one idempotent configuration: stderr + rotating file `data/logs/app.log` (`core/logging_setup.py:56-120`).
+- Level from `RAG_LOG_LEVEL` (default `INFO`); directory from `RAG_LOG_DIR` (default `data/logs`).
+- Format: `%(asctime)s %(levelname)s [%(name)s] %(message)s`.
+- A targeted filter suppresses Streamlit's benign `torch.classes` watcher traceback (`core/logging_setup.py:11-20`).
+- Diagnostics workspace renders redacted health, resource, and log data (`ui/views.py`, `main.py:38-44`).
+- Cloud/provider exceptions are redacted before logging (`core/redaction.py`), covering `gsk_`, `sk-`, `sk-proj-`, `xox[baprs]-`, `ghp_`, `github_pat_`, `hf_`, `AIza`, bearer tokens, and key/value pairs.
 
-**Hardware telemetry (local, no network):**
-- `core/resource_telemetry.py` — GPU VRAM via `nvidia-smi --query-gpu=memory.used,memory.total` and per-process `--query-compute-apps=pid,process_name,used_memory`; RSS/VMS via `psutil`. Degrades silently in headless/CI (`except (FileNotFoundError, subprocess.SubprocessError, ...)`).
+**Telemetry:**
+- Explicitly disabled: Streamlit `gatherUsageStats = false` (`.streamlit/config.toml`, `Dockerfile:46`, `start.py:275`); LiteLLM telemetry off (`providers/litellm_provider.py:19-27`).
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Local desktop (Windows 11 primary) or self-hosted Docker Compose.
-- Compose port mapping is loopback-scoped: `"127.0.0.1:8501:8501"` and `"127.0.0.1:8080:8080"` (`docker-compose.yml:8,34`).
-- Optional GPU service `llama-server` uses `ghcr.io/ggml-org/llama.cpp:server-cuda` with `deploy.resources.reservations.devices: nvidia` (`docker-compose.yml:29-51`).
+- Self-hosted, single machine. Two supported shapes: native (`python start.py --start-llama`) and Docker Compose (`docker compose up`, optional `--profile gpu` llama-server container).
 
 **CI Pipeline:**
-- **GitHub Actions** — `.github/workflows/ci.yml`, triggered on push/PR to `main`, `ubuntu-latest`, Python 3.11:
-  1. `astral-sh/setup-uv@v5` with caching
-  2. `uv pip install --system -r requirements-lock.txt` + `requirements-test.txt` + `-e . --no-deps`
-  3. `ruff check .` && `ruff format --check .`
-  4. `python tests/data/corpus/generate_corpus.py`
-  5. `pytest tests/ -v`
-- No deployment workflow, no container registry publish, no release automation present.
+- GitHub Actions — `.github/workflows/ci.yml`, job "Lint & Test Suite (Python 3.11)" on `ubuntu-latest`.
+  - Triggers: `push` and `pull_request` on `main`.
+  - Steps: `actions/checkout@v4` → `actions/setup-python@v5` (3.11) → `astral-sh/setup-uv@v5` (cached) → `uv pip install -r requirements-lock.txt` + `requirements-test.txt` + `-e . --no-deps` → `ruff check .` → `ruff format --check .` → `python tests/data/corpus/generate_corpus.py` → `pytest tests/ -v`.
+  - **No remote CI run result was observed during this analysis** (no API/artifact access; `docs/TEST_RESULTS.md` and `docs/DEPENDENCY_AUDIT.md` record local runs instead).
+- Container build: `Dockerfile` installs from `requirements-lock.txt` then `pip install -e .`; `.dockerignore` excludes `tests/`, `data/`, `models/`, `tools/`, `.env`, `.planning/`.
 
 ## Environment Configuration
 
-**Required env vars (local mode works with all blank):**
-- `GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` — optional cloud only
-- `LLAMA_SERVER_URL` **or** `LLAMA_SERVER_HOST` + `LLAMA_SERVER_PORT`
-- `DOCLING_ARTIFACTS_PATH` — optional
-- `RAG_LOG_LEVEL`, `RAG_LOG_DIR`
-- `RAG_REQUIRE_CHECKSUMS=1` — recommended
-- `RAG_ALLOW_NON_LOOPBACK=0` — must stay `0` for a safe default
-- `USE_TF=0`, `USE_TORCH=1`, `TF_ENABLE_ONEDNN_OPTS=0`, `LITELLM_TELEMETRY=False`
+**Required env vars:**
+- None are strictly required for local mode. All of the following are optional:
+  - Cloud keys: `GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
+  - Local server: `LLAMA_SERVER_URL` (wins when set), or `LLAMA_SERVER_HOST` + `LLAMA_SERVER_PORT` (default `127.0.0.1:8080`).
+  - Docling: `DOCLING_ARTIFACTS_PATH`.
+  - Logging: `RAG_LOG_LEVEL`, `RAG_LOG_DIR`.
+  - Security/integrity: `RAG_REQUIRE_CHECKSUMS`, `RAG_ALLOW_NON_LOOPBACK`.
+  - Backend pinning: `USE_TF`, `USE_TORCH`, `TF_ENABLE_ONEDNN_OPTS` (set programmatically at import time).
+  - Privacy: `LITELLM_TELEMETRY` (forced to `False` by default).
+- `.env.example` documents all of the above. The file's `.env` counterpart is **not present** in the working tree.
 
 **Secrets location:**
-- `.env` in repo root (gitignored via `.gitignore:2-4`, with `!.env.example` exception) — template at `.env.example`
-- Streamlit secrets (`st.secrets`) — supported by both cloud providers
-- Streamlit session state (`st.session_state.cloud_api_keys`) — in-memory only
-- No secrets manager, vault, or keyring integration.
-
-**Session state keys (cloud/privacy defaults, `main.py:120-133`):**
-`cloud_mode=False`, `cloud_mode_toggle=False`, `user_consented=False`, `cloud_provider="groq"`, `cloud_model="groq/llama-3.3-70b-versatile"`, `cloud_api_keys={"groq": "", "openai": "", "anthropic": ""}`.
+- `.env` at repo root (gitignored, absent here) — loaded by `python-dotenv` at `main.py:209`.
+- `.streamlit/secrets.toml` (absent here; `st.secrets` access is guarded).
+- Streamlit session state (`st.session_state.cloud_api_keys`) — memory only.
+- Environment variables in Docker (`docker-compose.yml:14-23`, values interpolated from the host env with empty defaults).
+- No secrets are baked into `Dockerfile`, `docker-compose.yml`, or any source file.
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- None. No webhook endpoints, no FastAPI/Flask routes, no upload HTTP API. The only inbound listener is Streamlit on `8501` (plus Streamlit's built-in `/_stcore/health`). Confirmed in `docs/ENDPOINT_INTEGRATION_MATRIX.md`.
-- Document uploads are handled in-process by Streamlit's `st.file_uploader` and `ui/ingestion_service.py`.
+- None. No webhook receiver, queue, broker, or callback endpoint exists.
+- HTTP surface is three loopback-only listeners: Streamlit `127.0.0.1:8501` (plus `/_stcore/health` for the container healthcheck), llama-server `127.0.0.1:8080` (`/health`, `/v1/chat/completions`), and the pre-cached Streamlit static assets served by the same process.
 
 **Outgoing:**
-- None. No outbound webhooks, no analytics, no crash reporting.
-- HTTP egress is limited to: loopback llama-server calls, opt-in consented cloud LLM calls, and operator-initiated setup downloads (Hugging Face / GitHub Releases).
-- In local mode, rendered markdown is neutralized by `ui/sanitizer.py` (strips `<script>`, `<iframe>`, `<object>`, `<embed>`, `<style>`; external links rewritten) to prevent browser-side egress.
-
-**Internal callbacks (in-process only, not network):**
-- `progress_callback: Callable[[str], None]` — ingestion progress (`ui/ingestion_service.py:59-75`)
-- `progress_callback: ProgressCallback | None` — startup hydration/vector repair (`ui/hydration.py:20-96`)
-- `InferenceGate.acquire/release/hold` — global VRAM serialization, `timeout=60.0` for LLM/VLM and `120.0` for summarization (`core/local_llm.py:83`, `core/summarizer.py:559`)
+- None at runtime in local mode. Outbound calls happen only on explicit operator action (setup downloads from `huggingface.co` / `github.com`) or under consented cloud mode (Groq / OpenAI / Anthropic via LiteLLM or the Groq SDK).
+- Persistence and retrieval are entirely in-process/on-disk — no queue publish, no remote index sync, no public-cloud object storage.
 
 ---
 
-*Integration audit: 2026-10-28*
+*Integration audit: 2026-10-29*

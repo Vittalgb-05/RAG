@@ -81,9 +81,17 @@ python setup.py --llama-server
 ```
 *(Or run `python setup.py` for the complete initial setup: dependencies, models, and llama-server in one pass).*
 
-Alternatively, you can manually download `llama.cpp` releases from the [official llama.cpp releases](https://github.com/ggerganov/llama.cpp/releases):
-- **Windows**: `llama-bXXXX-bin-win-cuda-12.4-x64.zip` + `cudart-llama-bin-win-cuda-12.4-x64.zip` (extract into `tools/llama-server` or system PATH).
-- **Linux**: Compile with `make GGML_CUDA=1` or download the pre-built Linux CUDA package.
+The expected runtime is **llama.cpp v0.8.0, published as nightly build `b11960`** (the `v0.8.0` release asset `nightly-tag.txt` names that build; binaries are attached to the `b11960` tag). Verify the installed executable reports itself:
+
+```bash
+./tools/llama-server/llama-server.exe --version
+# version: 0.8.0-dev (build 11960, commit 8642541b2)
+```
+
+Alternatively, you can manually download `llama.cpp` releases from the [official llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases/tag/b11960):
+- **Windows**: `llama-b11960-bin-win-cuda-12.4-x64.zip` + `cudart-llama-bin-win-cuda-12.4-x64.zip` (extract into `tools/llama-server` or system PATH). Verified SHA-256: `8d9d819261de10cc2f03921b8b79c779c5c458e21edb60c170ee30a7d462d684` and `8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6`.
+- **Linux**: `llama-b11960-bin-ubuntu-cuda-12.8-x64.tar.gz` (`64d57beb9abb637c177c6afb313760a0c0782224cac71e74869eed5b8f9a1ea4`) or compile with `make GGML_CUDA=1`.
+- **Rollback**: the previous verified runtime (`0.7.0-dev`, build `11718`) is kept in `tools/llama-server-b11718-rollback/`; see the rollback section at the end of this runbook.
 
 ### Step 2: Download Model Weights & Pre-Cache Offline Models
 
@@ -92,8 +100,8 @@ Alternatively, you can manually download `llama.cpp` releases from the [official
 python setup.py download_models
 ```
 This automatically downloads:
-1. `models/qwen3-vl-2b-instruct-q4_k_m.gguf` (Qwen2-VL 2B Instruct GGUF weights, saved locally as `qwen3-vl-2b-instruct-q4_k_m.gguf`)
-2. `models/mmproj-f16.gguf` (Multimodal vision adapter)
+1. `models/qwen3.5-2b-q4_k_m.gguf` (Qwen3.5-2B Q4_K_M weights, GGUF architecture `qwen35`)
+2. `models/qwen3.5-2b-mmproj-f16.gguf` (F16 vision projector, `clip.projector_type=qwen3vl_merger`)
 3. Pre-caches SentenceTransformers `all-MiniLM-L6-v2` embedding weights in local HuggingFace cache.
 4. Pre-caches RapidOCR ONNX model weights in local cache for offline execution.
 
@@ -103,22 +111,22 @@ Create a `models/` directory in the repository root:
 mkdir models
 ```
 
-Download the 4-bit quantized Qwen2-VL 2B Instruct model weights and multimodal projection adapter (saved locally as `qwen3-vl-2b-instruct-q4_k_m.gguf`):
+Download the 4-bit quantized Qwen3.5-2B weights and their F16 multimodal projector from `SoAIHQ/Qwen3.5-2B-GGUF` (Apache-2.0), pinned to revision `377fa65bb36aa83414de1ab3b40f6f15b0324cdc`:
 ```bash
-# 1. Main model GGUF (~1.4 GB)
-curl -L -o models/qwen3-vl-2b-instruct-q4_k_m.gguf https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q4_K_M.gguf
+# 1. Main model GGUF (1,312,165,056 bytes)
+curl -L -o models/qwen3.5-2b-q4_k_m.gguf https://huggingface.co/SoAIHQ/Qwen3.5-2B-GGUF/resolve/377fa65bb36aa83414de1ab3b40f6f15b0324cdc/Qwen3.5-2B-Q4_K_M.gguf
 
-# 2. Multimodal projection adapter GGUF (~600 MB)
-curl -L -o models/mmproj-f16.gguf https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-2B-Instruct-f16.gguf
+# 2. Multimodal projection adapter GGUF (668,227,136 bytes)
+curl -L -o models/qwen3.5-2b-mmproj-f16.gguf https://huggingface.co/SoAIHQ/Qwen3.5-2B-GGUF/resolve/377fa65bb36aa83414de1ab3b40f6f15b0324cdc/mmproj-Qwen3.5-2B-f16.gguf
 ```
 
-Verify both the pinned SHA-256 digests and the GGUF identity before launching:
+Verify both the pinned SHA-256 digests and the GGUF identity before launching (the digests match the publisher's `SHA256SUMS` file):
 
 ```bash
-sha256sum models/qwen3-vl-2b-instruct-q4_k_m.gguf models/mmproj-f16.gguf
+sha256sum models/qwen3.5-2b-q4_k_m.gguf models/qwen3.5-2b-mmproj-f16.gguf
 # expected:
-# 4ef095263343fc1237e8ca879790bb262bcf209f082e0a9bfce219b7ece55e8b  models/qwen3-vl-2b-instruct-q4_k_m.gguf
-# 05cc3ae461a7b6aa4023312ccab549ecab77cf8677efee04f049fcbab55b8bc3  models/mmproj-f16.gguf
+# a8b50de00b780c0f3c16f07cb041a1ecd678b6e22fd8cde91e57fe4b5031523b  models/qwen3.5-2b-q4_k_m.gguf
+# 044a0ea136cca70711ae16e23b24d754b44eab6f2462d187aee4d7c7a9503d36  models/qwen3.5-2b-mmproj-f16.gguf
 ```
 
 On Windows PowerShell, use `Get-FileHash -Algorithm SHA256 <path>`.
@@ -126,7 +134,7 @@ On Windows PowerShell, use `Get-FileHash -Algorithm SHA256 <path>`.
 `python setup.py download_models` verifies these digests automatically (set `RAG_REQUIRE_CHECKSUMS=1` to fail closed on any unpinned artifact), and `start.py` refuses to launch a mismatched pair:
 
 ```bash
-python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3-vl-2b-instruct-q4_k_m.gguf', 'models/mmproj-f16.gguf') or 'identity OK')"
+python -c "from core.model_identity import verify_local_model_pair; print(verify_local_model_pair('models/qwen3.5-2b-q4_k_m.gguf', 'models/qwen3.5-2b-mmproj-f16.gguf') or 'identity OK')"
 ```
 
 ---
@@ -142,8 +150,8 @@ python start.py --start-llama
 
 # Option 2: Run llama-server manually in a separate window
 .\tools\llama-server\llama-server.exe `
-  -m models/qwen3-vl-2b-instruct-q4_k_m.gguf `
-  --mmproj models/mmproj-f16.gguf `
+  -m models/qwen3.5-2b-q4_k_m.gguf `
+  --mmproj models/qwen3.5-2b-mmproj-f16.gguf `
   -c 4096 `
   -ngl 28 `
   --host 127.0.0.1 `
@@ -153,8 +161,8 @@ python start.py --start-llama
 ### Linux / Bash:
 ```bash
 ./llama-server \
-  -m models/qwen3-vl-2b-instruct-q4_k_m.gguf \
-  --mmproj models/mmproj-f16.gguf \
+  -m models/qwen3.5-2b-q4_k_m.gguf \
+  --mmproj models/qwen3.5-2b-mmproj-f16.gguf \
   -c 4096 \
   -ngl 28 \
   --host 127.0.0.1 \
@@ -162,10 +170,10 @@ python start.py --start-llama
 ```
 
 ### Flag Breakdown:
-- `-m models/qwen3-vl-2b-instruct-q4_k_m.gguf`: Base language model with 4-bit quantization.
-- `--mmproj models/mmproj-f16.gguf`: Vision adapter required for image/figure understanding.
-- `-c 4096`: Context window capped at 4,096 tokens to bound KV-cache allocation.
-- `-ngl 28`: Offloads all 28 transformer layers to GPU VRAM (~2.4 GB total allocation).
+- `-m models/qwen3.5-2b-q4_k_m.gguf`: Base language model with 4-bit (Q4_K_M) quantization; 25 blocks, 2,048-dim embeddings.
+- `--mmproj models/qwen3.5-2b-mmproj-f16.gguf`: Vision adapter required for image/figure understanding.
+- `-c 4096`: Context window capped at 4,096 tokens to bound KV-cache allocation (the checkpoint supports 262,144 tokens; the ceiling is a VRAM decision, not a model limit).
+- `-ngl 28`: Offloads every model layer (the model has 25) plus the F16 projector to GPU; measured 2,658 MiB of 4,096 MiB. Use `--no-mmproj-offload` if VRAM is contended.
 - `--host 127.0.0.1`: Binds strictly to local loopback interface for SSRF security.
 - `--port 8080`: Default local inference port monitored by the application.
 
@@ -212,7 +220,7 @@ Navigate to `http://localhost:8501` in your browser.
    - SHA-256 deduplication (skips re-indexing if content is identical).
    - Layout-aware Docling table and structure parsing.
    - RapidOCR fallback on scanned pages (< 50 characters detected).
-   - Visual figure cropping and Qwen2-VL 2B captioning.
+   - Visual figure cropping and Qwen3.5-2B captioning.
    - LanceDB dense vector indexing + SQLite FTS5 lexical indexing.
 
 ### Live Telemetry Monitoring
@@ -270,3 +278,32 @@ Navigate to `http://localhost:8501` in your browser.
 - **Design Intent**: This application is architected and validated as a personal desktop workstation tool where Streamlit and `llama-server` execute concurrently on the same local system (`127.0.0.1`).
 - **Session-Scoped Routing**: Individual browser sessions maintain their own isolated `AiModel` instances and ephemeral cloud-consent posture. One session toggling Cloud Mode does not alter the local-only routing of another session.
 - **Hosted Cloud Caveat**: Deploying the Streamlit frontend to external services (e.g., Streamlit Community Cloud) cannot access `127.0.0.1:8080` on your laptop. Hosted deployments require remote endpoint configuration with dedicated API keys and TLS encryption.
+
+---
+
+## 9. Rollback to the Previous Runtime and Model
+
+The `v0.8.0`/Qwen3.5-2B migration keeps the previous verified artifacts on disk, so a rollback is a rename plus a restart. Nothing below deletes user documents, indexes, or caches.
+
+**Runtime (llama.cpp).** The previous executable and its DLL set remain in `tools/llama-server-b11718-rollback/`:
+
+```bash
+# Stop the current server first, then:
+mv tools/llama-server tools/llama-server-v0.8.0
+mv tools/llama-server-b11718-rollback tools/llama-server
+./tools/llama-server/llama-server.exe --version   # version: 0.7.0-dev (build 11718, commit 547208dca)
+```
+
+**Model (Qwen2-VL-2B).** The previous weights are still at `models/qwen3-vl-2b-instruct-q4_k_m.gguf` and `models/mmproj-f16.gguf` (legacy filenames; GGUF metadata is authoritative and verified by `core.model_identity`). Start the server with those paths instead:
+
+```bash
+./tools/llama-server/llama-server.exe \
+  -m models/qwen3-vl-2b-instruct-q4_k_m.gguf \
+  --mmproj models/mmproj-f16.gguf \
+  -c 4096 -ngl 28 --port 8080
+```
+
+`core.model_identity.SUPPORTED_MODEL_PAIRS` accepts the `qwen2vl` + `qwen2vl_merger` pair, so the launcher's identity check passes without a code change. Two notes:
+
+- Running the old model while the code default points at Qwen3.5 only changes what `start.py --start-llama` launches; a manually started server is unaffected, but the provider's `model_name` label stays `qwen3.5-2b` and evidence rows will be tagged `vlm:qwen3.5-2b`. Relabel after a rollback if provenance matters.
+- The verified `b11718` runtime has no `--reasoning-effort` flag, but it accepts the request unchanged and ignores the unknown `reasoning_effort` / `chat_template_kwargs` fields (verified by running the old model through the current provider payload).
