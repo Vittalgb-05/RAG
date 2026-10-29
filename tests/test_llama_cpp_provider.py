@@ -12,11 +12,11 @@ def test_capabilities() -> None:
     """Test get_capabilities returns expected local VLM specifications."""
     provider = LlamaCppProvider(
         base_url="http://127.0.0.1:8080",
-        model_name="qwen2-vl-2b",
+        model_name="qwen3.5-2b",
         context_window=4096,
     )
     caps = provider.get_capabilities()
-    assert caps.model_name == "qwen2-vl-2b"
+    assert caps.model_name == "qwen3.5-2b"
     assert caps.context_window == 4096
     assert caps.supports_vision is True
     assert caps.is_local is True
@@ -106,10 +106,14 @@ def test_generate_text_success() -> None:
         temperature=0.3,
     )
     assert result == "Generated reply."
-    assert captured_payload["model"] == "qwen2-vl-2b"
+    assert captured_payload["model"] == "qwen3.5-2b"
     assert captured_payload["max_tokens"] == 256
     assert captured_payload["temperature"] == 0.3
     assert captured_payload["stream"] is False
+    # Qwen3.5 reasons by default, which would spend the grounded answer budget on
+    # hidden reasoning tokens; every local request must opt out explicitly.
+    assert captured_payload["reasoning_effort"] == "none"
+    assert captured_payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert captured_payload["messages"] == [
         {"role": "system", "content": "You are a physics professor."},
         {"role": "user", "content": "Explain quantum physics"},

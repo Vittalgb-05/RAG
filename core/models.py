@@ -216,6 +216,46 @@ class RetrievalResult(BaseModel):
         return labels
 
 
+class GroundingReport(BaseModel):
+    """Single request/result contract carried from preparation through rendering.
+
+    The report keeps the request identity, the resolved document scope, the exact
+    evidence that was sent to the model, the citation outcome, and the verification
+    verdict together. The UI renders sources and grounding labels from this object
+    only, so it cannot pair an answer with evidence from a different retrieval.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    request_id: str = Field(..., min_length=1, description="Unique identifier for this chat/summary request.")
+    mode: Literal["qa", "summary"] = Field(..., description="Which pipeline answered the request.")
+    scope: Literal["document", "all_documents", "none"] = Field(..., description="Resolved retrieval scope.")
+    document_ids: list[str] = Field(default_factory=list, description="Document IDs allowed for this request.")
+    evidence_count: int = Field(default=0, ge=0, description="Number of evidence snippets supplied to the model.")
+    cited_ranks: list[int] = Field(default_factory=list, description="Citation ranks present in the answer.")
+    verification_status: Literal[
+        "grounded",
+        "partial",
+        "unsupported",
+        "abstained",
+        "ungrounded",
+        "invalid_citation",
+        "rank_only",
+    ] = Field(default="ungrounded", description="Computed grounding verdict; never inferred from citation IDs alone.")
+    verification_reason: str = Field(default="", description="Human-readable reason for the verdict.")
+    unsupported_ranks: list[int] = Field(
+        default_factory=list, description="Citation ranks whose cited text did not support the claim."
+    )
+    auto_attributed_count: int = Field(default=0, ge=0, description="Citations appended by lexical auto-attribution.")
+    incomplete_context: bool = Field(
+        default=False,
+        description="True when the evidence supplied to the model was truncated or capped, so coverage is partial.",
+    )
+    regeneration_attempted: bool = Field(
+        default=False, description="True when the bounded single corrective regeneration was used."
+    )
+
+
 SummaryProfile = Literal["overview", "detailed", "study_notes", "tables_figures", "findings"]
 VALID_SUMMARY_PROFILES: tuple[str, ...] = ("overview", "detailed", "study_notes", "tables_figures", "findings")
 

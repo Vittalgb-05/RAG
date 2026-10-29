@@ -8,6 +8,8 @@ precision (QA-03) and detecting explicit model abstention without citation fabri
 
 import logging
 import re
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 from core.models import RetrievalResult
 
@@ -17,10 +19,44 @@ CITATION_REGEX = re.compile(r"\[E(\d+)\]", re.IGNORECASE)
 
 # Lexical support check (no new dependencies). A citation-bearing sentence is
 # considered supported when enough of its content tokens also occur in the cited
-# snippet(s). The threshold is deliberately conservative: this is a diagnostic,
-# not a replacement for rank validity.
+# snippet(s). Rank validity and claim support are deliberately separate gates:
+# a citation ID can exist while the cited text does not state the claim.
 SUPPORT_TOKEN_THRESHOLD = 0.35
 SUPPORT_MIN_CLAIM_TOKENS = 3
+# An answer whose cited claims are mostly unsupported must not be rendered as a
+# normal verified answer. This is the bounded-regeneration / abstain boundary.
+SUPPORT_WITHHOLD_THRESHOLD = 0.5
+SUPPORT_VERIFIED_THRESHOLD = 0.8
+# Auto-attribution is only allowed when the match is strong. The previous 0.18
+# threshold (one shared token on a short sentence) let fabricated claims inherit
+# a real document citation and appear grounded.
+AUTO_ATTRIBUTE_MIN_OVERLAP = 0.5
+AUTO_ATTRIBUTE_MIN_SHARED_TOKENS = 2
+
+# Conversational lead-ins are not claims. Both support evaluation and
+# auto-attribution strip them first, otherwise a polite preamble such as
+# "Based on the information provided in the resume," dilutes the content
+# tokens of an otherwise faithful sentence and it fails to earn its citation.
+META_PREAMBLE_REGEX = re.compile(
+    r"^(?:"
+    r"based\s+on\b[^,;:]{0,120}?[,;:]\s*"
+    r"|according\s+to\b[^,;:]{0,120}?[,;:]\s*"
+    r"|the\s+(?:provided\s+)?(?:document|evidence|context|resume|text|pdf)\s+"
+    r"(?:states?|says?|indicates?|shows?|notes?|mentions?|reports?)\s+that\s+"
+    r"|(?:certainly|sure|of\s+course|notably|importantly|in\s+summary|overall)\s*[,:]\s*"
+    r")",
+    re.IGNORECASE,
+)
+
+GroundingStatus = Literal[
+    "grounded",
+    "partial",
+    "unsupported",
+    "abstained",
+    "ungrounded",
+    "invalid_citation",
+    "rank_only",
+]
 SENTENCE_SPLIT_REGEX = re.compile(r"(?<=[.!?])\s+|\n+")
 SUPPORT_STOPWORDS: frozenset[str] = frozenset(
     {
@@ -161,6 +197,27 @@ class CitationVerificationResult(BaseModel):
         default_factory=list,
         description="Cited ranks whose sentences had insufficient lexical support (diagnostic, not rank validity).",
     )
+    support_verified: bool = Field(
+        default=False,
+        description="True only when the cited text actually supports the claims, not merely that citation IDs exist.",
+    )
+    uncited_claim_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of claim sentences that carried no [E#] citation.",
+    )
+    uncited_unsupported_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of uncited claim sentences that no single evidence snippet supports.",
+    )
+    grounding_status: GroundingStatus = Field(
+        default="ungrounded",
+        description=(
+            "Single computed grounding verdict. 'rank_only' means citations exist and are in range "
+            "but claim support could not be evaluated, so the answer must not be labelled grounded."
+        ),
+    )
     message: str = Field(default="", description="Human-readable verification diagnostic.")
     auto_attributed_count: int = Field(
         default=0,
@@ -226,8 +283,9 @@ def should_withhold_answer(verification: CitationVerificationResult) -> bool:
     """Return True when a generated answer must not be rendered as a normal answer.
 
     A response is withheld when it fails grounding (no citations), when citations
-    are invalid/out-of-range, or when an injection directive was echoed. Explicit
-    abstentions remain valid answers and are never withheld.
+    are invalid/out-of-range, when an injection directive was echoed, or when the
+    cited claims are mostly unsupported by the cited text. Explicit abstentions
+    remain valid answers and are never withheld.
 
     Args:
         verification: Citation verification result for the generated response.
@@ -237,7 +295,9 @@ def should_withhold_answer(verification: CitationVerificationResult) -> bool:
     """
     if verification.abstention_detected:
         return False
-    return not verification.is_valid
+    if not verification.is_valid:
+        return True
+    return verification.grounding_status == "unsupported"
 
 
 def _support_tokens(text: str) -> set[str]:
@@ -246,61 +306,106 @@ def _support_tokens(text: str) -> set[str]:
     return {token for token in tokens if len(token) >= 2 and token not in SUPPORT_STOPWORDS}
 
 
+def strip_meta_preamble(sentence: str) -> str:
+    """Remove conversational lead-ins that are not part of the factual claim.
+
+    A model answer commonly starts with "Based on the information provided in
+    the resume, ...". Those words belong to the discourse frame, not the claim,
+    and counting them as content tokens was enough to push a faithful sentence
+    below the auto-attribution threshold.
+
+    Args:
+        sentence: One sentence from the generated answer.
+
+    Returns:
+        The sentence without a leading meta/discourse phrase.
+    """
+    stripped = sentence.strip()
+    previous = None
+    while stripped and stripped != previous:
+        previous = stripped
+        stripped = META_PREAMBLE_REGEX.sub("", stripped, count=1).strip()
+    return stripped
+
+
 def _evaluate_lexical_support(
     text: str,
     valid_ranks: list[int],
     retrieval_result: RetrievalResult | None,
-) -> tuple[bool, float, list[int]]:
-    """Check whether cited sentences lexically overlap the snippets they cite.
+) -> tuple[bool, float, list[int], int, int]:
+    """Check whether every claim is supported by the evidence.
 
-    This is intentionally a conservative diagnostic rather than a second validity
-    gate: rank validity remains the contract that decides ``is_valid`` and
-    ``precision``. The result lets the UI distinguish "the citation points at a
-    real snippet" from "the snippet actually contains the claim's wording".
+    Citation existence and claim support are separate gates. This check covers
+    *all* claim sentences, not only the citation-bearing ones: an uncited claim
+    is still part of the answer and must count against support. A claim that a
+    single snippet states but that the model left uncited is reported through
+    ``uncited_claim_count`` so the answer cannot be labelled fully grounded.
 
     Args:
         text: Assistant response text.
         valid_ranks: Ranks that exist in the retrieval result.
-        retrieval_result: Retrieval result holding the cited snippet texts.
+        retrieval_result: Retrieval result holding the evidence texts.
 
     Returns:
-        Tuple of (checked, support_precision, unsupported_ranks).
+        Tuple of (checked, support_precision, unsupported_ranks,
+        uncited_claim_count, uncited_unsupported_count).
     """
-    if not text or not valid_ranks or retrieval_result is None or not retrieval_result.snippets:
-        return False, 0.0, []
+    if not text or retrieval_result is None or not retrieval_result.snippets:
+        return False, 0.0, [], 0, 0
 
     valid_rank_set = set(valid_ranks)
     snippet_by_rank = {index: snippet.content for index, snippet in enumerate(retrieval_result.snippets, start=1)}
+    snippet_tokens_by_rank = {
+        rank: _support_tokens(content) for rank, content in snippet_by_rank.items() if content.strip()
+    }
+    if not snippet_tokens_by_rank:
+        return False, 0.0, [], 0, 0
 
     evaluable = 0
     supported = 0
     unsupported: set[int] = set()
+    uncited_claims = 0
+    uncited_unsupported = 0
 
     for sentence in SENTENCE_SPLIT_REGEX.split(text):
-        cited = [rank for rank in extract_citations(sentence) if rank in valid_rank_set]
-        if not cited:
+        if not sentence.strip():
             continue
 
-        claim = CITATION_REGEX.sub(" ", sentence)
+        cited = [rank for rank in extract_citations(sentence) if rank in valid_rank_set]
+        claim = strip_meta_preamble(CITATION_REGEX.sub(" ", sentence))
         claim_tokens = _support_tokens(claim)
         if len(claim_tokens) < SUPPORT_MIN_CLAIM_TOKENS:
             continue
 
         evaluable += 1
-        snippet_tokens: set[str] = set()
-        for rank in cited:
-            snippet_tokens.update(_support_tokens(snippet_by_rank.get(rank, "")))
+        if cited:
+            snippet_tokens: set[str] = set()
+            for rank in cited:
+                snippet_tokens.update(snippet_tokens_by_rank.get(rank, set()))
+            overlap = len(claim_tokens & snippet_tokens) / len(claim_tokens)
+            if overlap >= SUPPORT_TOKEN_THRESHOLD:
+                supported += 1
+            else:
+                unsupported.update(cited)
+            continue
 
-        overlap = len(claim_tokens & snippet_tokens) / len(claim_tokens)
-        if overlap >= SUPPORT_TOKEN_THRESHOLD:
+        uncited_claims += 1
+        # An uncited claim is only "supportable" if evidence states it directly.
+        # Compare against individual snippets so a union of unrelated fragments
+        # cannot manufacture support.
+        best_overlap = max(
+            (len(claim_tokens & tokens) / len(claim_tokens) for tokens in snippet_tokens_by_rank.values()),
+            default=0.0,
+        )
+        if best_overlap >= SUPPORT_TOKEN_THRESHOLD:
             supported += 1
         else:
-            unsupported.update(cited)
+            uncited_unsupported += 1
 
     if evaluable == 0:
-        return False, 0.0, []
+        return False, 0.0, [], 0, 0
 
-    return True, supported / evaluable, sorted(unsupported)
+    return True, supported / evaluable, sorted(unsupported), uncited_claims, uncited_unsupported
 
 
 def validate_citations(
@@ -330,6 +435,7 @@ def validate_citations(
             hallucinated_citations=[],
             cited_ranks=[],
             abstention_detected=False,
+            grounding_status="ungrounded",
             message="Empty response: no grounded content generated.",
         )
 
@@ -350,6 +456,7 @@ def validate_citations(
             cited_ranks=[],
             abstention_detected=False,
             injection_detected=True,
+            grounding_status="invalid_citation",
             message=f"Adversarial prompt injection directive detected in output ('{injection_pattern}'). Grounding validation rejected for security.",
         )
 
@@ -364,6 +471,7 @@ def validate_citations(
                 hallucinated_citations=[],
                 cited_ranks=[],
                 abstention_detected=True,
+                grounding_status="abstained",
                 message="Valid explicit abstention without fabricated citations.",
             )
         else:
@@ -376,6 +484,7 @@ def validate_citations(
                 hallucinated_citations=hallucinated,
                 cited_ranks=[],
                 abstention_detected=True,
+                grounding_status="invalid_citation",
                 message=f"Abstention contains unexpected citations ({', '.join(hallucinated)}). Abstaining answers must not cite evidence.",
             )
 
@@ -389,6 +498,7 @@ def validate_citations(
             hallucinated_citations=[],
             cited_ranks=[],
             abstention_detected=False,
+            grounding_status="ungrounded",
             message="Response contains claims without any bracketed [E1] evidence citations.",
         )
 
@@ -402,12 +512,46 @@ def validate_citations(
     precision = len(valid_ranks) / total_claimed
     is_valid = precision >= 0.95
 
-    support_checked, support_precision, unsupported_ranks = _evaluate_lexical_support(
-        text, valid_ranks, retrieval_result
+    support_checked, support_precision, unsupported_ranks, uncited_claims, uncited_unsupported = (
+        _evaluate_lexical_support(text, valid_ranks, retrieval_result)
     )
 
-    if is_valid:
-        msg = f"Citation precision {precision:.1%} ({len(valid_ranks)}/{total_claimed} citations verified)."
+    support_verified = bool(
+        is_valid
+        and support_checked
+        and not unsupported_ranks
+        and uncited_claims == 0
+        and support_precision >= SUPPORT_VERIFIED_THRESHOLD
+    )
+    if not is_valid:
+        grounding_status: GroundingStatus = "invalid_citation"
+    elif support_checked and support_precision < SUPPORT_WITHHOLD_THRESHOLD:
+        grounding_status = "unsupported"
+    elif support_checked and (
+        unsupported_ranks or uncited_claims > 0 or support_precision < SUPPORT_VERIFIED_THRESHOLD
+    ):
+        grounding_status = "partial"
+    elif support_verified:
+        grounding_status = "grounded"
+    else:
+        # Citations exist and are in range, but support was not evaluated.
+        # This must never be presented as "Grounded".
+        grounding_status = "rank_only"
+
+    if is_valid and grounding_status == "grounded":
+        msg = f"Citation precision {precision:.1%} ({len(valid_ranks)}/{total_claimed} citations verified); claim support confirmed."
+    elif is_valid and grounding_status == "partial":
+        detail = f"{support_precision:.1%} claim support"
+        if uncited_claims:
+            detail += f"; {uncited_claims} claim sentence(s) left uncited"
+        msg = f"Citation precision {precision:.1%}; {detail} (partial)."
+    elif is_valid and grounding_status == "unsupported":
+        msg = (
+            f"Citations exist ({precision:.1%}) but only {support_precision:.1%} of claims are "
+            "supported by the cited text."
+        )
+    elif is_valid:
+        msg = f"Citation precision {precision:.1%} ({len(valid_ranks)}/{total_claimed} citations verified); support not evaluated."
     else:
         msg = (
             f"Citation precision {precision:.1%} failed >=95% requirement: hallucinated {', '.join(hallucinated_tags)}."
@@ -424,6 +568,10 @@ def validate_citations(
         support_checked=support_checked,
         support_precision=support_precision,
         unsupported_ranks=unsupported_ranks,
+        support_verified=support_verified,
+        uncited_claim_count=uncited_claims,
+        uncited_unsupported_count=uncited_unsupported,
+        grounding_status=grounding_status,
         message=msg,
     )
 
@@ -431,7 +579,8 @@ def validate_citations(
 def auto_attribute_citations(
     text: str,
     retrieval_result: RetrievalResult | None,
-    min_overlap: float = 0.18,
+    min_overlap: float = AUTO_ATTRIBUTE_MIN_OVERLAP,
+    min_shared_tokens: int = AUTO_ATTRIBUTE_MIN_SHARED_TOKENS,
 ) -> str:
     """Attribute candidate evidence citations ([E#]) to sentences in an uncited draft.
 
@@ -439,10 +588,15 @@ def auto_attribute_citations(
     but omit inline citation tags [E#], this function scans sentences for lexical
     overlap with retrieved snippets and appends the best matching [E#] citations.
 
+    Only strong matches are attributed. A fabricated sentence that shares a single
+    generic word with a retrieved snippet must stay uncited, because a citation ID
+    that merely exists is not evidence that the claim is supported.
+
     Args:
         text: Assistant draft text.
         retrieval_result: Retrieved candidate evidence records.
-        min_overlap: Minimum token overlap fraction to attribute a snippet (default 0.18).
+        min_overlap: Minimum token overlap fraction to attribute a snippet (default 0.5).
+        min_shared_tokens: Minimum number of shared content tokens (default 2).
 
     Returns:
         Draft text with grounded [E#] citations appended to matching sentences, or original text if no matches.
@@ -487,7 +641,8 @@ def auto_attribute_citations(
 
         for sent in sentences:
             sent_trimmed = sent.strip()
-            claim_tokens = _support_tokens(sent_trimmed)
+            claim = strip_meta_preamble(CITATION_REGEX.sub(" ", sent_trimmed))
+            claim_tokens = _support_tokens(claim)
 
             if len(claim_tokens) < SUPPORT_MIN_CLAIM_TOKENS:
                 attributed_sentences.append(sent)
@@ -495,14 +650,17 @@ def auto_attribute_citations(
 
             best_rank = None
             best_overlap = 0.0
+            best_shared = 0
 
             for rank, s_tokens in snippet_tokens:
-                overlap = len(claim_tokens & s_tokens) / max(len(claim_tokens), 1)
-                if overlap > best_overlap:
+                shared = len(claim_tokens & s_tokens)
+                overlap = shared / max(len(claim_tokens), 1)
+                if overlap > best_overlap or (overlap == best_overlap and shared > best_shared):
                     best_overlap = overlap
+                    best_shared = shared
                     best_rank = rank
 
-            if best_rank is not None and best_overlap >= min_overlap:
+            if best_rank is not None and best_overlap >= min_overlap and best_shared >= min_shared_tokens:
                 any_cited = True
                 if sent_trimmed.endswith((".", "!", "?")):
                     new_sent = sent_trimmed[:-1].rstrip() + f" [E{best_rank}]" + sent_trimmed[-1]

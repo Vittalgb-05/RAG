@@ -126,6 +126,104 @@ def is_whole_document_query(query: str) -> bool:
     return any(pattern.search(lowered) for pattern in _WHOLE_DOCUMENT_PATTERNS)
 
 
+_SUMMARY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:summar(?:y|ize|ise)|synops(?:is|ize)|overview|precis)\b"),
+    re.compile(r"\b(?:core|main|central)\s+(?:thesis|argument|message|idea|point)\b"),
+    re.compile(r"\bkey\s+(?:findings?|points?|takeaways?|results?)\b"),
+)
+
+_LOCALIZED_SCOPE_PATTERN = re.compile(r"\b(?:section|page|chapter|figure|table|appendix)\s+\d+\b")
+
+# Questions that ask for a *present location* rather than an employer, event, or
+# historical place. These must be answerable only when the document explicitly
+# states a residence/base; otherwise a model may substitute an employer and the
+# lexical support check will accept it because the employer text is real.
+_LOCATION_QUESTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\bwhere\s+(?:is|are|was|were)\b[^?.!]{0,80}?"
+        r"\b(?:right\s+now|currently|now|live|lives|living|reside|resides|residing|"
+        r"based|located|location|address|city|hometown)\b"
+    ),
+    re.compile(r"\bwhere\s+(?:does|do|did)\b[^?.!]{0,80}?\b(?:live|reside|stay)\b"),
+    re.compile(r"\b(?:current|present)\s+(?:location|city|address|residence|home)\b"),
+    re.compile(r"\b(?:what|which)\s+is\s+(?:his|her|their|the)\s+(?:current\s+)?(?:location|city|address)\b"),
+)
+
+# Explicit residence/base cues. Bare city names (for example an institution's
+# city) are deliberately not accepted: they do not establish where a person is
+# currently based.
+_LOCATION_EVIDENCE_PATTERN = re.compile(
+    r"\b(?:current\s+location|location\s*:|address\s*:|residence\s*:|home\s+city|hometown|"
+    r"based\s+(?:in|at|out\s+of)|located\s+in|lives?\s+in|resides?\s+in|residing\s+in|"
+    r"relocat(?:ing|ed|ion)?\s+to)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_current_location(query: str) -> bool:
+    """Return True when the question asks for the subject's present location.
+
+    Args:
+        query: User prompt or contextualized search query.
+
+    Returns:
+        True for running/location questions such as "where is X right now?".
+    """
+    if not query or not query.strip():
+        return False
+    lowered = query.lower()
+    return any(pattern.search(lowered) for pattern in _LOCATION_QUESTION_PATTERNS)
+
+
+def evidence_states_current_location(evidence_text: str) -> bool:
+    """Return True when evidence explicitly states a residence or base location.
+
+    Args:
+        evidence_text: Concatenated evidence supplied to the model.
+
+    Returns:
+        True if an explicit location/base phrase is present.
+    """
+    if not evidence_text or not evidence_text.strip():
+        return False
+    return bool(_LOCATION_EVIDENCE_PATTERN.search(evidence_text))
+
+
+def answer_states_current_location(answer_text: str) -> bool:
+    """Return True when a generated answer actually states a location.
+
+    Args:
+        answer_text: Generated answer text.
+
+    Returns:
+        True if the answer contains a residence/base phrase.
+    """
+    if not answer_text or not answer_text.strip():
+        return False
+    return bool(_LOCATION_EVIDENCE_PATTERN.search(answer_text))
+
+
+def is_summary_request(query: str) -> bool:
+    """Return True when the user asks for a document summary.
+
+    Summary requests must use the document-wide / hierarchical summary pipeline, not
+    top-k QA retrieval. Questions explicitly scoped to one section, page, table, or
+    figure stay on targeted QA retrieval even if they mention "key points".
+
+    Args:
+        query: User prompt or contextualized search query.
+
+    Returns:
+        True when the prompt asks to summarize/overview the document as a whole.
+    """
+    if not query or not query.strip():
+        return False
+    lowered = query.lower()
+    if _LOCALIZED_SCOPE_PATTERN.search(lowered):
+        return False
+    return any(pattern.search(lowered) for pattern in _SUMMARY_PATTERNS)
+
+
 def whole_document_char_budget(context_window: int = 4096, max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS) -> int:
     """Estimate characters of evidence that fit alongside the grounding system prompt.
 

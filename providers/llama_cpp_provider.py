@@ -1,4 +1,4 @@
-"""Local inference provider for llama-server (llama.cpp) supporting Qwen2-VL 2B GGUF.
+"""Local inference provider for llama-server (llama.cpp) supporting Qwen3.5-2B GGUF.
 
 Communicates with llama-server over local HTTP REST endpoints, offering
 text generation, incremental SSE streaming, multimodal image analysis,
@@ -11,10 +11,8 @@ import ipaddress
 import json
 import logging
 import os
-from pathlib import Path
-import shutil
-import sys
 import time
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -46,11 +44,25 @@ def detect_image_mime(image_bytes: bytes) -> str | None:
     return None
 
 
-# The on-disk filename is a legacy artifact name from earlier releases.  Its GGUF
-# metadata identifies the checkpoint as Qwen2-VL-2B-Instruct ("qwen2vl").
-LOCAL_GGUF_FILENAME = "qwen3-vl-2b-instruct-q4_k_m.gguf"
-LOCAL_MMPROJ_FILENAME = "mmproj-f16.gguf"
-LOCAL_MODEL_ID = "qwen2-vl-2b"
+# Default local artifacts: Qwen3.5-2B (GGUF architecture "qwen35") with its
+# F16 vision projector ("qwen3vl_merger"). ``core.model_identity`` verifies the
+# pair from GGUF metadata before the launcher will start the server.
+LOCAL_GGUF_FILENAME = "qwen3.5-2b-q4_k_m.gguf"
+LOCAL_MMPROJ_FILENAME = "qwen3.5-2b-mmproj-f16.gguf"
+LOCAL_MODEL_ID = "qwen3.5-2b"
+
+# Qwen3.5 thinks by default. Reasoning tokens are charged against the same bounded
+# context the grounded prompts are budgeted for, and they crowd out the visible
+# answer: with a small ``max_tokens`` the response returns an empty ``content``
+# while the entire budget is spent on ``reasoning_content``. Grounded QA here is
+# extract-and-cite, not open-ended reasoning, so the local provider asks
+# llama-server for a direct answer. Both keys are accepted by llama.cpp v0.8.0
+# (``reasoning_effort``) and by the chat template (``enable_thinking``); unknown
+# keys are ignored by older servers, so the payload stays valid on rollback.
+NO_REASONING_REQUEST_OPTIONS: dict[str, Any] = {
+    "reasoning_effort": "none",
+    "chat_template_kwargs": {"enable_thinking": False},
+}
 
 
 class LlamaCppProvider(BaseModelProvider):
@@ -145,13 +157,10 @@ class LlamaCppProvider(BaseModelProvider):
             )
         except (httpx.ConnectError, httpx.ConnectTimeout):
             elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
-            local_bin = (
-                Path(__file__).resolve().parent
-                / "tools"
-                / "llama-server"
-                / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
-            )
-            bin_cmd = str(local_bin) if local_bin.exists() and not shutil.which("llama-server") else "llama-server"
+            from core.runtime_info import find_llama_server_binary
+
+            local_bin = find_llama_server_binary()
+            bin_cmd = str(local_bin) if local_bin else "llama-server"
             setup_cmd = (
                 f"{bin_cmd} -m models/{LOCAL_GGUF_FILENAME} "
                 f"--mmproj models/{LOCAL_MMPROJ_FILENAME} -c {self.context_window} -ngl 28 --port 8080"
@@ -173,7 +182,7 @@ class LlamaCppProvider(BaseModelProvider):
         """Inspect provider capabilities.
 
         Returns:
-            ProviderCapabilities for local Qwen2-VL 2B.
+            ProviderCapabilities for the local Qwen3.5-2B vision-language model.
         """
         return ProviderCapabilities(
             model_name=self.model_name,
@@ -216,6 +225,7 @@ class LlamaCppProvider(BaseModelProvider):
             "max_tokens": max_tokens,
             "temperature": clamped_temp,
             "stream": False,
+            **NO_REASONING_REQUEST_OPTIONS,
         }
 
         try:
@@ -265,6 +275,7 @@ class LlamaCppProvider(BaseModelProvider):
             "max_tokens": max_tokens,
             "temperature": clamped_temp,
             "stream": True,
+            **NO_REASONING_REQUEST_OPTIONS,
         }
 
         try:
@@ -341,6 +352,7 @@ class LlamaCppProvider(BaseModelProvider):
             "messages": messages,
             "max_tokens": max_tokens,
             "stream": False,
+            **NO_REASONING_REQUEST_OPTIONS,
         }
 
         try:
