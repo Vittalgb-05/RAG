@@ -30,6 +30,10 @@ from typing import Any
 
 from setuptools import Command, find_packages, setup
 
+# The expected native runtime build is defined once in core.runtime_info and imported
+# here so the installer, the launcher banner, and the diagnostics page cannot drift.
+from core.runtime_info import EXPECTED_LLAMA_CPP_BUILD, EXPECTED_LLAMA_CPP_SEMVER
+
 # Ensure UTF-8 stdout/stderr across Windows consoles (cp1252/cp437)
 if hasattr(sys.stdout, "reconfigure"):
     with contextlib.suppress(Exception):
@@ -54,35 +58,43 @@ if req_path.exists():
             requirements.append(line)
 
 
+# Hugging Face revision pinned so a re-run fetches the exact bytes the digests below
+# were computed from, not whatever ``main`` happens to hold later.
+QWEN35_GGUF_REVISION = "377fa65bb36aa83414de1ab3b40f6f15b0324cdc"
+
 MODEL_REGISTRY: list[dict[str, Any]] = [
     {
-        "name": "qwen3-vl-2b-instruct-q4_k_m.gguf",
-        "description": "Qwen2-VL 2B Instruct GGUF (4-bit quantized base language/vision model)",
-        "min_size_bytes": 800_000_000,
-        "sha256": "4ef095263343fc1237e8ca879790bb262bcf209f082e0a9bfce219b7ece55e8b",
+        "name": "qwen3.5-2b-q4_k_m.gguf",
+        "description": "Qwen3.5-2B GGUF (Q4_K_M; architecture qwen35, image input supported)",
+        "min_size_bytes": 1_200_000_000,
+        "sha256": "a8b50de00b780c0f3c16f07cb041a1ecd678b6e22fd8cde91e57fe4b5031523b",
         "urls": [
-            "https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q4_K_M.gguf",
+            f"https://huggingface.co/SoAIHQ/Qwen3.5-2B-GGUF/resolve/{QWEN35_GGUF_REVISION}/Qwen3.5-2B-Q4_K_M.gguf",
         ],
     },
     {
-        "name": "mmproj-f16.gguf",
-        "description": "Qwen2-VL 2B Multimodal Projector Adapter GGUF (FP16 vision encoder)",
-        "min_size_bytes": 500_000_000,
-        "sha256": "05cc3ae461a7b6aa4023312ccab549ecab77cf8677efee04f049fcbab55b8bc3",
+        "name": "qwen3.5-2b-mmproj-f16.gguf",
+        "description": "Qwen3.5-2B multimodal projector (F16 vision encoder, qwen3vl_merger)",
+        "min_size_bytes": 600_000_000,
+        "sha256": "044a0ea136cca70711ae16e23b24d754b44eab6f2462d187aee4d7c7a9503d36",
         "urls": [
-            "https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-2B-Instruct-f16.gguf",
+            f"https://huggingface.co/SoAIHQ/Qwen3.5-2B-GGUF/resolve/{QWEN35_GGUF_REVISION}/mmproj-Qwen3.5-2B-f16.gguf",
         ],
     },
 ]
 
 
+LLAMA_SERVER_RELEASE = EXPECTED_LLAMA_CPP_BUILD
+LLAMA_SERVER_SEMVER = EXPECTED_LLAMA_CPP_SEMVER
 LLAMA_ARCHIVE_SHA256: dict[str, str] = {
-    "llama-b11718-bin-win-cuda-12.4-x64.zip": "c13fda0ef74f47cd2bccda1eea2a62980c12a5778d39b39bedadb525b4e81aff",
+    "llama-b11960-bin-win-cuda-12.4-x64.zip": "8d9d819261de10cc2f03921b8b79c779c5c458e21edb60c170ee30a7d462d684",
     "cudart-llama-bin-win-cuda-12.4-x64.zip": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
-    "llama-b11718-bin-win-cpu-x64.zip": "92cc529b29a43f9a30e21d490cb2e95062acd0b59af6fee8b3b52b28074f838c",
-    "llama-b11718-bin-ubuntu-x64.tar.gz": "99f83b15cea9a4fb8945516c276b5f42b11608f82104fc6fa98a541cac826de7",
-    "llama-b11718-bin-ubuntu-cuda-12.8-x64.tar.gz": "491595b522685a7b51974e80c21a8458e3afb5cf630fa48dc74fa854c378b3e0",
+    "llama-b11960-bin-win-cpu-x64.zip": "73f962f82850d244db47eaacb9d913637027b82399124324298576d58c5f4287",
+    "llama-b11960-bin-ubuntu-x64.tar.gz": "31cc3a6bc638ac6c48dc4b1b74888f1eaadf3d14227c1e5f67daf9a49541d97a",
+    "llama-b11960-bin-ubuntu-cuda-12.8-x64.tar.gz": "64d57beb9abb637c177c6afb313760a0c0782224cac71e74869eed5b8f9a1ea4",
 }
+LLAMA_SERVER_BASE_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
+LLAMA_SERVER_MIRROR_BASE_URL = f"https://github.com/ggerganov/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
 
 
 def require_pinned_checksums() -> bool:
@@ -408,11 +420,6 @@ def download_all_models(
         print("     Please refer to docs/RUNBOOK.md for manual download links.")
     print("=" * 68)
     return all_ok
-
-
-LLAMA_SERVER_RELEASE = "b11718"
-LLAMA_SERVER_BASE_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
-LLAMA_SERVER_MIRROR_BASE_URL = f"https://github.com/ggerganov/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
 
 
 def detect_nvidia_gpu() -> bool:

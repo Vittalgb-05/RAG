@@ -26,8 +26,9 @@ services:
     restart: unless-stopped
 
   # Optional containerized llama-server for full Docker isolation (CUDA GPU)
+  # Image tag tracks the same build the native installer pins (llama.cpp v0.8.0 = b11960).
   llama-server:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-b11960
     container_name: rag-llama-server
     profiles: ["gpu"]
     ports:
@@ -35,8 +36,8 @@ services:
     volumes:
       - ./models:/models:ro
     command: >
-      -m /models/qwen3-vl-2b-instruct-q4_k_m.gguf
-      --mmproj /models/mmproj-f16.gguf
+      -m /models/qwen3.5-2b-q4_k_m.gguf
+      --mmproj /models/qwen3.5-2b-mmproj-f16.gguf
       -c 4096
       -ngl 28
       --port 8080

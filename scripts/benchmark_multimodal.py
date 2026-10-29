@@ -33,7 +33,7 @@ logger = logging.getLogger("benchmark_multimodal")
 class DeterministicBenchmarkProvider(BaseModelProvider):
     """Deterministic local provider for offline regression and CI benchmark evaluation."""
 
-    def __init__(self, model_name: str = "qwen3-vl-2b-instruct-q4_k_m") -> None:
+    def __init__(self, model_name: str = "qwen3.5-2b-q4_k_m") -> None:
         self.model_name = model_name
 
     def check_health(self) -> HealthStatus:
