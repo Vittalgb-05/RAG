@@ -143,6 +143,15 @@ pip install -r requirements-lock.txt
 pip install -e .
 ```
 
+`python setup.py` performs this for you: when the system Python refuses `pip install`
+(PEP 668 `EXTERNALLY-MANAGED`, the default on Ubuntu 24.04), it creates `.venv`, installs
+the dependencies and this package into it, verifies `streamlit` imports, and prints the exact
+launch command (`.venv/bin/python start.py --start-llama`, or
+`.venv\Scripts\python.exe start.py --start-llama` on Windows). Override the location with
+`--venv-path` or `RAG_VENV_PATH`; an existing usable environment is reused. Setup exits
+non-zero if the dependencies still cannot be installed, and `start.py` refuses to launch
+anything when its interpreter is missing them.
+
 ### 3. Acquire Local Models
 
 Download the GGUF model and multimodal projector into a `models/` directory, or let the installer do it with pinned revisions and SHA-256 verification:

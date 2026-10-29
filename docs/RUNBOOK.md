@@ -47,6 +47,13 @@ Run the all-in-one setup tool to install dependencies, verify directories, downl
 python setup.py
 ```
 
+If the system interpreter refuses `pip install` (PEP 668 `EXTERNALLY-MANAGED`, the default on Ubuntu 24.04 and other distros), setup creates an isolated environment and installs everything into it instead of failing. It then prints the exact interpreter to launch with, for example:
+```bash
+.venv/bin/python start.py --start-llama      # Linux / macOS
+.venv\Scripts\python.exe start.py --start-llama   # Windows
+```
+Setup exits non-zero when dependencies still cannot be installed, so a green run always means the printed interpreter can start the app. Override the environment location with `python setup.py --venv-path /path/to/env` or `RAG_VENV_PATH=/path/to/env`. An existing usable environment is reused, never rebuilt.
+
 Or run dedicated sub-commands as needed:
 ```bash
 # Explicit full setup using requirements-lock.txt
@@ -80,6 +87,8 @@ pip install -e .
 python setup.py --llama-server
 ```
 *(Or run `python setup.py` for the complete initial setup: dependencies, models, and llama-server in one pass).*
+
+`--llama-server` is deliberately llama-only: it never installs Python packages. After configuring the binary it runs a dependency pre-flight and prints the launch command to use — or, if the app dependencies are still missing, the exact install command (`python setup.py`) and the interpreter to launch with. `start.py` performs the same check before it spawns anything, so a missing `streamlit` fails immediately with the interpreter path and remediation instead of after llama-server has started.
 
 The expected runtime is **llama.cpp v0.8.0, published as nightly build `b11960`** (the `v0.8.0` release asset `nightly-tag.txt` names that build; binaries are attached to the `b11960` tag). Verify the installed executable reports itself:
 
