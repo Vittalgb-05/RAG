@@ -1,17 +1,18 @@
 """
-Streamlit front-end for the AMOLED local-first document workspace.
+Streamlit front-end for the local-first PDF intelligence workspace.
 
-Provides a unified chatbot-first document workspace:
-1. Chat: Evidence-grounded conversational search with citations, table understanding, and visual OCR.
-2. Summarizer: Multi-profile analytical summaries with page references and markdown export.
-3. Document Library: Complete document lifecycle management (search, inspect, delete, purge).
-4. Settings: Hardware telemetry (VRAM/RAM), model health, local/cloud privacy controls.
+Chat is the default workspace: evidence-grounded questions and document-wide
+summaries with page provenance. Library owns upload and lifecycle actions,
+Summarizer exposes the hierarchical summarizer, Settings owns inference/privacy,
+and Diagnostics exposes redacted health and log data. Navigation exists once
+(sidebar); content views never duplicate it.
 """
 
 import logging
 import os
 from pathlib import Path
 import time
+import uuid
 
 # Enforce PyTorch backend and suppress Keras 3 / TensorFlow integrations
 os.environ.setdefault("USE_TF", "0")
@@ -27,17 +28,16 @@ from core.local_llm import AiModel
 from core.logging_setup import configure_logging, suppress_torch_classes_scan_warning
 from core.redaction import redact_text
 from providers.model_provider import HealthStatus, ProviderCapabilities
-from ui.components import render_brand_header
+from ui.components import push_notification, render_brand_header, render_notifications
 from core.resource_telemetry import get_gpu_memory_info, get_process_memory_info
 from ui.hydration import hydrate_startup_state
 from ui.session_state import reset_in_memory_session
 from ui.theme import inject_custom_theme
 from ui.views import (
     render_chat_view,
-    render_cloud_api_tab,
+    render_diagnostics_view,
     render_library_view,
     render_settings_view,
-    render_sidebar_documents,
     render_summarizer_view,
 )
 
@@ -57,6 +57,7 @@ suppress_torch_classes_scan_warning()
 
 MAX_CHAT_TURNS = 50
 WORKSPACES = ["Chat", "Document Library", "Summarizer", "Settings", "Diagnostics"]
+NAV_WORKSPACES = ["Chat", "Document Library", "Summarizer"]
 WORKSPACE_ALIASES = {
     "Workspace": "Chat",
     "Ask Documents": "Chat",
@@ -106,7 +107,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Apply AMOLED CSS tokens, card styling, and subtle motion
+# Apply AMOLED CSS tokens, scoped component styling, and subtle motion
 inject_custom_theme()
 
 # ------------------------------------------------------------------
@@ -121,6 +122,9 @@ for key, default in [
     ("local_embedding", None),
     ("hybrid_retriever", None),
     ("chat_history", []),
+    ("chat_sessions", []),
+    ("current_chat_id", None),
+    ("notifications", []),
     ("cloud_mode", False),
     ("cloud_mode_toggle", False),
     ("user_consented", False),
@@ -297,6 +301,7 @@ else:
     health = _snapshot["health"]
     caps = _snapshot["caps"]
 is_healthy = bool(health.status == "healthy")
+cloud_active = bool(st.session_state.cloud_mode and st.session_state.user_consented)
 
 
 # ------------------------------------------------------------------
@@ -312,7 +317,7 @@ def _render_consent_dialog_content() -> None:
         "**Transmitted Excerpts Include:**\n"
         "- Extracted document text, tables, and OCR-processed text\n"
         "- Visual figure descriptions and image analysis summaries\n\n"
-        "**What stays 100% on your device (zero network egress):**\n"
+        "**What stays on your device when only local inference is active:**\n"
         "- Original PDF document files and raw image bitmaps\n"
         "- Dense vector embeddings (all-MiniLM-L6-v2 on CPU)\n"
         "- Persistent LanceDB vector database & SQLite store\n\n"
@@ -327,7 +332,7 @@ def _render_consent_dialog_content() -> None:
             st.session_state._show_consent_dialog = False
             st.rerun()
     with col_no:
-        if st.button("Cancel (Keep 100% Local)", use_container_width=True, key="consent_no_btn"):
+        if st.button("Cancel (Keep Local)", use_container_width=True, key="consent_no_btn"):
             st.session_state.user_consented = False
             st.session_state.cloud_mode = False
             st.session_state.cloud_mode_toggle = False
@@ -351,138 +356,125 @@ if st.session_state.get("_show_consent_dialog", False):
     show_consent_dialog()
 
 
-if hasattr(st, "dialog"):
-
-    @st.dialog("Settings")
-    def show_settings_modal() -> None:
-        render_settings_view(
-            ai_model=ai_model,
-            health=health,
-            caps=caps,
-            doc_store=doc_store,
-            cache_dir=CACHE_DIR,
-            is_dialog=True,
-        )
-        if st.button("Close", key="modal_close_settings_btn", use_container_width=True):
-            st.session_state._show_settings_dialog = False
-            st.rerun()
-else:
-
-    def show_settings_modal() -> None:
-        render_settings_view(
-            ai_model=ai_model,
-            health=health,
-            caps=caps,
-            doc_store=doc_store,
-            cache_dir=CACHE_DIR,
-            is_dialog=True,
-        )
+# ------------------------------------------------------------------
+# Recent chats (real, session-scoped conversations)
+# ------------------------------------------------------------------
 
 
-if st.session_state.get("_show_settings_dialog", False):
-    show_settings_modal()
+def _archive_current_chat() -> None:
+    """Archive the current transcript before starting a new conversation."""
+    history = list(st.session_state.chat_history)
+    if not history:
+        st.session_state.current_chat_id = None
+        return
+    first_user = next(
+        (turn.get("content", "") for turn in history if turn.get("role") == "user" and turn.get("content")),
+        "Conversation",
+    )
+    session_id = st.session_state.current_chat_id or f"chat_{uuid.uuid4().hex[:8]}"
+    sessions = [session for session in st.session_state.chat_sessions if session.get("id") != session_id]
+    sessions.append(
+        {
+            "id": session_id,
+            "title": str(first_user).strip()[:80] or "Conversation",
+            "history": history,
+            "updated": time.time(),
+        }
+    )
+    st.session_state.chat_sessions = sessions[-8:]
+    st.session_state.current_chat_id = None
+
+
+def _start_new_chat() -> None:
+    """Start a fresh conversation without deleting stored documents or indexes."""
+    _archive_current_chat()
+    st.session_state.chat_history = []
+    st.session_state.active_workspace = "Chat"
 
 
 # ------------------------------------------------------------------
-# Sidebar: Brand, Engine Status, Documents & Navigation
+# Sidebar: brand, navigation, recent chats, truthful status
 # ------------------------------------------------------------------
 
 with st.sidebar:
     render_brand_header()
 
-    # Prominent New Chat CTA button
-    if st.button(
-        "New conversation",
-        key="sidebar_new_conversation",
-        type="primary",
-        use_container_width=True,
-        help="Start a fresh conversation",
-    ):
-        st.session_state.chat_history = []
-        st.session_state.active_workspace = "Chat"
+    if st.button("New chat", key="sidebar_new_conversation", use_container_width=True):
+        _start_new_chat()
         st.rerun()
 
-    # One clean indication for server being online or offline
-    if is_healthy:
-        dot_color = "#10B981"
-        status_text = (
-            f"Server Online · {caps.model_name}" if caps.is_local else f"Server Online (Cloud) · {caps.model_name}"
-        )
-    elif health.status == "loading":
-        dot_color = "#FBBF24"
-        status_text = f"Server Loading · {caps.model_name}"
-    else:
-        dot_color = "#EF4444"
-        status_text = "Server Offline"
-
-    status_block = (
-        f'<div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; '
-        f"background-color: #18181D; border: 1px solid #29292F; border-radius: 9999px; "
-        f'font-size: 0.78rem; font-weight: 500; color: #F4F4F5; margin-top: 0.35rem; margin-bottom: 0.75rem;">'
-        f'<span style="width: 8px; height: 8px; border-radius: 50%; background-color: {dot_color}; '
-        f'box-shadow: 0 0 6px {dot_color}; display: inline-block;"></span>'
-        f'<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{status_text}</span>'
-        f"</div>"
-    )
-    if hasattr(st.sidebar, "html"):
-        st.sidebar.html(status_block)
-    else:
-        st.sidebar.markdown(status_block, unsafe_allow_html=True)
-
-    if not is_healthy and health.message:
-        st.caption(redact_text(health.message))
-
-    st.divider()
-
-    # Workspace Navigation: canonical list shared with the router
     current_ws = normalize_workspace(st.session_state.active_workspace)
-    current_ws_idx = WORKSPACES.index(current_ws) if current_ws in WORKSPACES else 0
-
+    # Off-nav workspaces (Settings, Diagnostics) keep the last nav selection so a
+    # rerun does not look like a radio change and bounce back to Chat.
+    nav_value = current_ws if current_ws in NAV_WORKSPACES else st.session_state.get("_nav_value", "Chat")
     selected_workspace = st.radio(
-        "Navigation",
-        options=WORKSPACES,
-        index=current_ws_idx,
+        "Workspace",
+        options=NAV_WORKSPACES,
+        index=NAV_WORKSPACES.index(nav_value),
         label_visibility="collapsed",
     )
-    if selected_workspace != st.session_state.active_workspace:
+    # Compare against the previous radio value instead of the active workspace:
+    # Settings/Diagnostics are not radio options, so comparing to the active page
+    # would immediately bounce those workspaces back to Chat.
+    previous_nav = st.session_state.get("_nav_value")
+    st.session_state._nav_value = selected_workspace
+    if previous_nav is not None and selected_workspace != previous_nav:
         st.session_state.active_workspace = selected_workspace
         st.rerun()
 
+    st.markdown(
+        "<div class='sidebar-section-label'>Recent chats</div>",
+        unsafe_allow_html=True,
+    )
+    archived = sorted(st.session_state.chat_sessions, key=lambda item: item.get("updated", 0.0), reverse=True)
+    if st.session_state.chat_history:
+        st.caption("Current conversation")
+    if not archived and not st.session_state.chat_history:
+        st.caption("No conversations yet.")
+    for session in archived[:5]:
+        if st.button(
+            str(session.get("title", "Conversation"))[:48], key=f"recent_{session.get('id')}", use_container_width=True
+        ):
+            st.session_state.chat_history = list(session.get("history", []))
+            st.session_state.current_chat_id = session.get("id")
+            st.session_state.active_workspace = "Chat"
+            st.rerun()
+
     st.divider()
 
-    # Document Uploader and Active Documents
-    render_sidebar_documents(
-        doc_store=doc_store,
-        ai_model=ai_model,
-        cache_dir=CACHE_DIR,
+    # Truthful provider status: derived from the active provider, not a constant.
+    if is_healthy:
+        if getattr(caps, "is_local", True):
+            status_text = f"Local · {caps.model_name}"
+            dot_color = "#34D399"
+        else:
+            status_text = f"Cloud · {caps.model_name}"
+            dot_color = "#A78BFA"
+    elif health.status == "loading":
+        status_text = "Provider loading"
+        dot_color = "#FBBF24"
+    else:
+        status_text = "Provider offline"
+        dot_color = "#F87171"
+    st.html(
+        f'<div class="provider-status">'
+        f'<span class="provider-dot" style="background-color:{dot_color};"></span>'
+        f"<span>{status_text}</span></div>"
+    )
+    if not is_healthy and health.message:
+        st.caption(redact_text(health.message))
+    st.caption(
+        "Inference is local by default. Cloud excerpts leave this device only after explicit consent."
+        if not cloud_active
+        else "Cloud inference is active: prompts and retrieved excerpts leave this device."
     )
 
     st.divider()
+    if st.button("Diagnostics", key="sidebar_diagnostics_btn", use_container_width=True):
+        st.session_state.active_workspace = "Diagnostics"
+        st.rerun()
 
-    col_btn_set, col_btn_reset = st.columns(2)
-    with col_btn_set:
-        if st.button(
-            "Settings",
-            key="sidebar_settings_btn",
-            use_container_width=True,
-            help="Configure inference, API keys, and privacy",
-        ):
-            if hasattr(st, "dialog"):
-                st.session_state._show_settings_dialog = True
-            else:
-                st.session_state.active_workspace = "Settings"
-            st.rerun()
-    with col_btn_reset:
-        if st.button(
-            "Clear Session",
-            key="sidebar_clear_session_btn",
-            use_container_width=True,
-            help="Clear in-memory chat and reset upload buffer",
-        ):
-            _reset_session_security_state()
-            st.rerun()
-
-    with st.sidebar.expander("System & Privacy", expanded=False):
+    with st.expander("Session", expanded=False):
         proc_info = get_process_memory_info()
         gpu_info = get_gpu_memory_info()
         ram_mb = proc_info.get("rss_mb", 0.0)
@@ -490,73 +482,33 @@ with st.sidebar:
             f"{gpu_info.get('used_mb', 0.0):.0f} / {gpu_info.get('total_mb', 0.0):.0f} MB" if gpu_info else "CPU-only"
         )
         st.markdown(
-            f"<div style='font-size: 0.75rem; color: #A1A1AA; margin-bottom: 0.5rem;'>"
-            f"<b>RAM:</b> {ram_mb:.0f} MB · <b>VRAM:</b> {vram_str}</div>",
+            f"<div class='sidebar-meta'>RAM: {ram_mb:.0f} MB · VRAM: {vram_str}</div>",
             unsafe_allow_html=True,
         )
-        if st.button("Open Diagnostics", use_container_width=True):
-            st.session_state.active_workspace = "Diagnostics"
+        if st.button("Clear session", key="sidebar_clear_session_btn", use_container_width=True):
+            _reset_session_security_state()
+            push_notification("info", "Session cleared. Stored documents and indexes are untouched.")
             st.rerun()
 
-    # Small error logging in the bottom left
-    log_file = LOG_DIR / "app.log"
-    recent_errors = []
-    if log_file.exists():
-        try:
-            with open(log_file, encoding="utf-8", errors="replace") as lf:
-                for line in lf.readlines()[-60:]:
-                    if " ERROR " in line or " CRITICAL " in line:
-                        recent_errors.append(line.strip())
-        except Exception:
-            pass
-
-    st.sidebar.markdown(
-        "<div style='font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; "
-        "color: #71717A; font-weight: 700; margin-top: 1rem; margin-bottom: 0.25rem;'>"
-        "Error Logging</div>",
-        unsafe_allow_html=True,
-    )
-    if recent_errors:
-        with st.sidebar.expander(f"Recent Errors ({len(recent_errors)})", expanded=False):
-            for err in recent_errors[-3:]:
-                st.code(err, language="text")
-    else:
-        st.sidebar.caption("System Log: No errors recorded")
-
-    footer_html = (
-        "<div style='font-size: 0.72rem; color: #A1A1AA; margin-top: 0.75rem; text-align: center; line-height: 1.4;'>"
-        "100% Offline Local Pipeline<br>Qwen2-VL · LanceDB · MiniLM</div>"
-    )
-    if hasattr(st.sidebar, "html"):
-        st.sidebar.html(footer_html)
-    else:
-        st.sidebar.markdown(footer_html, unsafe_allow_html=True)
+    if st.button("Settings", key="sidebar_settings_btn", use_container_width=True):
+        st.session_state.active_workspace = "Settings"
+        st.rerun()
 
 
 # ------------------------------------------------------------------
-# Main Content View Routing
+# Main Content View Routing (single navigation source)
 # ------------------------------------------------------------------
 
 active_page = normalize_workspace(st.session_state.active_workspace)
 
 if active_page == "Chat":
-    tab_chat, tab_lib, tab_cloud = st.tabs(["💬 Chat", "📚 Library", "☁️ Enable Cloud API"])
-    with tab_chat:
-        render_chat_view(
-            ai_model=ai_model,
-            health=health,
-            caps=caps,
-            doc_store=doc_store,
-            cache_dir=CACHE_DIR,
-        )
-    with tab_lib:
-        render_library_view(
-            doc_store=doc_store,
-            hybrid_retriever=st.session_state.hybrid_retriever,
-            cache_dir=CACHE_DIR,
-        )
-    with tab_cloud:
-        render_cloud_api_tab(ai_model=ai_model)
+    render_chat_view(
+        ai_model=ai_model,
+        health=health,
+        caps=caps,
+        doc_store=doc_store,
+        cache_dir=CACHE_DIR,
+    )
 elif active_page == "Summarizer":
     render_summarizer_view(
         doc_store=doc_store,
@@ -568,8 +520,9 @@ elif active_page == "Document Library":
         doc_store=doc_store,
         hybrid_retriever=st.session_state.hybrid_retriever,
         cache_dir=CACHE_DIR,
+        ai_model=ai_model,
     )
-elif active_page in ("Settings", "Diagnostics"):
+elif active_page == "Settings":
     render_settings_view(
         ai_model=ai_model,
         health=health,
@@ -577,3 +530,13 @@ elif active_page in ("Settings", "Diagnostics"):
         doc_store=doc_store,
         cache_dir=CACHE_DIR,
     )
+elif active_page == "Diagnostics":
+    render_diagnostics_view(
+        ai_model=ai_model,
+        health=health,
+        caps=caps,
+        doc_store=doc_store,
+        cache_dir=CACHE_DIR,
+    )
+
+render_notifications()
