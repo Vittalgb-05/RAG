@@ -1,203 +1,223 @@
+---
+last_mapped_commit: 6acbd27a48dddbd1b122277663ebab42d9f83f7e
+last_mapped_at: 2026-11-14
+---
 # Coding Conventions
 
-**Analysis Date:** 2026-10-29
+**Analysis Date:** 2026-11-14
+
+## Scope
+
+Two codebases in one repository:
+
+- **Python backend** — `api/`, `core/`, `ingestion/`, `providers/`, `retrieval/`, `services/`, plus root CLI entry points `start.py` and `setup.py`.
+- **TypeScript frontend** — `frontend/src/` (Next.js 15 App Router, React 19, static export).
+
+There is no `ui/` Streamlit package and no `main.py` at the repo root. Older docs (`CLAUDE.md`, `docs/CODE_QUALITY_REPORT.md`, `docs/TEST_RESULTS.md`) still describe the pre-FastAPI Streamlit layout; use the paths below.
 
 ## Naming Patterns
 
-**Files:**
-- Python modules and packages use `snake_case`: `core/citation_validator.py`, `ui/chat_controller.py`, `retrieval/hybrid_retriever.py`, `ingestion/ocr_fallback.py`, `providers/llama_cpp_provider.py`.
-- Packages group by responsibility: `core/`, `ui/`, `ingestion/`, `retrieval/`, `providers/`, with `tests/` mirroring modules.
-- Tests use `test_<module_or_feature>.py`: `tests/test_doc_store.py`, `tests/test_grounding_contract.py`, `tests/test_ui_redesign_apptest.py`.
-- Root entry points are deliberately minimal: `main.py`, `start.py`, `setup.py`.
-- Static assets use lowercase names with underscores: `assets/icons/document.svg`, `assets/brand_mark.svg`.
-- No JavaScript, TypeScript, or CSS source files. CSS is injected from `ui/theme.py`; SVG markup is read from `assets/icons/`.
+**Files (Python):**
+- Modules are `snake_case` and named after the single responsibility they own: `core/doc_store.py`, `core/citation_validator.py`, `retrieval/hybrid_retriever.py`, `api/streaming.py`.
+- API routers are one file per resource under `api/routers/`: `chat.py`, `documents.py`, `jobs.py`, `search.py`, `settings.py`, `summaries.py`, `system.py`, `visualize.py`.
+- API request/response models live under `api/schemas/` in a matching file (`api/schemas/documents.py`, `api/schemas/common.py`).
+- Tests are `tests/test_<module_or_feature>.py` (e.g. `tests/test_hybrid_retriever.py`, `tests/test_openapi_contract.py`).
 
-**Functions:**
-- `snake_case`, verb-first for actions: `ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`, `validate_citations`, `auto_attribute_citations`, `assemble_grounded_messages`.
-- Private helpers are underscore-prefixed: `_build_report`, `_retrieve`, `_retrieve_document_wide`, `_attribute`, `_execute_write`, `_report_progress`, `_lifecycle_preflight`.
-- UI view renderers use `render_<area>` and return `None`: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_diagnostics_view`, `render_sidebar_documents`, `render_file_upload_button` in `ui/views.py`; `render_brand_header`, `render_stat_card`, `render_empty_state`, `render_notifications` in `ui/components.py`.
-- Pure markup builders return `str` and are named for the artifact they produce: `render_citation_chip`, `render_chatgpt_citation_pill`, `render_status_pill`, `get_svg_icon`, `get_brand_mark_svg` in `ui/components.py`.
-- Provider methods follow the `BaseModelProvider` contract exactly: `generate_text`, `stream_text`, `analyze_image`, `check_health`, `get_capabilities` in `providers/model_provider.py` and implementations under `providers/`.
-- Service methods name the operation, not the layer: `IngestionService.ingest_pdf`, `LifecycleService.delete_document` / `purge_all` / `reindex_document`, `ChatTurnService.prepare` / `finalize` / `error_result` / `intent_mismatch_result` / `abstention_result`.
+**Files (TypeScript/React):**
+- Components: kebab-case file, PascalCase export — `frontend/src/components/chat/citation-pill.tsx` exports `CitationPill`.
+- Hooks and query modules: `frontend/src/lib/api/queries.ts` exports `useHealth`, `useDocuments`, `useDeleteDocument`.
+- Route pages: `frontend/src/app/(shell)/<route>/page.tsx` with a default-exported PascalCase component (`LibraryPage`, `ChatPage`).
+
+**Classes and types:**
+- `PascalCase` everywhere: `DocStore`, `HybridRetriever`, `AiModel`, `InferenceGate`, `ChatTurnService`, `IngestionService`, `AppContainer`.
+- Abstract interfaces keep the `Base*` prefix (`BaseModelProvider` in `providers/model_provider.py`); callable contracts use `Protocol` (`CitationValidator` in `services/chat_turn.py`).
+- Type aliases are `PascalCase`: `Emit = Callable[[str, dict[str, Any]], None]` (`api/streaming.py`), `GroundingStatus` (`api/schemas/common.py`).
+- TSDoc/TS interfaces are `PascalCase`; props are `<Component>Props` (`CitationPillProps`, `GroundingBadgeProps`).
+
+**Functions and methods:**
+- `snake_case`, verb-first for actions: `validate_pdf_bytes`, `hydrate_startup_state`, `sse_from_worker`, `summarize_document`, `ingest_pdf`, `problem_from_exc`.
+- Private module helpers are prefixed with a single underscore: `_is_sqlite_busy` (`core/doc_store.py`), `_format_sources` (`api/routers/chat.py`), `_build_report` (`services/chat_turn.py`).
+- Test helper factories use `_make_*`, `_doc`, `_indexed_document`, `_snippet` (`tests/test_citation_validator.py`, `tests/test_audit_repairs.py`, `tests/test_chat_controller.py`).
+- React hooks must start with `use` and live in `frontend/src/lib/api/queries.ts` or `frontend/src/lib/store/use-app-store.ts`.
 
 **Variables:**
-- `snake_case`; booleans read as predicates: `is_healthy`, `has_docs`, `has_vectors`, `should_withhold_answer`, `incomplete_context`, `already_indexed`, `fallback_used`.
-- Collections are plural nouns: `snippets`, `document_metadata`, `page_records`, `evidence_elements`, `failures`, `cited_ranks`.
-- Loop/index variables are short only in local, obvious scopes: `for s in retrieval_result.snippets`, `for p in range(1, pages + 1)`, `k` for top-k.
-- Exception variables are `err`, `exc`, or a specific `*_err`: `val_err`, `ext_err`, `ocr_err`, `vis_err`, `sum_err`, `probe_err`.
-- Session-state keys use `snake_case`. Internal/transient flags are underscore-prefixed: `_startup_hydrated`, `_active_chat_scope`, `_queued_prompt`, `_scope_switch_index`. User-facing keys are unprefixed: `doc_ids`, `document_metadata`, `chat_history`, `cloud_mode`, `uploader_key`.
-- Cache keys encode version dimensions: `summary_<doc_id>_<profile>_<model_version>` in `ui/views.py:summary_session_key`.
-- Constants use `UPPER_SNAKE` with explicit types where useful: `DEFAULT_MAX_OUTPUT_TOKENS: int = 1536` in `core/prompt_budget.py`, `SUPPORT_WITHHOLD_THRESHOLD = 0.5` in `core/citation_validator.py`, `INSUFFICIENT_EVIDENCE_MESSAGE` in `core/local_llm.py` and `ui/chat_controller.py`, `MAX_FILE_MB` in `ingestion/upload_validation.py`.
+- Short names are accepted for local collaborators inside routers: `c` for `AppContainer`, `s` for `Settings`, `d` for a document row (`api/routers/documents.py`).
+- Test functions name the behavior and condition: `test_sha_unique_violation_on_reupload`, `test_inference_gate_basic_acquire_release`, `test_local_only_ingestion_and_indexing_invariant`. Some append a ticket/audit id: `test_corrupt_invalid_rejected_WR07`, `test_two_instance_interleave_R1`.
 
-**Types:**
-- Classes are `PascalCase` and suffixed by role: `Service`, `Store`, `Reader`, `Provider`, `Gate`, `Analyzer`, `Validator`, `Result`, `Report`, `Status`, `Capabilities`, `Preparation`.
-- Pydantic v2 models live in `core/models.py`, `core/citation_validator.py`, and `providers/model_provider.py`: `Document`, `Page`, `Chunk`, `EvidenceElement`, `EvidenceSnippet`, `RetrievalResult`, `GroundingReport`, `SummaryResult`, `BBox`, `CitationVerificationResult`, `ProviderCapabilities`, `HealthStatus`.
-- Immutable value objects use `model_config = ConfigDict(frozen=True, extra="forbid")`; mutable records use `extra="forbid"` only (`Document`, `Page`, `SummaryResult`).
-- `Literal` aliases are `PascalCase`: `GroundingStatus` in `core/citation_validator.py`, `SummaryProfile` in `core/models.py`, plus inline `Literal[...]` fields for status/search-mode unions.
-- Internal, non-serialized result containers use frozen dataclasses: `ChatTurnPreparation`, `ChatTurnResult` in `ui/chat_controller.py`; `IngestionResult` in `ui/ingestion_service.py`; `RuntimeVersion` in `core/runtime_info.py`; `ModelIdentity` in `core/model_identity.py`.
-- Callable injection uses `typing.Protocol`: `CitationValidator` in `ui/chat_controller.py:48` mirrors `AiModel.validate_response`.
-- Provider extension uses `abc.ABC` + `@abstractmethod`: `BaseModelProvider` in `providers/model_provider.py:64`.
-- Type aliases for callbacks are `PascalCase`: `ProgressCallback = Callable[[int, int, str], None]` in `ui/hydration.py:16`.
+**Constants:**
+- `UPPER_SNAKE_CASE` for module constants: `DEFAULT_MAX_OUTPUT_TOKENS`, `WRITE_MAX_ATTEMPTS`, `SSE_HEADERS`, `SYSTEM_GROUNDING_TEMPLATE`, `MAX_PAGES`.
+- Private constants get a leading underscore: `_WRITE_RETRY_BASE_DELAY`, `_DONE`, `_SECRET_ENV_VARS`.
 
 ## Code Style
 
-**Formatting:**
-- Ruff is the single formatter and linter. Configuration is in `pyproject.toml:1-18`.
-- `line-length = 120`, `target-version = "py311"`.
-- Ruff formatter defaults apply: 4-space indentation, double quotes, trailing commas in multi-line calls, two blank lines between top-level definitions.
-- `E501` is ignored, so 120 columns is a soft cap enforced by the formatter rather than by lint.
-- `W291` and `W293` (trailing whitespace) are ignored.
-- `from __future__ import annotations` is used selectively, not globally: `core/redaction.py`, `ui/chat_controller.py`, `start.py`, `setup.py`, `tests/test_chat_controller.py`, `tests/test_retrieval_semantic.py`.
-- Type annotations use PEP 604 and built-in generics everywhere: `str | None`, `list[dict[str, Any]]`, `tuple[str, str, str]`, `dict[str, float] | None`.
-- Abstract collections come from `collections.abc`, not `typing`: `Callable`, `Generator`, `Iterable` (e.g. `core/local_llm.py:8`, `core/doc_store.py:9`, `providers/model_provider.py:9`, `ui/chat_controller.py:20`).
-- `typing` is reserved for `Any`, `Literal`, `Protocol`, `TypeVar`, and similar typing-only constructs.
-- There is no `mypy`, `pyright`, `black`, `isort`, `flake8`, or `pre-commit` configuration in the repository. Ruff is the only enforced style gate.
-- No emojis in source, UI copy, or generated markup. The UI uses local monochrome SVGs from `assets/icons/`; `tests/test_ui_redesign_apptest.py` asserts button labels contain no codepoint above `0x1F000`.
+**Formatting and linting:**
+- Ruff is the only formatter/linter. Config in `pyproject.toml`:
+  - `line-length = 120`, `target-version = "py311"`.
+  - Lint select: `E`, `F`, `W`, `B`, `UP`, `SIM`; ignore `E501`, `W291`, `W293`.
+  - Per-file ignores: `scripts/* = ["E402"]`, `start.py = ["UP036"]`.
+  - Excludes `.planning`, `.cache`, `data`, `docs`, `*.md`.
+- CI runs both `ruff check .` and `ruff format --check .` (`.github/workflows/ci.yml`). Run the same before committing:
+  ```bash
+  ruff check .
+  ruff format --check .
+  ruff format .
+  ```
+- Formatting is Ruff-format output: 4-space indent, double quotes, trailing commas, wrapped calls/argument lists. Very long string literals (prompt templates in `core/prompt_budget.py`) are intentionally left over 120 columns because `E501` is ignored.
 
-**Linting:**
-- `ruff check .` selects `["E", "F", "W", "B", "UP", "SIM"]` in `pyproject.toml:13`.
-- `ruff format --check .` is run in CI and must pass.
-- Per-file ignores: `scripts/*` allows `E402`; `start.py` allows `UP036` (`pyproject.toml:16-18`).
-- Ruff excludes `.planning`, `.cache`, `data`, `docs`, and `*.md` from linting (`pyproject.toml:4-10`).
-- Broad exception handlers are commonly annotated with a rationale comment, usually `# noqa: BLE001 - <reason>` (e.g. `core/summarizer.py:208`, `ui/views.py:283`, `ui/views.py:1309`). Note that `BLE` is not currently in the selected rule set, so the `noqa` is documentation-by-convention rather than an active suppression.
-- Defensive/UI-boundary branches use `# pragma: no cover` (e.g. `ui/hydration.py:30`, `main.py:184`, `core/logging_setup.py:100`). Coverage is not measured, so these markers document intent rather than affect a report.
+**Typing:**
+- Python 3.11+ syntax only. Use PEP 604 unions (`str | None`, `list[dict[str, Any]]`) and built-in generics — never `Optional[...]` / `List[...]`.
+- Newer modules start with `from __future__ import annotations`: all of `api/`, `services/`, `core/redaction.py`, `setup.py`. Older modules (`core/models.py`, `core/doc_store.py`, `ingestion/upload_validation.py`) omit it; follow the file you are editing.
+- Annotate every public function signature and dataclass field. Local variables are generally left unannotated unless the type is non-obvious.
+- No mypy/pyright gate exists. Do not introduce type-checker-only constructs.
+
+**Docstrings:**
+- Production modules start with a `"""..."""` docstring stating purpose and invariants. Examples: `core/prompt_budget.py`, `services/chat_turn.py`, `api/streaming.py`. Most test modules do too (`tests/test_hybrid_retriever.py`), though a few older files (`tests/test_setup_checksums.py`) start directly with imports.
+- Public functions/methods use Google-style `Args:` / `Returns:` / `Raises:` without repeating types (`providers/model_provider.py`, `core/prompt_budget.py`).
+- Test functions carry a one-line behavioral docstring stating the invariant they pin (`tests/test_logging_setup.py`, `tests/test_citation_validator.py`).
+- Use reStructuredText double-backtick references inside docstrings: `` ``document_context`` ``, `` ``[REDACTED]`` ``.
+
+**Comments:**
+- Comments explain *why* and invariants, not mechanics. Example: `core/doc_store.py` explains the smart-retry policy above the constants; `core/prompt_budget.py` explains why one output-token reservation replaced three divergent values.
+- Pipeline stages are numbered inline in services: `# 1. Validation (5%)`, `# 2. ...` in `services/ingestion.py`.
+- Suppressions are justified inline: `except Exception as exc:  # noqa: BLE001 - convert to a terminal SSE error event` (`api/streaming.py`).
 
 ## Import Organization
 
-**Order:**
-1. Module docstring.
-2. `from __future__ import annotations` when used.
-3. Standard library imports, grouped alphabetically by module: `logging`, `os`, `re`, `uuid`, `from collections.abc import ...`, `from pathlib import Path`, `from typing import ...`.
-4. Blank line, then third-party imports: `streamlit`, `pydantic`, `httpx`, `numpy`, `pytest`, `reportlab`, `lancedb`, `pyarrow`.
-5. Blank line, then first-party absolute imports: `core.*`, `ui.*`, `ingestion.*`, `retrieval.*`, `providers.*`.
-- Imports are absolute, not relative. No `from .models import ...` style is used in application modules.
-- Lazy imports are used deliberately to break cycles or avoid loading heavy optional backends:
-  - `from ingestion.pdf_reader import PdfReader` inside the extraction fallback in `ui/ingestion_service.py:157`.
-  - `import streamlit as st` inside `providers/groq_provider.py:45` to tolerate CLI/test contexts.
-  - `from ui.lifecycle_service import LifecycleService` inside tests such as `tests/test_audit_repairs.py:226`.
-- Optional third-party dependencies are guarded with `try/except ImportError` and set to `None`, with `# type: ignore[assignment]`: `lancedb`/`pyarrow` in `retrieval/hybrid_retriever.py:25-52`, `pymupdf` in `ingestion/visual_analyzer.py:28-31`, `litellm` in `providers/litellm_provider.py:22-27`, `groq` in `providers/groq_provider.py:13-16`.
+**Order (observed, not tool-enforced):**
+1. `from __future__ import annotations` (when used).
+2. Standard library (`asyncio`, `json`, `threading`, `pathlib`, `collections.abc`).
+3. Third-party (`fastapi`, `pydantic`, `numpy`, `pytest`).
+4. First-party absolute imports (`api.*`, `core.*`, `ingestion.*`, `providers.*`, `retrieval.*`, `services.*`), often alphabetized by module but not strictly.
 
-**Path Aliases:**
-- None. There are no `src` layouts, `PYTHONPATH` aliases, or `@/`-style aliases. The repository root is the import root, and packages are imported by their real names.
-- `ui/__init__.py` re-exports only `sanitize_markdown_for_local`; it is not a general barrel. Import submodules directly (`from ui.views import ...`, `from ui.components import ...`).
+```python
+from __future__ import annotations
+import asyncio
+import json
+import threading
+from collections.abc import AsyncIterator, Callable
+from typing import Any
+from fastapi import Request
+
+from api.container import AppContainer
+from api.errors import ApiError
+from core.models import RetrievalResult
+```
+
+- Ruff's import-sorting (`I`) rules are **not** enabled. Sort imports sensibly by hand; do not rely on isort.
+- Always use absolute first-party imports (`from core.models import Chunk`), including from tests. There are no relative imports in Python code.
+- Import types only for annotations under `TYPE_CHECKING` to avoid cycles: `api/container.py` does this for `Settings`.
+- Local (function-scope) imports are used deliberately for optional/lazy dependencies and test isolation: `tests/conftest.py` imports `providers.groq_provider` inside the fixture; `tests/test_audit_repairs.py` imports `retrieval.hybrid_retriever` inside the test.
+
+**Frontend imports:**
+- External packages first, then the `@/` alias (`@/lib/api/queries`, `@/components/motion/count-up`), then same-folder relative imports (`./client`, `./types`).
+- `@/*` maps to `frontend/src/*` (`frontend/tsconfig.json`).
+
+## Data Modeling
+
+**Pydantic v2 (domain + API):**
+- Domain models in `core/models.py` are frozen and closed:
+  ```python
+  class Chunk(BaseModel):
+      model_config = ConfigDict(frozen=True, extra="forbid")
+      content: str = Field(..., min_length=1, description="Extracted chunk text content.")
+  ```
+- Use `Literal[...]` for closed sets (`status: Literal["ok", "empty", "failed"]`, provider health states), `Field(..., ge=1, description=...)` for constraints, and `@model_validator(mode="after")` for cross-field invariants (`BBox.validate_coordinates`, `EvidenceElement.validate_doc_id`).
+- Validation failures raise `ValueError` inside validators so callers can map them uniformly.
+- API schemas are separate from domain models (`api/schemas/*.py`) and do **not** set `extra="forbid"`; they mirror wire formats with `snake_case` field names. Keep field names `snake_case` end to end — the frontend `types.ts` mirrors them unchanged.
+- Every router declares `response_model=` and typed return annotations (`api/routers/documents.py`).
+
+**Dataclasses:**
+- Internal value objects use `@dataclass(frozen=True)`: `ChatTurnPreparation`, `ChatTurnResult` (`services/chat_turn.py`).
+- Mutable runtime records use plain `@dataclass` with `field(default_factory=...)`: `Job`, `JobEvent` (`api/jobs.py`), `IngestionResult` (`services/ingestion.py`).
+
+**Configuration:**
+- Settings use `pydantic_settings.BaseSettings` with `SettingsConfigDict(env_prefix="RAG_", env_file=".env", extra="ignore")` (`api/config.py`). Add new settings there with a typed default and an inline comment when the value is operationally significant.
 
 ## Error Handling
 
-**Patterns:**
-- **Input/schema validation raises `ValueError`.** Pydantic `@model_validator(mode="after")` methods raise `ValueError` with the offending value (`core/models.py:29`, `:50`, `:112`, `:138`, `:167`, `:283-285`). `cache_dir_for` validates the SHA-256 shape before building a path.
-- **Wrong Python types raise `TypeError`.** `DocStore` rejects non-model arguments with messages such as `"Expected Document instance, got ..."` (`core/doc_store.py:252`, `:350`, `:388-396`, `:544`, `:565`, `:616`, `:635`, `:687`). `VectorIndex` raises `TypeError` for non-dict documents and non-list vectors (`retrieval/vector_index.py:53-59`, `:77-81`).
-- **Domain failures use a custom exception where callers must distinguish them.** `VectorIndexError(RuntimeError)` is defined in `retrieval/hybrid_retriever.py:75` and documents that callers must treat it as a failed ingestion/re-index, never as success.
-- **Backend/transport failures raise `RuntimeError` with `from exc`.** Examples: `providers/llama_cpp_provider.py:237`, `:301`, `:364`; `providers/litellm_provider.py:238`, `:295`; `providers/groq_provider.py:147`, `:184`.
-- **Consent violations raise `PermissionError`.** Cloud providers refuse generation without explicit consent (`providers/groq_provider.py:68`, `providers/litellm_provider.py:144`), and `AiModel` re-raises the same class at its boundary (`core/local_llm.py:143`, `:198`, `:226`).
-- **Gate contention raises `TimeoutError`.** `InferenceGate.hold` raises `TimeoutError` when it cannot acquire within the timeout (`core/local_llm.py:101-105`).
-- **Unsupported operations raise `NotImplementedError`.** Non-vision cloud models reject `analyze_image` (`providers/groq_provider.py:194`, `providers/litellm_provider.py:321`).
-- **Pipeline stages isolate failures instead of aborting the document.** `IngestionService.ingest_pdf` catches validation/extraction failures and returns `IngestionResult(success=False, error=...)`; OCR and visual-analysis failures are logged as warnings and processing continues (`ui/ingestion_service.py:80-91`, `:147-173`, `:177-210`).
-- **Storage mutations fail loudly.** `LifecycleService.delete_document` deletes vectors first and re-raises on failure so SQLite is not mutated into an inconsistent state (`ui/lifecycle_service.py:46-56`). `purge_all` collects tier failures, still clears session state, then raises `RuntimeError("Purge incomplete — ...")` (`ui/lifecycle_service.py:104-159`).
-- **Deferred cleanup uses tombstones rather than silent loss.** When no retriever is available, deletion records a vector-cleanup tombstone; `ui/hydration.py:34-60` retries tombstones on next startup and keeps them if the purge fails.
-- **UI boundaries catch, redact, and surface.** `ui/views.py` wraps lifecycle and summarization operations in `try/except Exception`, logs with `logger.exception(...)`, and displays `redact_text(str(err))` (`ui/views.py:171-267`, `:972`). Provider errors are scrubbed with `redact_text` before display/persistence (`providers/groq_provider.py:146`, `providers/litellm_provider.py:139`, `ui/chat_controller.py:444`).
-- **No bare `except:`.** Broad catches are `except Exception` and are confined to boundaries (UI, optional enrichment, teardown). Narrow catches are used for expected operational failures: `sqlite3.OperationalError` for busy retries (`core/doc_store.py:211-219`), `OSError` for cache cleanup (`ui/lifecycle_service.py:75`), `(OSError, RuntimeError, ValueError, TypeError)` for deferred vector purge (`ui/hydration.py:58`).
-- **Retries are bounded and targeted.** `DocStore._execute_write` retries only SQLITE_BUSY/LOCKED up to 3 attempts with exponential backoff plus jitter; non-busy errors re-raise immediately (`core/doc_store.py:189-219`).
+**Python domain → API mapping:**
+- Raise domain `ValueError` for invalid input/state (`ingestion/upload_validation.py`, Pydantic validators).
+- Raise `ApiError(status_code, code, detail, title=None)` in routers/dependencies for explicit HTTP failures (`api/errors.py`, `api/deps.py`).
+- Raise `PermissionError` for missing cloud consent; `TimeoutError` when `InferenceGate` cannot acquire; `RuntimeError` for unreachable providers; `VectorIndexError` for vector failures. `api/errors.py` maps all of these to RFC 9457 `application/problem+json` payloads with a `code` such as `consent_required`, `gpu_busy`, `provider_unreachable`, `index_unavailable`, `validation_failed`, `not_found`, `upload_too_large`, `too_many_pages`.
+- Error payloads are built by `problem_payload` / `problem_response` and always pass detail through `core.redaction.redact_text`. Never put raw exception text or credentials into a response without that path.
+- Global handlers are installed once by `install_error_handlers(app)` in `api/main.py`.
+
+**Never:**
+- Never catch `Exception` and return success. Broad handlers are allowed only around optional integrations (OCR, telemetry, cache cleanup), and must log context and preserve the failure signal (`docs/CODE_QUALITY_REPORT.md` records the vector-failure regressions this caused).
+- Never use bare `except:` — there are none in `api/`, `core/`, `ingestion/`, `providers/`, `retrieval/`, `services/`.
+- Never let a background thread exception escape an SSE generator; convert it to a terminal event through `on_error` (`api/streaming.py`).
+
+**Streaming errors:**
+- Emit `event: error` and terminate, e.g. `emit("error", on_error(exc))`; keepalive frames are `": keepalive\n\n"`.
+- Background jobs must end in a terminal state (`completed` / `failed` / `cancelled`) with `error` populated rather than raising into the pool (`api/jobs.py`).
+
+**Frontend errors:**
+- `apiClient` parses RFC 9457 bodies into `ApiError` (`code`, `status`, `detail`, `requestId`) in `frontend/src/lib/api/client.ts`.
+- UI handlers `try/catch` and surface `toast.error(err.message ...)`; aborting an SSE stream is a normal return, not an error (`frontend/src/lib/api/sse.ts`).
 
 ## Logging
 
-**Framework:** Python standard library `logging`. There is no Loguru, structlog, or third-party logging dependency.
+- Module-level logger: `logger = logging.getLogger(__name__)` in `core/doc_store.py`, `api/main.py`, `api/jobs.py`, `services/ingestion.py`, `core/local_llm.py`.
+- Use lazy `%s` formatting: `logger.info("[%s] [%s %d%%] %s", filename, stage, pct, msg or stage)` (`services/ingestion.py`).
+- Logging setup lives in `core/logging_setup.py` (idempotent root config, rotating file under `data/logs/`, `RAG_LOG_LEVEL`/`RAG_LOG_DIR`) and `api/main.py:configure_logging` for the API process.
+- Never use `print()` in library code. `print()` is reserved for CLI operator output in `start.py` and `setup.py`.
+- Never log raw document text, prompts with secrets, or provider keys; route user-visible error text through `redact_text`.
 
-**Patterns:**
-- Every application module declares a module-level logger immediately after imports and constants:
-  ```python
-  import logging
+## Function and Module Design
 
-  logger = logging.getLogger(__name__)
+**Functions:**
+- Prefer small, single-purpose helpers over long methods; services compose them (`services/chat_turn.py` splits `prepare` / `finalize` / regeneration).
+- Inject collaborators through constructor/parameters rather than importing singletons inside functions: `IngestionService(doc_store=..., hybrid_retriever=..., local_embedding=..., cache_dir=...)`, `ChatTurnService(validator)`.
+- Keyword-only configuration flags are used for option-heavy APIs: `configure_logging(..., *, enable_file=True, force=False)`.
+- Return typed result objects rather than tuples or raw dicts (`IngestionResult`, `ChatTurnPreparation`, `HydrationReport`).
+- Callback contracts are typed: `Callable[..., None]` for progress, `Protocol` for validators, `Emit` alias for SSE.
+
+**Modules and packages:**
+- One responsibility per module; module docstring names it and its invariants.
+- Package `__init__.py` files are minimal (`core/__init__.py`, `providers/__init__.py`, `api/__init__.py` contain only a docstring, sometimes `__version__`). `services/__init__.py` is the exception: it re-exports the public service surface with `__all__`.
+- Avoid module-level mutable state. The deliberate exceptions are process-wide singletons: `InferenceGate` class state (`core/local_llm.py`), `_ACTIVE_STOPS` in `api/routers/chat.py`, and the shared embedding cache in `retrieval/local_embedding.py`.
+- Compose the application graph in one place: `AppContainer.build()` (`api/container.py`). Routers receive it via `get_container`; services never construct each other ad hoc.
+
+## API Conventions
+
+- One `APIRouter(tags=["<resource>"])` per file in `api/routers/`; all routers are mounted under `/api/v1` centrally in `api/main.py`.
+- Every router depends on `require_client_header` (mounted as a router dependency), which requires `X-RAG-Client: web` on mutating requests and raises `ApiError(403, "missing_client_header")`.
+- Mutating endpoints use meaningful status codes: uploads return `202 Accepted` with job handles (`api/routers/documents.py`), deletes return `{"deleted": true}`.
+- Pagination/limits use FastAPI `Query(...)` with explicit bounds (`api/routers/chat.py`).
+- SSE responses use `StreamingResponse` with `SSE_HEADERS` (`Cache-Control: no-cache`, `X-Accel-Buffering: no`, `Connection: keep-alive`).
+- `openapi.json` at the repo root is a checked-in artifact. After changing routes/schemas, regenerate and verify:
+  ```bash
+  python -m api.export_openapi          # write
+  python -m api.export_openapi --check  # CI gate
   ```
-  Present in `main.py:53`, `core/citation_validator.py:16`, `core/doc_store.py:21`, `core/local_llm.py:28`, `core/summarizer.py:21`, `ui/views.py:36`, `ui/ingestion_service.py:20`, `ui/lifecycle_service.py:14`, `ui/hydration.py:13`, `ui/session_state.py:15`, all `ingestion/*` modules, both retrievers, and all providers.
-- `main.py` installs the single application configuration before startup work: `configure_logging(log_dir=LOG_DIR)` (`main.py:51`). `core/logging_setup.py` installs one stderr handler plus an optional rotating file handler at `data/logs/app.log`, controlled by `RAG_LOG_LEVEL` and `RAG_LOG_DIR`. It is idempotent and marks its own handlers with `_rag_logging_handler`.
-- Use lazy `%s` formatting, never f-strings in log calls: `logger.warning("OCR processing warning: %s", ocr_err)` (`ui/ingestion_service.py:187`), `logger.info("Successfully deleted document %s (%s)", doc_id, filename)` (`ui/lifecycle_service.py:101`).
-- Level conventions:
-  - `logger.info` for lifecycle/progress milestones (`ui/ingestion_service.py:76`, `ui/lifecycle_service.py:101`).
-  - `logger.warning` for recoverable degradation or best-effort cleanup (`ui/lifecycle_service.py:77`, `ui/hydration.py:43`, `core/local_llm.py:74`).
-  - `logger.error` with `exc_info=True` for storage/security failures that must be diagnosable (`ui/lifecycle_service.py:55`, `:120`, `:129`).
-  - `logger.debug` for benign teardown failures (`core/logging_setup.py:101`, `ui/hydration.py:31`).
-- CLI launchers (`start.py`, `setup.py`) intentionally use `print()` for operator-facing output; `core/logging_setup.py:5-9` documents this split.
-- Credentials are never logged raw. Error text crosses provider/UI/log boundaries through `redact_text` from `core/redaction.py`, which scrubs known token formats, bearer tokens, key/value pairs, and named environment secrets.
-- The Streamlit `torch.classes` watcher traceback is suppressed by a narrow `logging.Filter`, not by raising the global log level (`core/logging_setup.py:146-177`, `main.py:56`).
 
-## Comments
+## Frontend Conventions
 
-**When to Comment:**
-- Comments explain **why**, invariants, and failure modes, not line-by-line mechanics. Strong examples:
-  - Vector-before-SQLite deletion ordering in `ui/lifecycle_service.py:46-48`.
-  - Why summary requests must not fall back to unscoped retrieval in `ui/chat_controller.py:169-172`.
-  - Why VLM descriptions are excluded from pages that already have text in `ui/chat_controller.py:682-687`.
-  - Why rank validity and claim support are separate gates in `core/citation_validator.py:20-23`.
-  - Why the SQLite retry policy exists in `core/doc_store.py:25-28`.
-  - Why `AppTest` needs an absolute path in `tests/test_ui_redesign_apptest.py:34-35`.
-- Security and resource-bound comments are explicit: untrusted-PDF raster budgets (`ingestion/ocr_fallback.py:24-35`, `ingestion/visual_analyzer.py:20-26`), XML boundary neutralization (`core/prompt_budget.py:54-68`), local-only egress (`ui/sanitizer.py:1-11`), cloud consent (`providers/litellm_provider.py:1-6`).
-- Thresholds and magic numbers carry a rationale. `core/citation_validator.py:24-34` explains the support/withhold/auto-attribution thresholds and the regression that motivated them. `core/prompt_budget.py:13-17` explains why `DEFAULT_MAX_OUTPUT_TOKENS` is a single value.
-- Section banners are used in large modules and tests to group related logic: `# ---- ... ----` in `core/citation_validator.py`, `tests/test_doc_store.py`, `tests/test_models.py`, `tests/test_runtime_info.py`, `tests/test_retrieval_semantic.py`.
-- Avoid commented-out code and temporal narration. Comments describe current invariants, not “old behavior” except when naming the regression that a guard prevents.
+- App Router with a route group: `frontend/src/app/(shell)/{chat,library,summarizer,settings,diagnostics,constellation}/page.tsx`; shell chrome in `frontend/src/app/(shell)/layout.tsx`.
+- `"use client"` is the first line of every file that uses hooks, browser APIs, or event handlers (all current pages/components).
+- Pages are default exports named `<Area>Page`; reusable components are named exports in kebab-case files.
+- Props are declared as a local `interface <Component>Props` immediately above the component.
+- Data fetching goes exclusively through TanStack Query hooks in `frontend/src/lib/api/queries.ts`; use `queryKey: ["resource", id]` arrays and invalidate/set cache in `onSuccess`. Do not `fetch` directly in components except the centralized `apiClient`/`streamSSE` helpers.
+- Global UI state uses Zustand in `frontend/src/lib/store/use-app-store.ts` with one setter per field.
+- Styling: Tailwind v4 utilities, arbitrary color values from the palette in `frontend/src/styles/globals.css` (`#050507`, `#A78BFA`, `#22D3EE`, `#34D399`, `#FBBF24`, `#F87171`), and `cn(...)` from `frontend/src/lib/utils.ts` for conditional classes. No CSS modules, no styled-components.
+- TypeScript is `strict: true`. Avoid `any` in new code; existing `catch (err: any)` handlers in pages are legacy.
+- There is **no ESLint or Prettier config** in `frontend/` even though `package.json` defines `lint: next lint`. Style is enforced by convention: 2-space indent, double quotes, semicolons, trailing commas. `pnpm typecheck` (`tsc --noEmit`) is the enforced gate.
 
-**JSDoc/TSDoc:**
-- Python docstrings, not JSDoc. Every application module starts with a `"""..."""` module docstring stating purpose and key invariants (e.g. `core/models.py:1-6`, `core/local_llm.py:1-6`, `core/citation_validator.py:1-7`, `ui/chat_controller.py:1-14`, `ui/sanitizer.py:1-11`, `retrieval/hybrid_retriever.py:1-6`, `providers/model_provider.py:1-6`).
-- Public classes and public methods use Google-style `Args:`, `Returns:`, and `Raises:` sections, without repeating types already in the signature. Examples: `core/doc_store.py:155-161`, `core/local_llm.py:47-56`, `core/summarizer.py:177-202`, `providers/model_provider.py:77-119`, `ui/ingestion_service.py:54-71`, `ui/lifecycle_service.py:32-41`.
-- Private helpers use one-line docstrings unless a non-obvious invariant needs explanation (`core/citation_validator.py:303`, `ui/chat_controller.py:107-114`, `ui/hydration.py:19-25`).
-- Module docstrings frequently name the requirement IDs they satisfy (`RETR-01`, `QA-03`, `INF-04`, `QUAL-01`, `VIS-01`) and the prior failure they guard against. This is a project convention for traceability.
-- Legacy exceptions: `ingestion/pdf_reader.py` has no module docstring and uses informal inline comments/docstrings; `retrieval/vector_index.py` has a good module docstring but several public methods lack return annotations. New code should follow the modern pattern, not these outliers.
+## Cross-Cutting Invariants
 
-## Function Design
+- **GPU serialization:** every path that runs LLM/VLM/summarizer inference must acquire `InferenceGate.hold(timeout=60.0)` (`core/local_llm.py`). Never call a provider directly from a router/component.
+- **Privacy boundary:** local mode must not egress. Cloud adapters require explicit consent (`PermissionError` otherwise) and redact keys on the way out and back. `core/sanitizer.py` neutralizes links/embeds for local rendering.
+- **Transactions:** routers and frontend code never write storage directly; ingestion goes through `IngestionService`, deletion/purge/reindex through `LifecycleService`, both using `DocStore` transactional helpers.
+- **Untrusted documents:** text from PDFs is untrusted; prompts isolate it in `<document_context>`, `core/prompt_budget.sanitize_xml_boundary` escapes spoofed tags, and citation validation runs before display.
 
-**Size:**
-- Prefer small, single-purpose helpers and extract multi-step orchestration into services. `ChatTurnService` is the model: `prepare`, `finalize`, `error_result`, `intent_mismatch_result`, `abstention_result`, plus private `_retrieve`, `_retrieve_document_wide`, `_attribute`, `_detect_document_mention` (`ui/chat_controller.py`).
-- Long UI renderers are the main exception: `ui/views.py` is 1,548 lines, with `render_chat_view` roughly 380 lines, `render_summarizer_view` roughly 150, `render_library_view` roughly 145, and `render_settings_view` roughly 190. New orchestration logic should go into `ui/chat_controller.py`, `ui/ingestion_service.py`, or `ui/lifecycle_service.py` rather than growing these functions.
-- Prefer one responsibility per private helper and return early for invalid/empty inputs (e.g. `ui/chat_controller.py:_retrieve`, `_retrieve_document_wide`).
+## Anti-Patterns To Avoid
 
-**Parameters:**
-- Multi-argument service methods use keyword-only parameters after `*` to prevent positional mistakes: `ChatTurnService.prepare(...)` and `finalize(...)` (`ui/chat_controller.py:138-147`, `:258-268`), `IngestionService.ingest_pdf` uses explicit names but its callers pass keywords.
-- Optional collaborators default to `None`: `hybrid_retriever: HybridRetriever | None = None`, `local_embedding: LocalEmbedding | None = None`, `cache_dir: Path | None = None`.
-- Callbacks are typed `Callable[...] | None` and invoked only after a `None` check: `progress_callback: Callable[[str], None] | None` (`ui/ingestion_service.py:59`), `on_response_ready`, `regenerate` (`ui/chat_controller.py:266-267`).
-- Avoid boolean flag parameters where a named mode/`Literal` is clearer; `mode="qa"`/`"summary"`, `variant="local"`, and `status: Literal[...]` are preferred.
-
-**Return Values:**
-- Return typed models or frozen dataclasses rather than loose dicts at service boundaries: `IngestionResult`, `ChatTurnPreparation`, `ChatTurnResult`, `RetrievalResult`, `SummaryResult`, `GroundingReport`.
-- Return `None` for “not found/not available” and document it (`get_session_summary` returns `dict[str, Any] | None`, `DocStore.get_document` returns `Document | None`).
-- Return `bool` for success/failure where the caller only needs a yes/no (`LifecycleService.delete_document`, `InferenceGate.acquire`, `VectorIndex.has_document`).
-- Return tuples for small multi-value results where a model would be overkill: `_retrieve -> tuple[RetrievalResult | None, list[str]]`, `_retrieve_document_wide -> tuple[RetrievalResult | None, list[str], bool]`, `extract_citations -> list[int]`.
-- UI renderers return `None`; pure markup/format helpers return `str`.
-
-## Module Design
-
-**Exports:**
-- Application packages use absolute imports and do not rely on `__all__` except at explicit public boundaries: `ui/chat_controller.py:731-737` exports `INSUFFICIENT_EVIDENCE_MESSAGE`, `ChatTurnPreparation`, `ChatTurnResult`, `ChatTurnService`, `EvidenceSnippet`; `ui/__init__.py:5` exports `sanitize_markdown_for_local`.
-- Most modules expose all public names implicitly; consumers import the specific symbol from the defining module.
-- `ui/sanitizer.py:249` keeps a backward-compatible alias `sanitize_display_markdown = sanitize_markdown_for_local`; new code may use either, but `ui/views.py` uses the alias.
-
-**Barrel Files:**
-- No general barrel files. `ui/__init__.py` is a narrow re-export only. Do not add a `core/__init__.py` barrel that imports heavy modules; it would load LanceDB, Streamlit, or model backends on package import.
-- `tests/__init__.py` exists only to make `tests` a package.
-
-**State Boundaries:**
-- **UI must not mutate persistence directly.** `ui/views.py` may perform read-only queries (`doc_store.get_document`, `get_summary`, `list_documents`, `count_documents`, `count_summaries`) for rendering, but all writes go through services:
-  - Ingestion: `IngestionService.ingest_pdf` in `ui/ingestion_service.py:39`.
-  - Deletion/purge/re-index: `LifecycleService` in `ui/lifecycle_service.py:17`.
-  - Chat turn orchestration: `ChatTurnService` in `ui/chat_controller.py:131`; it deliberately does not import Streamlit.
-  - Summarization: `Summarizer.summarize_document` in `core/summarizer.py:174`; the view invokes it and caches the returned model.
-- `ui/views.py` owns Streamlit session state and widgets; services accept `session_state` as an optional dict-like argument and synchronize it after storage operations (`LifecycleService.delete_document(..., session_state=...)`, `purge_all(..., session_state=...)`).
-- `ui/hydration.py` rebuilds the session catalog and repairs missing vectors at startup; it is the only place that should rehydrate persisted documents into session state.
-- **GPU concurrency:** every LLM generation, VLM image analysis, and summarization call must acquire `InferenceGate.hold(timeout=...)` or `InferenceGate.acquire(...)`. Observed call sites: `core/local_llm.py:356`, `:394`, `core/summarizer.py:569`, `ingestion/visual_analyzer.py:290`. Do not call a provider directly from a new path without the gate.
-- **Grounding contract:** `ui/chat_controller.py` returns a `GroundingReport` with the request id, scope, document IDs, evidence count, citations, verification status/reason, and incomplete-context flag. UI source chips and grounding labels must be rendered from this report, not reconstructed from a separate retrieval result.
-- **Session reset:** use `ui/session_state.py:reset_in_memory_session` rather than duplicating teardown. It clears documents, retrieval state, chat history, provider credentials, consent flags, and rotates `uploader_key`.
-- **Upload loop prevention:** rotate `st.session_state.uploader_key` after processing uploads and only count freshly ingested files (`new_docs_indexed`) in `ui/views.py:process_uploaded_files`.
-
-## Recent Working-Tree Conventions
-
-The current working tree contains a large, uncommitted UI/grounding refactor. These patterns are the ones new code should follow:
-
-- **`ui/chat_controller.py`** (heavily modified; 471 changed lines in the working-tree diff) now owns scope resolution, QA vs. document-wide summary selection, bounded regeneration, and citation verification. It imports no Streamlit, uses frozen dataclasses and a `Protocol` for the validator, and exposes `GroundingReport` as the single request/result contract. Its module docstring states the contract explicitly (`ui/chat_controller.py:1-14`).
-- **`core/citation_validator.py`** (modified) separates rank validity from claim support. It adds the `GroundingStatus` `Literal`, `support_verified`, `uncited_claim_count`, `uncited_unsupported_count`, and `grounding_status` fields, with threshold constants and rationale comments. Tests pin the distinction in `tests/test_grounding_contract.py`.
-- **`ui/theme.py`** (modified) centralizes AMOLED design tokens as module constants (`COLOR_BG`, `COLOR_SURFACE`, `COLOR_ELEVATED`, `COLOR_BORDER`, `COLOR_PRIMARY`, `COLOR_SECONDARY`, `COLOR_TEXT_PRIMARY`, `COLOR_TEXT_MUTED`, `COLOR_DANGER`, `COLOR_WARNING`) and builds `THEME_CSS` as an f-string. Comments explain Streamlit-version-specific selectors (e.g. avatar test-id rename).
-- **`ui/views.py`** (modified) adds boundary comments for document switching, duplicate-submit guarding, evidence display, and cache versioning. `runtime_details()` and `render_diagnostics_view()` are new diagnostics renderers. Long render functions remain; extract new logic into services.
-- **`tests/test_grounding_contract.py`** and **`tests/test_retrieval_semantic.py`** are new regression suites. They use module docstrings that name the failure being pinned, deterministic local helpers, and no GPU/network. This is the preferred style for new regression tests.
-- **`tests/test_ui_redesign_apptest.py`** (modified) uses `streamlit.testing.v1.AppTest` with an absolute path to `main.py`, `default_timeout=45`, monkeypatched `AiModel.check_health`/`get_capabilities`, `assert not at.exception`, and explicit no-emoji assertions.
+- **Silent failure conversion:** wrapping vector/index writes in `except Exception` and reporting success. Propagate `VectorIndexError` so the API returns `503 index_unavailable` (`api/errors.py`).
+- **Ad-hoc storage access from the edge:** calling `container.doc_store` mutation methods in a router instead of an orchestration service. Follow `api/routers/documents.py`, which delegates ingestion to `c.ingestion` and deletion/reindex to `c.lifecycle`.
+- **Bypassing the inference gate:** calling `provider.generate_text`/`stream_text` outside `InferenceGate.hold(...)`.
+- **Splitting the wire contract:** renaming API fields or changing response shapes without updating `api/schemas/`, `frontend/src/lib/api/types.ts`, and `openapi.json`.
+- **Unredacted errors:** returning `str(exc)` directly from a router; always go through `ApiError`/`problem_response` or `problem_from_exc`.
 
 ---
 
-*Convention analysis: 2026-10-29*
+*Convention analysis: 2026-11-14*
