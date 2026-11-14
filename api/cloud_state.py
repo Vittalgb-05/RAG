@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import threading
+from datetime import datetime, timezone
 from pydantic import SecretStr
 
 from providers.litellm_provider import LiteLLMProvider
@@ -20,6 +21,33 @@ class CloudState:
         self.provider = "groq"
         self.model = "groq/llama-3.3-70b-versatile"
         self._keys: dict[str, SecretStr] = {}  # memory only, never persisted to disk
+        self._ledger: list[dict[str, object]] = []
+
+    def record_egress(
+        self,
+        provider: str,
+        model: str,
+        doc_filenames: list[str],
+        char_count: int,
+        request_id: str,
+    ) -> None:
+        """Record a cloud transmission event to the privacy audit ledger."""
+        with self._lock:
+            self._ledger.append(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "provider": provider,
+                    "model": model,
+                    "doc_filenames": doc_filenames,
+                    "char_count": char_count,
+                    "request_id": request_id,
+                }
+            )
+
+    def get_ledger(self) -> list[dict[str, object]]:
+        """Retrieve recent egress events from the privacy audit ledger."""
+        with self._lock:
+            return list(self._ledger)
 
     def has_key(self, provider: str) -> bool:
         """Check if an in-memory API key exists for the given provider."""

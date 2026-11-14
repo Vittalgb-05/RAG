@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { motion, AnimatePresence } from "motion/react";
 import {
   Send,
   Square,
@@ -12,6 +13,13 @@ import {
   BookOpen,
   HelpCircle,
   FileSearch,
+  Download,
+  Layers,
+  Mic,
+  MicOff,
+  ChevronDown,
+  Check,
+  FileText,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -19,6 +27,7 @@ import {
   useChatSessions,
   useCreateChatSession,
   useDeleteChatSession,
+  useUpdateChatSession,
   useDocuments,
 } from "@/lib/api/queries";
 import { streamSSE } from "@/lib/api/sse";
@@ -26,12 +35,14 @@ import { streamMockMessage } from "@/lib/api/mocks";
 import { apiClient } from "@/lib/api/client";
 import { ChatMessage, Source } from "@/lib/api/types";
 import { MessageBubble } from "@/components/chat/message-bubble";
+import { RetrievalXRayDrawer } from "@/components/chat/retrieval-xray-drawer";
 import { BlurText } from "@/components/motion/blur-text";
 import { SpotlightCard } from "@/components/motion/spotlight-card";
 import { Magnet } from "@/components/motion/magnet";
 import { cn } from "@/lib/utils";
 
 const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 const SUGGESTED_PROMPTS = [
   {
@@ -63,10 +74,28 @@ function ChatContent() {
   const { data: sessions = [], refetch: refetchSessions } = useChatSessions();
   const createSessionMutation = useCreateChatSession();
   const deleteSessionMutation = useDeleteChatSession();
+  const updateSessionMutation = useUpdateChatSession();
   const { data: documents = [] } = useDocuments();
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const { data: activeSession, refetch: refetchActiveSession } = useChatSession(activeSessionId);
+
+  // Session inline rename
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+
+  // Scope state
+  const [scopeType, setScopeType] = useState<"all" | "selected">("all");
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [showDocSelector, setShowDocSelector] = useState(false);
+
+  // X-Ray Drawer
+  const [isXRayOpen, setIsXRayOpen] = useState(false);
+  const [xrayQuery, setXrayQuery] = useState("");
+
+  // Voice dictation
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
   // Streaming state
   const [inputPrompt, setInputPrompt] = useState("");
@@ -78,7 +107,22 @@ function ChatContent() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Set default active session or create initial
+  // Initialize or synchronize scope with active session or query param
+  useEffect(() => {
+    if (activeSession?.scope) {
+      if (activeSession.scope.type === "documents") {
+        setScopeType("selected");
+        setSelectedDocIds(activeSession.scope.doc_ids || []);
+      } else {
+        setScopeType("all");
+      }
+    } else if (docParam) {
+      setScopeType("selected");
+      setSelectedDocIds([docParam]);
+    }
+  }, [activeSession, docParam]);
+
+  // Set default active session or select first
   useEffect(() => {
     if (sessions.length > 0 && !activeSessionId) {
       setActiveSessionId(sessions[0].id);
@@ -89,10 +133,21 @@ function ChatContent() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeSession?.messages, streamingTokens]);
 
+  // Sync latest query for X-Ray
+  useEffect(() => {
+    if (activeSession?.messages && activeSession.messages.length > 0) {
+      const userMsgs = activeSession.messages.filter((m) => m.role === "user");
+      if (userMsgs.length > 0) {
+        setXrayQuery(userMsgs[userMsgs.length - 1].content);
+      }
+    }
+  }, [activeSession?.messages]);
+
   const handleNewChat = () => {
-    const scope = docParam
-      ? { type: "documents" as const, doc_ids: [docParam] }
-      : { type: "all" as const, doc_ids: [] };
+    const scope =
+      scopeType === "selected"
+        ? { type: "documents" as const, doc_ids: selectedDocIds }
+        : { type: "all" as const, doc_ids: [] };
 
     createSessionMutation.mutate(
       { title: "New Conversation", scope },
@@ -102,6 +157,139 @@ function ChatContent() {
         },
       }
     );
+  };
+
+  const handleSaveTitle = (sessionId: string) => {
+    if (!editingTitle.trim()) {
+      setEditingSessionId(null);
+      return;
+    }
+    updateSessionMutation.mutate(
+      { id: sessionId, title: editingTitle.trim() },
+      {
+        onSuccess: () => {
+          setEditingSessionId(null);
+        },
+      }
+    );
+  };
+
+  const handleScopeChange = (type: "all" | "selected") => {
+    setScopeType(type);
+    if (type === "all") {
+      setShowDocSelector(false);
+    } else {
+      setShowDocSelector(true);
+    }
+
+    if (activeSessionId) {
+      const newScope =
+        type === "selected"
+          ? { type: "documents" as const, doc_ids: selectedDocIds }
+          : { type: "all" as const, doc_ids: [] };
+      updateSessionMutation.mutate({ id: activeSessionId, scope: newScope });
+    }
+  };
+
+  const toggleDocInScope = (docId: string) => {
+    const updated = selectedDocIds.includes(docId)
+      ? selectedDocIds.filter((id) => id !== docId)
+      : [...selectedDocIds, docId];
+    setSelectedDocIds(updated);
+
+    if (activeSessionId && scopeType === "selected") {
+      updateSessionMutation.mutate({
+        id: activeSessionId,
+        scope: { type: "documents" as const, doc_ids: updated },
+      });
+    }
+  };
+
+  const handleExportChat = async () => {
+    if (!activeSessionId) return;
+    try {
+      if (USE_MOCKS) {
+        const lines = [`# ${activeSession?.title || "Conversation"}\n\n`];
+        for (const m of activeSession?.messages || []) {
+          lines.push(`**${m.role === "user" ? "User" : "Assistant"}**:\n${m.content}\n\n`);
+        }
+        const blob = new Blob([lines.join("")], { type: "text/markdown" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `chat-${activeSessionId}.md`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast.success("Chat exported to markdown");
+        return;
+      }
+
+      const res = await fetch(`${API_URL}/api/v1/chat/sessions/${activeSessionId}/export?format=md`);
+      if (!res.ok) throw new Error("Failed to export chat");
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `chat-${activeSessionId}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Chat exported to markdown");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to export chat");
+    }
+  };
+
+  const toggleDictation = () => {
+    if (isListening) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      toast.error("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+
+      recognition.onstart = () => {
+        setIsListening(true);
+        toast.info("Listening... Speak now");
+      };
+
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        if (transcript) {
+          setInputPrompt((prev) => (prev ? `${prev} ${transcript}` : transcript));
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        setIsListening(false);
+        toast.error(`Dictation error: ${event.error || "unknown"}`);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch {
+      setIsListening(false);
+      toast.error("Could not start speech recognition");
+    }
   };
 
   const handleStop = async () => {
@@ -122,18 +310,21 @@ function ChatContent() {
     if (!promptToSend.trim() || isStreaming) return;
 
     let targetSessionId = activeSessionId;
-    if (!targetSessionId) {
-      const scope = docParam
-        ? { type: "documents" as const, doc_ids: [docParam] }
+    const scopeObj =
+      scopeType === "selected"
+        ? { type: "documents" as const, doc_ids: selectedDocIds }
         : { type: "all" as const, doc_ids: [] };
+
+    if (!targetSessionId) {
       const newSession = await createSessionMutation.mutateAsync({
         title: promptToSend.slice(0, 32),
-        scope,
+        scope: scopeObj,
       });
       targetSessionId = newSession.id;
       setActiveSessionId(targetSessionId);
     }
 
+    setXrayQuery(promptToSend);
     setInputPrompt("");
     setIsStreaming(true);
     setCurrentPhase("retrieving");
@@ -141,10 +332,6 @@ function ChatContent() {
     setStreamSources([]);
 
     abortControllerRef.current = new AbortController();
-
-    const scopeObj = docParam
-      ? { type: "documents" as const, doc_ids: [docParam] }
-      : { type: "all" as const, doc_ids: [] };
 
     const onEvent = (event: string, data: any) => {
       if (event === "status") {
@@ -242,7 +429,33 @@ function ChatContent() {
                   : "text-[#A1A1AA] hover:bg-[rgba(255,255,255,0.04)] hover:text-[#F4F4F5]"
               )}
             >
-              <span className="truncate flex-1 mr-2">{s.title || "Untitled Chat"}</span>
+              {editingSessionId === s.id ? (
+                <input
+                  type="text"
+                  value={editingTitle}
+                  onChange={(e) => setEditingTitle(e.target.value)}
+                  onBlur={() => handleSaveTitle(s.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveTitle(s.id);
+                    if (e.key === "Escape") setEditingSessionId(null);
+                  }}
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                  className="bg-transparent text-[#F4F4F5] border-b border-[#A78BFA] outline-none text-xs w-full mr-2"
+                />
+              ) : (
+                <span
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setEditingSessionId(s.id);
+                    setEditingTitle(s.title || "Untitled Chat");
+                  }}
+                  className="truncate flex-1 mr-2 select-none"
+                  title="Double-click to rename"
+                >
+                  {s.title || "Untitled Chat"}
+                </span>
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -264,6 +477,138 @@ function ChatContent() {
 
       {/* Main Conversation Feed & Composer */}
       <div className="flex-1 flex flex-col h-full bg-[#050507] overflow-hidden">
+        {/* Chat Header with Scope Bar, X-Ray, and Export */}
+        <div className="h-14 border-b border-[rgba(255,255,255,0.08)] bg-[#0C0C11]/80 backdrop-blur-md px-6 flex items-center justify-between shrink-0">
+          {/* Scope Segmented Control */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center bg-[#14141B] p-0.5 rounded-lg border border-[rgba(255,255,255,0.08)] relative">
+              <button
+                onClick={() => handleScopeChange("all")}
+                className={cn(
+                  "relative z-10 px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                  scopeType === "all" ? "text-[#F4F4F5]" : "text-[#71717A] hover:text-[#A1A1AA]"
+                )}
+              >
+                All documents
+                {scopeType === "all" && (
+                  <motion.div
+                    layoutId="scopeIndicator"
+                    className="absolute inset-0 bg-[#A78BFA]/20 border border-[#A78BFA]/30 rounded-md -z-10"
+                    transition={{ type: "spring", stiffness: 260, damping: 26 }}
+                  />
+                )}
+              </button>
+
+              <button
+                onClick={() => handleScopeChange("selected")}
+                className={cn(
+                  "relative z-10 px-3 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5",
+                  scopeType === "selected"
+                    ? "text-[#F4F4F5]"
+                    : "text-[#71717A] hover:text-[#A1A1AA]"
+                )}
+              >
+                <span>Selected</span>
+                {selectedDocIds.length > 0 && (
+                  <span className="w-4 h-4 rounded-full bg-[#A78BFA] text-black text-[10px] font-bold flex items-center justify-center">
+                    {selectedDocIds.length}
+                  </span>
+                )}
+                {scopeType === "selected" && (
+                  <motion.div
+                    layoutId="scopeIndicator"
+                    className="absolute inset-0 bg-[#A78BFA]/20 border border-[#A78BFA]/30 rounded-md -z-10"
+                    transition={{ type: "spring", stiffness: 260, damping: 26 }}
+                  />
+                )}
+              </button>
+            </div>
+
+            {/* Document Multi-select Trigger when Selected is active */}
+            {scopeType === "selected" && (
+              <div className="relative">
+                <button
+                  onClick={() => setShowDocSelector(!showDocSelector)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#14141B] border border-[rgba(255,255,255,0.08)] text-xs text-[#A1A1AA] hover:text-[#F4F4F5] transition-colors"
+                >
+                  <FileText className="w-3.5 h-3.5 text-[#22D3EE]" />
+                  <span>
+                    {selectedDocIds.length === 0
+                      ? "Choose documents..."
+                      : `${selectedDocIds.length} chosen`}
+                  </span>
+                  <ChevronDown className="w-3 h-3 ml-0.5" />
+                </button>
+
+                {/* Dropdown Popover */}
+                <AnimatePresence>
+                  {showDocSelector && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 4, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 4, scale: 0.98 }}
+                      className="absolute left-0 mt-1 w-64 max-h-60 overflow-y-auto p-1.5 rounded-xl bg-[#0C0C11] border border-[rgba(255,255,255,0.12)] shadow-2xl z-50 space-y-1"
+                    >
+                      {documents.length === 0 ? (
+                        <div className="p-3 text-[11px] text-[#71717A] text-center">
+                          No documents available in library.
+                        </div>
+                      ) : (
+                        documents.map((d) => {
+                          const isSelected = selectedDocIds.includes(d.doc_id);
+                          return (
+                            <div
+                              key={d.doc_id}
+                              onClick={() => toggleDocInScope(d.doc_id)}
+                              className={cn(
+                                "flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition-colors",
+                                isSelected
+                                  ? "bg-[#A78BFA]/15 text-[#F4F4F5]"
+                                  : "text-[#A1A1AA] hover:bg-[rgba(255,255,255,0.04)] hover:text-[#F4F4F5]"
+                              )}
+                            >
+                              <span className="truncate mr-2">{d.filename}</span>
+                              {isSelected && <Check className="w-3.5 h-3.5 text-[#A78BFA] shrink-0" />}
+                            </div>
+                          );
+                        })
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+          </div>
+
+          {/* Action Bar: Retrieval X-Ray & Export */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                if (!xrayQuery) {
+                  toast.info("Submit a question first to inspect retrieval reasoning");
+                }
+                setIsXRayOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14141B] border border-[rgba(255,255,255,0.08)] text-xs text-[#A1A1AA] hover:text-[#22D3EE] hover:border-[#22D3EE]/30 transition-colors shadow-sm"
+              title="Inspect dense vs sparse vs fused retrieval rankings"
+            >
+              <Layers className="w-3.5 h-3.5 text-[#22D3EE]" />
+              <span>Retrieval X-Ray</span>
+            </button>
+
+            {activeSessionId && (
+              <button
+                onClick={handleExportChat}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14141B] border border-[rgba(255,255,255,0.08)] text-xs text-[#A1A1AA] hover:text-[#F4F4F5] hover:bg-[rgba(255,255,255,0.06)] transition-colors shadow-sm"
+                title="Export conversation as markdown"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export</span>
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Messages scroll area */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {messages.length === 0 && !isStreaming ? (
@@ -350,6 +695,20 @@ function ChatContent() {
               <Paperclip className="w-4 h-4" />
             </button>
 
+            {/* Web Speech Dictation */}
+            <button
+              onClick={toggleDictation}
+              className={cn(
+                "p-2 rounded-lg transition-all",
+                isListening
+                  ? "bg-[#F472B6]/20 text-[#F472B6] border border-[#F472B6]/40 animate-pulse"
+                  : "text-[#71717A] hover:text-[#F4F4F5] hover:bg-[rgba(255,255,255,0.06)]"
+              )}
+              title={isListening ? "Listening... Click to stop" : "Voice dictation (Web Speech API)"}
+            >
+              {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            </button>
+
             <textarea
               value={inputPrompt}
               onChange={(e) => setInputPrompt(e.target.value)}
@@ -387,6 +746,13 @@ function ChatContent() {
           </div>
         </div>
       </div>
+
+      {/* Retrieval X-Ray Drawer */}
+      <RetrievalXRayDrawer
+        isOpen={isXRayOpen}
+        onClose={() => setIsXRayOpen(false)}
+        query={xrayQuery || "What are the key findings?"}
+      />
     </div>
   );
 }

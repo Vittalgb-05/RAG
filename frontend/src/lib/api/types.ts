@@ -210,3 +210,17 @@ export interface ConstellationData {
   dims: number;
   total_points: number;
 }
+
+export interface PrivacyLedgerEntry {
+  ts: string;
+  provider: string;
+  model: string;
+  doc_filenames: string[];
+  char_count: number;
+  request_id: string;
+}
+
+export interface PrivacyLedgerResponse {
+  entries: PrivacyLedgerEntry[];
+}
+

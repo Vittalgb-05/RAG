@@ -74,12 +74,28 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 rehypePlugins={[rehypeSanitize]}
                 components={{
                   // Render [E1] citation references as custom interactive pills
+                  a: ({ href, children }) => {
+                    if (href?.startsWith("#cite-")) {
+                      const rank = Number(href.replace("#cite-", ""));
+                      return <CitationPill rank={rank} sources={message.sources} />;
+                    }
+                    return (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#22D3EE] hover:underline"
+                      >
+                        {children}
+                      </a>
+                    );
+                  },
                   p: ({ children }) => {
                     return <p className="mb-3 last:mb-0">{children}</p>;
                   },
                 }}
               >
-                {message.content}
+                {message.content.replace(/\[E(\d+)\]/g, "[E$1](#cite-$1)")}
               </ReactMarkdown>
             </div>
           )}

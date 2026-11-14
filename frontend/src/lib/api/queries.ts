@@ -194,6 +194,21 @@ export function useDeleteChatSession() {
   });
 }
 
+export function useUpdateChatSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, title, scope }: { id: string; title?: string; scope?: { type: string; doc_ids: string[] } }) =>
+      apiClient<ChatSession>(`/chat/sessions/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title, scope }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["chat_sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["chat_session"] });
+    },
+  });
+}
+
 export function useSummary(docId: string | null, profile: string, length: string = "standard") {
   return useQuery<SummaryResponse>({
     queryKey: ["summary", docId, profile, length],
@@ -213,5 +228,13 @@ export function useConstellation(docIds?: string[]) {
       const qs = docIds?.length ? `?doc_ids=${docIds.join(",")}` : "";
       return apiClient<ConstellationData>(`/visualize/embeddings${qs}`);
     },
+  });
+}
+
+export function usePrivacyLedger() {
+  return useQuery<{ entries: any[] }>({
+    queryKey: ["privacy", "ledger"],
+    queryFn: () => (USE_MOCKS ? Promise.resolve({ entries: [] }) : apiClient<{ entries: any[] }>("/privacy/ledger")),
+    refetchInterval: 10000,
   });
 }

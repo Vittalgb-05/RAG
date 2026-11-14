@@ -237,6 +237,36 @@
         }
       }
     },
+    "/api/v1/privacy/ledger": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Privacy Ledger",
+        "description": "Retrieve audit timeline of cloud inference requests.",
+        "operationId": "get_privacy_ledger_api_v1_privacy_ledger_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "type": "object",
+                  "title": "Response Get Privacy Ledger Api V1 Privacy Ledger Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/documents": {
       "get": {
         "tags": [

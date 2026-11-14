@@ -71,3 +71,9 @@ async def revoke_cloud_credentials(c: AppContainer = Depends(get_container)) -> 
     """Clear in-memory cloud API keys, revoke consent, and revert to local engine."""
     c.cloud.revoke()
     return _build_app_settings(c)
+
+
+@router.get("/privacy/ledger")
+async def get_privacy_ledger(c: AppContainer = Depends(get_container)) -> dict[str, list[dict[str, object]]]:
+    """Retrieve audit timeline of cloud inference requests."""
+    return {"entries": c.cloud.get_ledger()}

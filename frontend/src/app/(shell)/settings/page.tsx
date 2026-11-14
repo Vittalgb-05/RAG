@@ -10,6 +10,10 @@ import {
   CheckCircle2,
   AlertTriangle,
   RotateCcw,
+  Lock,
+  Database,
+  FolderLock,
+  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -17,8 +21,10 @@ import {
   useSettings,
   useTelemetry,
   useUpdateCloudSettings,
+  usePrivacyLedger,
 } from "@/lib/api/queries";
 import { SpotlightCard } from "@/components/motion/spotlight-card";
+import { CountUp } from "@/components/motion/count-up";
 import { cn } from "@/lib/utils";
 
 const CLOUD_PROVIDERS = [
@@ -36,6 +42,7 @@ const CLOUD_MODELS: Record<string, string[]> = {
 export default function SettingsPage() {
   const { data: settings } = useSettings();
   const { data: telemetry } = useTelemetry();
+  const { data: ledgerData } = usePrivacyLedger();
   const updateCloud = useUpdateCloudSettings();
   const revokeKeys = useRevokeCloudCredentials();
 
@@ -46,6 +53,8 @@ export default function SettingsPage() {
   const [consentModalOpen, setConsentModalOpen] = useState(false);
 
   const isCloud = settings?.cloud.enabled;
+  const ledgerEntries = ledgerData?.entries || [];
+  const totalEgressChars = ledgerEntries.reduce((sum, e) => sum + (e.char_count || 0), 0);
 
   const handleToggleCloud = (enable: boolean) => {
     if (enable) {
@@ -268,6 +277,131 @@ export default function SettingsPage() {
             </div>
           )}
         </div>
+      </SpotlightCard>
+
+      {/* Section: Storage & Persistence Paths */}
+      <SpotlightCard className="p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Database className="w-5 h-5 text-[#22D3EE]" />
+            <div>
+              <h3 className="text-base font-bold text-[#F4F4F5]">Storage & Persistence</h3>
+              <p className="text-xs text-[#A1A1AA]">
+                Local directory allocations and SQLite persistence status.
+              </p>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-[#34D399]/10 text-[#34D399] border border-[#34D399]/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#34D399]" />
+            Persistent
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div className="p-3 rounded-lg bg-[#14141B] border border-[rgba(255,255,255,0.06)] space-y-1">
+            <span className="text-[#71717A] text-[11px] uppercase tracking-wider font-semibold">
+              Hybrid Vector Store
+            </span>
+            <div className="font-mono text-[#F4F4F5]">data/lancedb</div>
+            <p className="text-[11px] text-[#A1A1AA]">LanceDB dense + BM25 sparse index</p>
+          </div>
+
+          <div className="p-3 rounded-lg bg-[#14141B] border border-[rgba(255,255,255,0.06)] space-y-1">
+            <span className="text-[#71717A] text-[11px] uppercase tracking-wider font-semibold">
+              Relational Database
+            </span>
+            <div className="font-mono text-[#F4F4F5]">data/metadata.db</div>
+            <p className="text-[11px] text-[#A1A1AA]">Documents, jobs, sessions & message state</p>
+          </div>
+
+          <div className="p-3 rounded-lg bg-[#14141B] border border-[rgba(255,255,255,0.06)] space-y-1">
+            <span className="text-[#71717A] text-[11px] uppercase tracking-wider font-semibold">
+              Original Files
+            </span>
+            <div className="font-mono text-[#F4F4F5]">data/originals</div>
+            <p className="text-[11px] text-[#A1A1AA]">Local raw source PDFs repository</p>
+          </div>
+
+          <div className="p-3 rounded-lg bg-[#14141B] border border-[rgba(255,255,255,0.06)] space-y-1">
+            <span className="text-[#71717A] text-[11px] uppercase tracking-wider font-semibold">
+              Docling & HF Cache
+            </span>
+            <div className="font-mono text-[#F4F4F5]">.cache/docling</div>
+            <p className="text-[11px] text-[#A1A1AA]">Offline layout parsing & embedding weights</p>
+          </div>
+        </div>
+      </SpotlightCard>
+
+      {/* Section: Privacy Ledger */}
+      <SpotlightCard className="p-6 space-y-5">
+        <div className="flex items-center justify-between border-b border-[rgba(255,255,255,0.08)] pb-4">
+          <div className="flex items-center gap-2.5">
+            <FolderLock className="w-5 h-5 text-[#A78BFA]" />
+            <div>
+              <h3 className="text-base font-bold text-[#F4F4F5]">Privacy & Audit Ledger</h3>
+              <p className="text-xs text-[#A1A1AA]">
+                Verifiable record of every excerpt and context payload transmitted to external endpoints.
+              </p>
+            </div>
+          </div>
+          {ledgerEntries.length > 0 && (
+            <span className="text-xs font-mono text-[#A1A1AA]">
+              <CountUp to={ledgerEntries.length} /> requests &bull; <CountUp to={totalEgressChars} /> chars
+            </span>
+          )}
+        </div>
+
+        {ledgerEntries.length === 0 ? (
+          <div className="py-10 flex flex-col items-center justify-center text-center space-y-3">
+            <div className="w-12 h-12 rounded-full bg-[#34D399]/10 border border-[#34D399]/20 flex items-center justify-center text-[#34D399]">
+              <Lock className="w-6 h-6" />
+            </div>
+            <h4 className="text-sm font-semibold text-[#F4F4F5]">
+              Nothing has left this machine
+            </h4>
+            <p className="text-xs text-[#A1A1AA] max-w-sm">
+              All queries and documents have remained strictly local. No embeddings or snippets have egressed over the network.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-[rgba(255,255,255,0.08)] text-[#71717A]">
+                    <th className="pb-2 font-medium">Timestamp</th>
+                    <th className="pb-2 font-medium">Provider / Model</th>
+                    <th className="pb-2 font-medium">Documents</th>
+                    <th className="pb-2 font-medium text-right">Egress Size</th>
+                    <th className="pb-2 font-medium text-right">Request ID</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[rgba(255,255,255,0.04)]">
+                  {ledgerEntries.map((e, idx) => (
+                    <tr key={idx} className="hover:bg-[rgba(255,255,255,0.02)]">
+                      <td className="py-2.5 font-mono text-[#A1A1AA]">
+                        {new Date(e.ts).toLocaleTimeString()}
+                      </td>
+                      <td className="py-2.5 text-[#F4F4F5]">
+                        <span className="font-semibold">{e.provider}</span>
+                        <span className="text-[#71717A] ml-1.5 text-[11px]">{e.model}</span>
+                      </td>
+                      <td className="py-2.5 text-[#A1A1AA] max-w-[180px] truncate">
+                        {e.doc_filenames?.length ? e.doc_filenames.join(", ") : "All"}
+                      </td>
+                      <td className="py-2.5 font-mono text-right text-[#22D3EE]">
+                        {e.char_count.toLocaleString()} chars
+                      </td>
+                      <td className="py-2.5 font-mono text-[10px] text-right text-[#71717A]">
+                        {e.request_id?.slice(0, 8)}...
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </SpotlightCard>
 
       {/* Cloud Consent Modal */}
