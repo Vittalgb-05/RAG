@@ -24,7 +24,7 @@ from core.prompt_budget import (
 )
 from retrieval.hybrid_retriever import HybridRetriever, compute_rrf
 from retrieval.local_embedding import EMBEDDING_MAX_LENGTH, LocalEmbedding
-from ui.chat_controller import ChatTurnService
+from services.chat_turn import ChatTurnService
 
 
 # ---------------------------------------------------------------------------

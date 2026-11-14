@@ -163,11 +163,18 @@ def test_ai_model_sends_every_question_page_and_withholds_uncited_answer(
     """End-to-end structural regression for the failing chat turn (no GPU)."""
     model = AiModel(provider=mock_llama_provider)
 
+    retrieval = resolve_retrieval(
+        question_retriever,
+        "What are the questions?",
+        doc_id="doc_evs",
+        k=10,
+        max_context_chars=whole_document_char_budget(mock_llama_provider.get_capabilities().context_window),
+    )
     tokens = list(
         model.ask_a_question_from_pdf_stream(
             pdf_path="",
             prompt="What are the questions?",
-            local_embedding=question_retriever,
+            retrieval_result=retrieval,
             doc_id="doc_evs",
         )
     )

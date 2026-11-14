@@ -109,6 +109,29 @@ def _write_tar(path, entries):
                 tf.addfile(info, io.BytesIO(data))
 
 
+def _can_symlink() -> bool:
+    import os
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "src"
+        src.write_text("ok", encoding="utf-8")
+        dst = Path(td) / "dst"
+        try:
+            os.symlink(src, dst)
+            return True
+        except OSError:
+            return False
+
+
+symlink_supported = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="Filesystem or OS user account does not support unprivileged symlinks",
+)
+
+
+@symlink_supported
 def test_safe_extract_archive_strips_root_and_restores_links(tmp_path):
     """Verify strip_root flattens the archive and recreates contained soname links."""
     archive = tmp_path / "llama.tar.gz"
@@ -132,6 +155,7 @@ def test_safe_extract_archive_strips_root_and_restores_links(tmp_path):
     assert (dest / "hardlink.so").read_text(encoding="utf-8") == "lib"
 
 
+@symlink_supported
 def test_safe_extract_archive_reextracts_over_existing_links(tmp_path):
     """Verify re-extraction replaces stale links instead of following them."""
     archive = tmp_path / "pkg.tar.gz"

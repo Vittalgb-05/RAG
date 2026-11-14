@@ -1,6 +1,4 @@
-"""Unit tests for local markdown sanitization and external request neutralization."""
-
-from ui.sanitizer import sanitize_markdown_for_local
+from core.sanitizer import sanitize_markdown_for_local
 
 
 def test_sanitize_blocks_external_markdown_images_in_local_mode() -> None:

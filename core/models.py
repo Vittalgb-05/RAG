@@ -7,11 +7,12 @@ providing strict validation, serialization, and backward compatibility with lega
 
 from pathlib import Path
 import re
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Configuration version for chunking and extraction policy
 CONFIG_VERSION: str = "docling-1000-200-v1"
+PROMPT_VERSION: str = "summary-v1"
 
 
 def cache_dir_for(base: Path, sha256: str) -> Path:
@@ -156,6 +157,8 @@ class EvidenceSnippet(BaseModel):
     rank: int = Field(..., ge=1, description="1-based composite rank ([E1], [E2], ...).")
     dense_rank: int | None = Field(default=None, description="1-based rank from vector search.")
     fts_rank: int | None = Field(default=None, description="1-based rank from full-text keyword search.")
+    dense_score: float | None = Field(default=None, description="Raw score from vector search.")
+    fts_score: float | None = Field(default=None, description="Raw score from BM25 full-text search.")
     extraction: str = Field(default="docling", description="Extraction backend used (docling, ocr, pypdf).")
     char_start: int | None = Field(default=None, description="Starting character offset on page.")
     char_end: int | None = Field(default=None, description="Ending character offset on page.")
@@ -191,6 +194,10 @@ class RetrievalResult(BaseModel):
     chunk_cap_reached: bool = Field(
         default=False,
         description="True when fetch_document_chunks truncated results at the safety cap — tail pages may be missing.",
+    )
+    explanation: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Candidate rank and score breakdown for Retrieval X-Ray.",
     )
 
     def formatted_evidence(self) -> str:
@@ -253,6 +260,12 @@ class GroundingReport(BaseModel):
     )
     regeneration_attempted: bool = Field(
         default=False, description="True when the bounded single corrective regeneration was used."
+    )
+    sentence_support: list[dict[str, Any]] = Field(
+        default_factory=list, description="Per-sentence lexical support evaluation for Grounding Heatmap."
+    )
+    injection_flags: list[str] = Field(
+        default_factory=list, description="Adversarial prompt injection pattern hits detected in query or text."
     )
 
 

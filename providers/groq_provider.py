@@ -39,19 +39,10 @@ class GroqProvider(BaseModelProvider):
         self.context_window = context_window
         self.user_consented = bool(user_consented)
 
-        if api_key is None:
-            # Check Streamlit secrets if present, then environment
-            try:
-                import streamlit as st
-
-                api_key = st.secrets.get("GROQ_API_KEY")
-            except (KeyError, FileNotFoundError, AttributeError, RuntimeError):
-                # Streamlit >= 1.5x raises RuntimeError outside a script run context
-                # (for example when the provider is constructed from a test or CLI).
-                api_key = None
-
-            if not api_key:
-                api_key = os.environ.get("GROQ_API_KEY")
+        if api_key is None and os.environ.get("RAG_ALLOW_ENV_KEYS") == "1":
+            api_key = os.environ.get("GROQ_API_KEY")
+            if api_key:
+                logger.info("Resolved Groq API key from environment variable GROQ_API_KEY")
 
         self.api_key = api_key
         self._client: Any = None

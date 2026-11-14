@@ -2,13 +2,13 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feat/fastapi-react ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, feat/fastapi-react ]
 
 jobs:
-  test:
-    name: Lint & Test Suite (Python 3.11)
+  backend:
+    name: Backend Lint, Contract & Tests (Python 3.11)
     runs-on: ubuntu-latest
 
     steps:
@@ -25,9 +25,9 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install Runtime & Test Dependencies from Lockfile
+      - name: Install Runtime & Test Dependencies
         run: |
-          uv pip install --system -r requirements-lock.txt
+          uv pip install --system -r requirements.txt
           uv pip install --system -r requirements-test.txt
           uv pip install --system -e . --no-deps
 
@@ -36,6 +36,10 @@ jobs:
           ruff check .
           ruff format --check .
 
+      - name: Verify OpenAPI Specification Sync
+        run: |
+          python -m api.export_openapi --check
+
       - name: Generate Synthetic Test Corpus
         run: |
           python tests/data/corpus/generate_corpus.py
@@ -43,3 +47,38 @@ jobs:
       - name: Run Pytest Test Suite
         run: |
           pytest tests/ -v
+
+  frontend:
+    name: Frontend Lint, Typecheck & Static Export
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile || pnpm install
+
+      - name: Typecheck Next.js App
+        working-directory: frontend
+        run: |
+          pnpm typecheck
+
+      - name: Build Static Export
+        working-directory: frontend
+        run: |
+          pnpm build

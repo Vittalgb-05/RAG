@@ -1,6 +1,9 @@
 # Runtime dependencies for the Local-First Multimodal PDF Intelligence System.
 # Pins reflect versions verified on Python 3.11-3.13 (see docs/DEPENDENCY_AUDIT.md).
-streamlit==1.66.1
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic-settings>=2.4.0
+python-multipart>=0.0.9
 pypdf==6.21.4
 python-dotenv==1.0.1
 langchain-text-splitters==0.3.6

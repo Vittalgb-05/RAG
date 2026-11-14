@@ -2,7 +2,7 @@
 
 Usage:
     python start.py
-    python start.py --port 8501 --host localhost
+    python start.py --port 8000 --host 127.0.0.1
 """
 
 from __future__ import annotations
@@ -35,13 +35,15 @@ os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent
 
-# Modules main.py resolves at import time. Checking them before spawning anything is
-# what turns "llama-server is up but Streamlit cannot import" into an immediate,
+# Modules the API server resolves at import time. Checking them before spawning anything is
+# what turns "llama-server is up but FastAPI cannot import" into an immediate,
 # actionable exit.
 REQUIRED_MODULES: tuple[str, ...] = (
-    "streamlit",
+    "fastapi",
+    "uvicorn",
     "dotenv",
     "pydantic",
+    "pydantic_settings",
     "httpx",
     "langchain_text_splitters",
     "pypdf",
@@ -51,7 +53,7 @@ REQUIRED_MODULES: tuple[str, ...] = (
 DEFAULT_VENV_DIRNAME = ".venv"
 VENV_PATH_ENV = "RAG_VENV_PATH"
 
-# Host values that keep the single-user Streamlit UI reachable only from this machine.
+# Host values that keep the single-user API / UI reachable only from this machine.
 _LOOPBACK_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"}
 _NON_LOOPBACK_OPT_IN_ENV = "RAG_ALLOW_NON_LOOPBACK"
 
@@ -73,7 +75,7 @@ def non_loopback_opt_in() -> bool:
 
 
 def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
-    """Refuse a non-loopback UI bind unless the operator explicitly opted in.
+    """Refuse a non-loopback bind unless the operator explicitly opted in.
 
     The application has no authentication layer: every indexed document and the
     cloud API-key settings page are readable by anyone who can reach the port.
@@ -87,7 +89,7 @@ def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
 
     if allow_non_loopback or non_loopback_opt_in():
         print(
-            f"WARNING: Binding Streamlit to non-loopback host '{host}'.\n"
+            f"WARNING: Binding server to non-loopback host '{host}'.\n"
             "   This application has NO authentication: anyone who can reach this\n"
             "   port can read every indexed document and the cloud API-key page.\n"
             "   Only do this on a trusted, isolated network.",
@@ -96,7 +98,7 @@ def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
         return True
 
     print(
-        f"❌ Refusing to bind Streamlit to non-loopback host '{host}'.\n"
+        f"❌ Refusing to bind server to non-loopback host '{host}'.\n"
         "   This application is single-user and has NO authentication: any host\n"
         "   that can reach this port can read every indexed document and the\n"
         "   cloud API-key settings page.\n"
@@ -349,27 +351,35 @@ def start_llama_server_process(
     return proc
 
 
-def launch_streamlit(port: int = 8501, host: str = "localhost", headless: bool = False) -> int:
-    """Launch Streamlit frontend subprocess with forwarded arguments."""
-    main_script = REPO_ROOT / "main.py"
-    if not main_script.exists():
-        print(f"❌ Error: main.py not found at {main_script}", file=sys.stderr)
-        return 1
-
+def launch_server(port: int = 8000, host: str = "127.0.0.1", reload: bool = False, headless: bool = False) -> int:
+    """Launch FastAPI + Uvicorn server subprocess with forwarded arguments."""
     cmd = [
         sys.executable,
         "-m",
-        "streamlit",
-        "run",
-        str(main_script),
-        f"--server.port={port}",
-        f"--server.address={host}",
-        f"--server.headless={'true' if headless else 'false'}",
-        "--browser.gatherUsageStats=false",
+        "uvicorn",
+        "api.main:app",
+        f"--port={port}",
+        f"--host={host}",
     ]
+    if reload:
+        cmd.append("--reload")
 
-    print(f"\n🚀 Launching Streamlit web application on http://{host}:{port} ...")
+    print(f"\n🚀 Launching RAG Assistant on http://{host}:{port} ...")
+    if (REPO_ROOT / "frontend" / "out").exists():
+        print("   ✓ Static frontend build detected in frontend/out (serving unified web app)")
+    else:
+        print("   ℹ️ Static frontend build not found; serving API endpoints only.")
     print("   Press Ctrl+C to stop the server.\n")
+
+    if not headless and is_loopback_host(host):
+        def _open_browser():
+            time.sleep(1.2)
+            import webbrowser
+            with contextlib.suppress(Exception):
+                webbrowser.open(f"http://{host}:{port}")
+
+        import threading
+        threading.Thread(target=_open_browser, daemon=True).start()
 
     try:
         proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
@@ -378,8 +388,12 @@ def launch_streamlit(port: int = 8501, host: str = "localhost", headless: bool =
         print("\n\n🛑 Application stopped by user.")
         return 0
     except Exception as err:
-        print(f"\n❌ Error starting Streamlit process: {err}", file=sys.stderr)
+        print(f"\n❌ Error starting server process: {err}", file=sys.stderr)
         return 1
+
+
+# Backward compatibility alias for tests
+launch_streamlit = launch_server
 
 
 def main() -> int:
@@ -388,8 +402,12 @@ def main() -> int:
         description="Launch Local-First Multimodal PDF Intelligence System",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--port", type=int, default=8501, help="Streamlit port")
-    parser.add_argument("--host", type=str, default="localhost", help="Streamlit bind address")
+    default_port = int(os.environ.get("RAG_API_PORT", "8000"))
+    default_host = os.environ.get("RAG_API_HOST", "127.0.0.1")
+
+    parser.add_argument("--port", type=int, default=default_port, help="API server port")
+    parser.add_argument("--host", type=str, default=default_host, help="API bind address")
+    parser.add_argument("--reload", action="store_true", help="Enable live code reload (uvicorn --reload)")
     parser.add_argument(
         "--allow-non-loopback",
         action="store_true",
@@ -438,7 +456,7 @@ def main() -> int:
         check_llama_server(host=args.llama_host, port=args.llama_port)
 
     try:
-        return launch_streamlit(port=args.port, host=args.host, headless=args.headless)
+        return launch_server(port=args.port, host=args.host, reload=args.reload, headless=args.headless)
     finally:
         if llama_proc is not None:
             print("\n🛑 Stopping background llama-server...")
@@ -451,3 +469,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

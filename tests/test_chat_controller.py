@@ -6,7 +6,7 @@ from typing import Any
 
 from core.citation_validator import CitationVerificationResult
 from core.models import EvidenceSnippet, RetrievalResult
-from ui.chat_controller import ChatTurnService
+from services.chat_turn import ChatTurnService
 
 
 def _snippet(

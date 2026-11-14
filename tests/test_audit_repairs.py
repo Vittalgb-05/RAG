@@ -17,7 +17,7 @@ from core.summarizer import MAX_BATCH_TOKENS, Summarizer
 from ingestion.docling_reader import DoclingReader
 from providers.groq_provider import GroqProvider
 from retrieval.hybrid_retriever import DEFAULT_DB_URI, HybridRetriever, VectorIndexError
-from ui.sanitizer import sanitize_markdown_for_local
+from core.sanitizer import sanitize_markdown_for_local
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -223,7 +223,7 @@ def test_local_model_identity_matches_declared_architecture() -> None:
 
 def test_lifecycle_delete_aborts_before_sqlite_on_vector_failure(tmp_path) -> None:
     """A vector deletion failure must leave the SQLite row intact for retry."""
-    from ui.lifecycle_service import LifecycleService
+    from services.lifecycle import LifecycleService
 
     class FailingRetriever:
         def delete_document(self, doc_id):
@@ -241,7 +241,7 @@ def test_lifecycle_delete_aborts_before_sqlite_on_vector_failure(tmp_path) -> No
 
 def test_purge_reports_vector_failure_but_clears_session_state(tmp_path) -> None:
     """Purge surfaces tier failures instead of reporting a silent success."""
-    from ui.lifecycle_service import LifecycleService
+    from services.lifecycle import LifecycleService
 
     class FailingRetriever:
         def purge_all(self):

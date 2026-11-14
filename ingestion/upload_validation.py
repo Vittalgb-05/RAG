@@ -14,9 +14,7 @@ import pypdf
 
 logger = logging.getLogger(__name__)
 
-# Locked configuration constants (RESEARCH-locked ASSUMED caps)
-MAX_FILE_MB: int = 50
-MAX_PAGES: int = 500
+from core.limits import MAX_FILE_MB, MAX_PAGES
 
 # Cheap pre-flight estimate: sample a handful of pages only.  This is advisory
 # (never rejects an upload) and deliberately does not trigger Docling/OCR.

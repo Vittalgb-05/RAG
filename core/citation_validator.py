@@ -8,7 +8,7 @@ precision (QA-03) and detecting explicit model abstention without citation fabri
 
 import logging
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from core.models import RetrievalResult
@@ -218,6 +218,10 @@ class CitationVerificationResult(BaseModel):
             "but claim support could not be evaluated, so the answer must not be labelled grounded."
         ),
     )
+    sentence_support: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Per-sentence lexical support evaluation for Grounding Heatmap.",
+    )
     message: str = Field(default="", description="Human-readable verification diagnostic.")
     auto_attributed_count: int = Field(
         default=0,
@@ -359,16 +363,22 @@ def _evaluate_lexical_support(
         rank: _support_tokens(content) for rank, content in snippet_by_rank.items() if content.strip()
     }
     if not snippet_tokens_by_rank:
-        return False, 0.0, [], 0, 0
+        return False, 0.0, [], 0, 0, []
 
     evaluable = 0
     supported = 0
     unsupported: set[int] = set()
     uncited_claims = 0
     uncited_unsupported = 0
+    sentence_support: list[dict[str, Any]] = []
 
     for sentence in SENTENCE_SPLIT_REGEX.split(text):
-        if not sentence.strip():
+        raw_s = sentence.strip()
+        if not raw_s:
+            continue
+
+        # Skip markdown headings and list section labels (B11)
+        if raw_s.startswith("#") or re.match(r"^[-*+]\s+[A-Za-z0-9\s]+:$", raw_s):
             continue
 
         cited = [rank for rank in extract_citations(sentence) if rank in valid_rank_set]
@@ -383,10 +393,19 @@ def _evaluate_lexical_support(
             for rank in cited:
                 snippet_tokens.update(snippet_tokens_by_rank.get(rank, set()))
             overlap = len(claim_tokens & snippet_tokens) / len(claim_tokens)
-            if overlap >= SUPPORT_TOKEN_THRESHOLD:
+            is_supp = overlap >= SUPPORT_TOKEN_THRESHOLD
+            if is_supp:
                 supported += 1
             else:
                 unsupported.update(cited)
+            sentence_support.append(
+                {
+                    "text": raw_s,
+                    "supported": is_supp,
+                    "score": round(overlap, 3),
+                    "cited_ranks": cited,
+                }
+            )
             continue
 
         uncited_claims += 1
@@ -397,15 +416,24 @@ def _evaluate_lexical_support(
             (len(claim_tokens & tokens) / len(claim_tokens) for tokens in snippet_tokens_by_rank.values()),
             default=0.0,
         )
-        if best_overlap >= SUPPORT_TOKEN_THRESHOLD:
+        is_supp = best_overlap >= SUPPORT_TOKEN_THRESHOLD
+        if is_supp:
             supported += 1
         else:
             uncited_unsupported += 1
+        sentence_support.append(
+            {
+                "text": raw_s,
+                "supported": is_supp,
+                "score": round(best_overlap, 3),
+                "cited_ranks": [],
+            }
+        )
 
     if evaluable == 0:
-        return False, 0.0, [], 0, 0
+        return False, 0.0, [], 0, 0, []
 
-    return True, supported / evaluable, sorted(unsupported), uncited_claims, uncited_unsupported
+    return True, supported / evaluable, sorted(unsupported), uncited_claims, uncited_unsupported, sentence_support
 
 
 def validate_citations(
@@ -512,7 +540,7 @@ def validate_citations(
     precision = len(valid_ranks) / total_claimed
     is_valid = precision >= 0.95
 
-    support_checked, support_precision, unsupported_ranks, uncited_claims, uncited_unsupported = (
+    support_checked, support_precision, unsupported_ranks, uncited_claims, uncited_unsupported, sentence_support = (
         _evaluate_lexical_support(text, valid_ranks, retrieval_result)
     )
 
@@ -572,6 +600,7 @@ def validate_citations(
         uncited_claim_count=uncited_claims,
         uncited_unsupported_count=uncited_unsupported,
         grounding_status=grounding_status,
+        sentence_support=sentence_support,
         message=msg,
     )
 

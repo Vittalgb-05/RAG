@@ -349,7 +349,7 @@ def test_llama_only_preflight_warns_and_names_install_command(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "NOT installed" in out
     assert "streamlit" in out
-    assert "/usr/bin/python3" in out
+    assert str(Path("/usr/bin/python3")) in out
     assert "python3 setup.py" in out
     assert f"{setup_mod.venv_python_path(venv_dir)} start.py --start-llama" in out
 

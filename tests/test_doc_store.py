@@ -132,7 +132,7 @@ def test_user_version_set(tmp_path):
     with store._connect() as conn:
         cursor = conn.execute("PRAGMA user_version;")
         version = cursor.fetchone()[0]
-        assert version == 5
+        assert version == 7
 
         # Verify v4 indexes exist
         cursor = conn.execute(
@@ -783,4 +783,4 @@ def test_v4_database_migrates_tombstones_without_losing_documents(tmp_path):
     assert upgraded.get_document(doc.doc_id) == doc
     assert upgraded.list_deletion_tombstones() == []
     with upgraded._connect() as conn:
-        assert conn.execute("PRAGMA user_version;").fetchone()[0] == 5
+        assert conn.execute("PRAGMA user_version;").fetchone()[0] == 7

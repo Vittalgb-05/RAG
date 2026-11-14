@@ -6,7 +6,7 @@ import pytest
 
 from core.redaction import redact_text
 from providers.groq_provider import GroqProvider
-from ui.chat_controller import ChatTurnPreparation, ChatTurnService
+from services.chat_turn import ChatTurnPreparation, ChatTurnService
 
 
 def test_redact_text_scrubs_known_api_keys_and_bearer_tokens() -> None:

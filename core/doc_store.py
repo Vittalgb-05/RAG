@@ -16,6 +16,7 @@ import random
 import sqlite3
 import time
 from typing import Any, TypeVar
+import uuid
 from core.models import BBox, Chunk, Document, EvidenceElement, Page, SummaryResult
 
 logger = logging.getLogger(__name__)
@@ -138,12 +139,75 @@ SCHEMA_V5_DDL = [
     """,
 ]
 
+SCHEMA_V6_DDL = [
+    """
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        scope_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS chat_messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('user','assistant')),
+        content TEXT NOT NULL,
+        grounding_json TEXT,
+        sources_json TEXT,
+        usage_json TEXT,
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at);
+    """,
+]
+
+SCHEMA_V7_DDL = [
+    """
+    CREATE TABLE IF NOT EXISTS document_summaries_v7 (
+        summary_id TEXT PRIMARY KEY,
+        doc_id TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        profile TEXT NOT NULL,
+        summary_text TEXT NOT NULL,
+        page_references_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        model_version TEXT NOT NULL DEFAULT '',
+        UNIQUE(sha256, profile, model_version),
+        FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+    );
+    """,
+    """
+    INSERT OR IGNORE INTO document_summaries_v7
+    SELECT summary_id, doc_id, sha256, profile, summary_text, page_references_json, created_at, model_version
+    FROM document_summaries;
+    """,
+    """
+    DROP TABLE document_summaries;
+    """,
+    """
+    ALTER TABLE document_summaries_v7 RENAME TO document_summaries;
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_summaries_sha256 ON document_summaries(sha256);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_summaries_doc_id ON document_summaries(doc_id);
+    """,
+]
+
 MIGRATIONS: dict[int, list[str]] = {
     1: SCHEMA_V1_DDL,
     2: SCHEMA_V2_DDL,
     3: SCHEMA_V3_DDL,
     4: SCHEMA_V4_DDL,
     5: SCHEMA_V5_DDL,
+    6: SCHEMA_V6_DDL,
+    7: SCHEMA_V7_DDL,
 }
 
 
@@ -274,6 +338,8 @@ class DocStore:
         )
         self._execute_write(lambda conn: conn.execute(query, params))
 
+    _DOC_COLS = "doc_id, filename, sha256, size_bytes, num_pages, status, upload_time, num_chunks"
+
     def get_document(self, doc_id: str) -> Document | None:
         """
         Retrieve a document by its doc_id.
@@ -288,7 +354,7 @@ class DocStore:
             raise TypeError("doc_id must be a string")
 
         with self._connect() as conn:
-            cursor = conn.execute("SELECT * FROM documents WHERE doc_id = ?;", (doc_id,))
+            cursor = conn.execute(f"SELECT {self._DOC_COLS} FROM documents WHERE doc_id = ?;", (doc_id,))
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -308,7 +374,7 @@ class DocStore:
             raise TypeError("sha256 must be a string")
 
         with self._connect() as conn:
-            cursor = conn.execute("SELECT * FROM documents WHERE sha256 = ?;", (sha256,))
+            cursor = conn.execute(f"SELECT {self._DOC_COLS} FROM documents WHERE sha256 = ?;", (sha256,))
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -322,9 +388,20 @@ class DocStore:
             list[Document]: List of canonical Document instances.
         """
         with self._connect() as conn:
-            cursor = conn.execute("SELECT * FROM documents ORDER BY upload_time DESC;")
+            cursor = conn.execute(f"SELECT {self._DOC_COLS} FROM documents ORDER BY upload_time DESC;")
             rows = cursor.fetchall()
             return [Document.model_validate(dict(row)) for row in rows]
+
+    def update_document_status(self, doc_id: str, status: str) -> bool:
+        """Update the processing or indexed status of a document."""
+        if not isinstance(doc_id, str):
+            raise TypeError("doc_id must be a string")
+
+        def _write(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute("UPDATE documents SET status = ? WHERE doc_id = ?;", (status, doc_id))
+            return cursor.rowcount > 0
+
+        return self._execute_write(_write)
 
     def record_pages_batch(self, pages: list[Page]) -> None:
         """
@@ -692,7 +769,7 @@ class DocStore:
             summary_id, doc_id, sha256, profile, summary_text, page_references_json, created_at, model_version
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(sha256, profile) DO UPDATE SET
+        ON CONFLICT(sha256, profile, model_version) DO UPDATE SET
             summary_id = excluded.summary_id,
             doc_id = excluded.doc_id,
             summary_text = excluded.summary_text,
@@ -892,7 +969,7 @@ class DocStore:
 
     def purge_all(self) -> None:
         """
-        Purge all document records, chunks, pages, evidence elements, and cached summaries from SQLite.
+        Purge all document records, chunks, pages, evidence elements, cached summaries, and chat history from SQLite.
         """
 
         def _delete_all(conn: sqlite3.Connection) -> None:
@@ -900,6 +977,8 @@ class DocStore:
             conn.execute("DELETE FROM pages;")
             conn.execute("DELETE FROM evidence_elements;")
             conn.execute("DELETE FROM document_summaries;")
+            conn.execute("DELETE FROM chat_messages;")
+            conn.execute("DELETE FROM chat_sessions;")
             conn.execute("DELETE FROM documents;")
             conn.execute("DELETE FROM deletion_tombstones;")
 
@@ -907,6 +986,227 @@ class DocStore:
         # VACUUM cannot run inside a transaction, so it executes after the
         # delete transaction commits (and gets its own retry policy).
         self._execute_write(lambda conn: conn.execute("VACUUM;"))
+
+    # ------------------------------------------------------------------
+    # Chat Persistence (Migration v6)
+    # ------------------------------------------------------------------
+
+    def create_chat_session(
+        self,
+        session_id: str | None = None,
+        title: str = "New Chat",
+        scope: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a new chat conversation session."""
+        sid = session_id or f"session_{uuid.uuid4().hex}"
+        now_iso = datetime.now(UTC).isoformat()
+        scope_json = json.dumps(scope or {"type": "all", "doc_ids": []})
+
+        def _write(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (id, title, scope_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    scope_json = excluded.scope_json,
+                    updated_at = excluded.updated_at;
+                """,
+                (sid, title, scope_json, now_iso, now_iso),
+            )
+
+        self._execute_write(_write)
+        return {
+            "id": sid,
+            "title": title,
+            "scope": json.loads(scope_json),
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "messages": [],
+        }
+
+    def list_chat_sessions(self) -> list[dict[str, Any]]:
+        """List all chat sessions ordered by updated_at descending."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT id, title, scope_json, created_at, updated_at FROM chat_sessions ORDER BY updated_at DESC;"
+            )
+            rows = cursor.fetchall()
+            result = []
+            for r in rows:
+                scope = {}
+                try:
+                    scope = json.loads(r["scope_json"])
+                except Exception:
+                    pass
+                result.append(
+                    {
+                        "id": r["id"],
+                        "title": r["title"],
+                        "scope": scope,
+                        "created_at": r["created_at"],
+                        "updated_at": r["updated_at"],
+                    }
+                )
+            return result
+
+    def get_chat_session(self, session_id: str) -> dict[str, Any] | None:
+        """Get a single chat session including its messages."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT id, title, scope_json, created_at, updated_at FROM chat_sessions WHERE id = ?;",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+            scope = {}
+            try:
+                scope = json.loads(row["scope_json"])
+            except Exception:
+                pass
+
+            msg_cursor = conn.execute(
+                """
+                SELECT id, session_id, role, content, grounding_json, sources_json, usage_json, created_at
+                FROM chat_messages
+                WHERE session_id = ?
+                ORDER BY created_at ASC;
+                """,
+                (session_id,),
+            )
+            messages = []
+            for m in msg_cursor.fetchall():
+                grounding = json.loads(m["grounding_json"]) if m["grounding_json"] else None
+                sources = json.loads(m["sources_json"]) if m["sources_json"] else None
+                usage = json.loads(m["usage_json"]) if m["usage_json"] else None
+                messages.append(
+                    {
+                        "id": m["id"],
+                        "role": m["role"],
+                        "content": m["content"],
+                        "grounding": grounding,
+                        "sources": sources,
+                        "usage": usage,
+                        "created_at": m["created_at"],
+                    }
+                )
+
+            return {
+                "id": row["id"],
+                "title": row["title"],
+                "scope": scope,
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "messages": messages,
+            }
+
+    def update_chat_session(
+        self,
+        session_id: str,
+        title: str | None = None,
+        scope: dict[str, Any] | None = None,
+    ) -> bool:
+        """Update session title or document scope."""
+        now_iso = datetime.now(UTC).isoformat()
+
+        def _write(conn: sqlite3.Connection) -> bool:
+            updates = []
+            params = []
+            if title is not None:
+                updates.append("title = ?")
+                params.append(title)
+            if scope is not None:
+                updates.append("scope_json = ?")
+                params.append(json.dumps(scope))
+            if not updates:
+                return False
+            updates.append("updated_at = ?")
+            params.append(now_iso)
+            params.append(session_id)
+            cursor = conn.execute(
+                f"UPDATE chat_sessions SET {', '.join(updates)} WHERE id = ?;",
+                params,
+            )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_write)
+
+    def delete_chat_session(self, session_id: str) -> bool:
+        """Delete a chat session and its cascaded messages."""
+
+        def _write(conn: sqlite3.Connection) -> bool:
+            conn.execute("DELETE FROM chat_messages WHERE session_id = ?;", (session_id,))
+            cursor = conn.execute("DELETE FROM chat_sessions WHERE id = ?;", (session_id,))
+            return cursor.rowcount > 0
+
+        return self._execute_write(_write)
+
+    def append_chat_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        grounding: dict[str, Any] | None = None,
+        sources: list[dict[str, Any]] | None = None,
+        usage: dict[str, Any] | None = None,
+        message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Append a user or assistant message to a chat session."""
+        mid = message_id or f"msg_{uuid.uuid4().hex}"
+        now_iso = datetime.now(UTC).isoformat()
+        grounding_json = json.dumps(grounding) if grounding else None
+        sources_json = json.dumps(sources) if sources else None
+        usage_json = json.dumps(usage) if usage else None
+
+        def _write(conn: sqlite3.Connection) -> None:
+            # Ensure session exists
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO chat_sessions (id, title, scope_json, created_at, updated_at)
+                VALUES (?, 'New Chat', '{}', ?, ?);
+                """,
+                (session_id, now_iso, now_iso),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_messages (id, session_id, role, content, grounding_json, sources_json, usage_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (mid, session_id, role, content, grounding_json, sources_json, usage_json, now_iso),
+            )
+            conn.execute(
+                "UPDATE chat_sessions SET updated_at = ? WHERE id = ?;",
+                (now_iso, session_id),
+            )
+
+        self._execute_write(_write)
+        return {
+            "id": mid,
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "grounding": grounding,
+            "sources": sources,
+            "usage": usage,
+            "created_at": now_iso,
+        }
+
+    def recent_chat_turns(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent messages for context assembly."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT role, content FROM chat_messages
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?;
+                """,
+                (session_id, limit),
+            )
+            rows = cursor.fetchall()
+            return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
     def count_documents(self) -> int:
         """Count total persisted documents in SQLite.

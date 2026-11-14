@@ -962,6 +962,7 @@ class HybridRetriever:
         k: int = 5,
         k_rrf: int = DEFAULT_RRF_K,
         doc_id: str | list[str] | None = None,
+        explain: bool = False,
     ) -> RetrievalResult:
         """Execute hybrid search combining dense semantic and BM25 full-text search with RRF.
 
@@ -970,6 +971,7 @@ class HybridRetriever:
             k: Number of top evidence snippets to return.
             k_rrf: Reciprocal rank fusion smoothing parameter (default: 60).
             doc_id: Optional document ID or list of document IDs to restrict retrieval to.
+            explain: If True, computes rank comparison breakdown across dense, BM25, and RRF.
 
         Returns:
             Canonical immutable RetrievalResult containing ranked EvidenceSnippet items (RETR-03, RETR-04).
@@ -1006,14 +1008,20 @@ class HybridRetriever:
 
         # Build chunks lookup
         chunks_map: dict[str, dict[str, Any]] = {}
+        dense_score_map: dict[str, float] = {}
+        fts_score_map: dict[str, float] = {}
+
         for d in dense_matches:
             cid = d.get("chunk_id")
             if cid:
                 chunks_map[cid] = d
+                dense_score_map[cid] = float(d.get("score", 0.0))
         for d in fts_matches:
             cid = d.get("chunk_id")
-            if cid and cid not in chunks_map:
-                chunks_map[cid] = d
+            if cid:
+                if cid not in chunks_map:
+                    chunks_map[cid] = d
+                fts_score_map[cid] = float(d.get("score", 0.0))
 
         dense_ranks = [
             (d["chunk_id"], rank, float(d.get("score", 0.0)))
@@ -1039,6 +1047,8 @@ class HybridRetriever:
         top_candidates = rrf_fused[:k]
 
         snippets: list[EvidenceSnippet] = []
+        explanation_list: list[dict[str, Any]] = []
+
         for chunk_id, rrf_score, final_rank, d_rank, f_rank in top_candidates:
             raw = chunks_map.get(chunk_id, {})
             bbox = raw.get("bbox")
@@ -1046,6 +1056,9 @@ class HybridRetriever:
             if bbox is None and bbox_json:
                 with contextlib.suppress(Exception):
                     bbox = BBox.model_validate_json(bbox_json)
+
+            d_score = dense_score_map.get(chunk_id)
+            f_score = fts_score_map.get(chunk_id)
 
             snippet = EvidenceSnippet(
                 content=str(raw.get("content", "")),
@@ -1057,6 +1070,8 @@ class HybridRetriever:
                 rank=final_rank,
                 dense_rank=d_rank,
                 fts_rank=f_rank,
+                dense_score=d_score,
+                fts_score=f_score,
                 extraction=str(raw.get("extraction", "docling")),
                 char_start=raw.get("char_start"),
                 char_end=raw.get("char_end"),
@@ -1064,12 +1079,86 @@ class HybridRetriever:
             )
             snippets.append(snippet)
 
+            if explain:
+                explanation_list.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "doc_id": snippet.doc_id,
+                        "filename": snippet.filename,
+                        "page": snippet.page,
+                        "preview": snippet.content[:200],
+                        "dense_rank": d_rank,
+                        "dense_score": d_score,
+                        "fts_rank": f_rank,
+                        "fts_score": f_score,
+                        "rrf_score": float(rrf_score),
+                        "final_rank": final_rank,
+                    }
+                )
+
         return RetrievalResult(
             query=query,
             snippets=snippets,
             total_candidates=len(chunks_map),
             search_mode=search_mode,
+            explanation=explanation_list,
         )
+
+    def export_embeddings(
+        self, doc_ids: list[str] | None = None, limit: int = 5000
+    ) -> tuple[list[str], list[list[float]], list[dict[str, Any]]]:
+        """Export chunk vectors and metadata for 3D constellation visualization.
+
+        Returns:
+            Tuple of (chunk_ids, vectors_384d, metadata_dicts).
+        """
+        ids: list[str] = []
+        vectors: list[list[float]] = []
+        meta: list[dict[str, Any]] = []
+
+        if self._table is not None:
+            try:
+                query = self._table.search()
+                if doc_ids:
+                    allowed = ", ".join(f"'{d}'" for d in doc_ids)
+                    query = query.where(f"doc_id IN ({allowed})")
+                records = query.limit(limit).to_list()
+                for r in records:
+                    vec = r.get("vector")
+                    if vec is not None:
+                        cid = str(r.get("chunk_id", ""))
+                        ids.append(cid)
+                        vectors.append(list(vec))
+                        meta.append(
+                            {
+                                "chunk_id": cid,
+                                "doc_id": str(r.get("doc_id", "")),
+                                "filename": str(r.get("filename", "")),
+                                "page": int(r.get("page", 1)),
+                                "preview": str(r.get("content", ""))[:200],
+                            }
+                        )
+                return ids, vectors, meta
+            except Exception as err:
+                logger.warning("LanceDB vector export failed, trying in-memory fallback: %s", err)
+
+        for chunk_id, d in list(self._store.items())[:limit]:
+            if doc_ids and d.get("doc_id") not in doc_ids:
+                continue
+            vec = d.get("vector")
+            if vec is not None:
+                ids.append(chunk_id)
+                vectors.append(list(vec))
+                meta.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "doc_id": str(d.get("doc_id", "")),
+                        "filename": str(d.get("filename", "")),
+                        "page": int(d.get("page", 1)),
+                        "preview": str(d.get("content", ""))[:200],
+                    }
+                )
+        return ids, vectors, meta
 
     def search(self, question: str, k: int = 3) -> list[tuple[dict[str, Any], float]]:
         """Legacy-compatible search facade returning (doc_dict, score) tuples."""

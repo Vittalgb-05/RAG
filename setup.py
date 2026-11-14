@@ -55,13 +55,13 @@ REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_VENV_DIRNAME = ".venv"
 VENV_PATH_ENV = "RAG_VENV_PATH"
 
-# Modules that must import for the Streamlit UI to start. These are exactly the
-# top-level imports main.py resolves before it renders anything, so a miss here is
-# the "No module named streamlit" failure mode reported after llama-server starts.
+# Modules that must import for the RAG Assistant API server to start.
 REQUIRED_RUNTIME_MODULES: tuple[str, ...] = (
-    "streamlit",
+    "fastapi",
+    "uvicorn",
     "dotenv",
     "pydantic",
+    "pydantic_settings",
     "httpx",
     "langchain_text_splitters",
     "pypdf",
@@ -1250,7 +1250,6 @@ setup_kwargs: dict[str, Any] = dict(
     python_requires=">=3.11",
     packages=find_packages(),
     py_modules=[
-        "main",
         "setup",
         "start",
     ],
@@ -1258,6 +1257,7 @@ setup_kwargs: dict[str, Any] = dict(
     entry_points={
         "console_scripts": [
             "rag-assistant=start:main",
+            "rag-api=api.main:run",
             "rag-setup=setup:main_cli",
             "rag-download-models=setup:download_models_cli",
             "rag-setup-llama=setup:setup_llama_server_cli",

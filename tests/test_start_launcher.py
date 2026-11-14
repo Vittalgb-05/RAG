@@ -88,19 +88,18 @@ def test_check_llama_server_offline(capsys):
         assert "Local llama-server not detected" in captured.out
 
 
-def test_launch_streamlit_invokes_subprocess():
-    """Verify launch_streamlit constructs correct CLI invocation."""
+def test_launch_server_invokes_subprocess():
+    """Verify launch_server constructs correct CLI invocation."""
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
-        rc = start.launch_streamlit(port=8501, host="localhost", headless=True)
+        rc = start.launch_server(port=8000, host="127.0.0.1", headless=True)
         assert rc == 0
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert "streamlit" in cmd
-        assert "--server.port=8501" in cmd
-        assert "--server.address=localhost" in cmd
-        assert "--server.headless=true" in cmd
-        assert "--browser.gatherUsageStats=false" in cmd
+        assert "uvicorn" in cmd
+        assert "--port=8000" in cmd
+        assert "--host=127.0.0.1" in cmd
+        assert "api.main:app" in cmd
 
 
 def test_main_cli_args_parsing():
@@ -112,11 +111,11 @@ def test_main_cli_args_parsing():
         patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.check_llama_server"),
-        patch("start.launch_streamlit", return_value=0) as mock_launch,
+        patch("start.launch_server", return_value=0) as mock_launch,
     ):
         rc = start.main()
         assert rc == 0
-        mock_launch.assert_called_once_with(port=9000, host="127.0.0.1", headless=True)
+        mock_launch.assert_called_once_with(port=9000, host="127.0.0.1", reload=False, headless=True)
 
 
 def test_is_loopback_host_classification():
@@ -148,7 +147,7 @@ def test_main_refuses_non_loopback_bind_without_opt_in(monkeypatch):
         patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.check_llama_server"),
-        patch("start.launch_streamlit") as mock_launch,
+        patch("start.launch_server") as mock_launch,
     ):
         rc = start.main()
     assert rc == 2
@@ -165,11 +164,11 @@ def test_main_allows_non_loopback_with_flag(monkeypatch):
         patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.check_llama_server"),
-        patch("start.launch_streamlit", return_value=0) as mock_launch,
+        patch("start.launch_server", return_value=0) as mock_launch,
     ):
         rc = start.main()
     assert rc == 0
-    mock_launch.assert_called_once_with(port=8501, host="0.0.0.0", headless=False)
+    mock_launch.assert_called_once_with(port=8000, host="0.0.0.0", reload=False, headless=False)
 
 
 def test_main_allows_non_loopback_with_env(monkeypatch):
@@ -182,7 +181,7 @@ def test_main_allows_non_loopback_with_env(monkeypatch):
         patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.check_llama_server"),
-        patch("start.launch_streamlit", return_value=0) as mock_launch,
+        patch("start.launch_server", return_value=0) as mock_launch,
     ):
         rc = start.main()
     assert rc == 0
@@ -199,7 +198,7 @@ def test_main_cli_start_llama_lifecycle(tmp_path):
         patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.start_llama_server_process", return_value=mock_proc) as mock_start,
-        patch("start.launch_streamlit", return_value=0),
+        patch("start.launch_server", return_value=0),
     ):
         rc = start.main()
         assert rc == 0
@@ -276,7 +275,7 @@ def test_main_fails_fast_without_dependencies(monkeypatch):
         patch("start.check_python_version", return_value=True),
         patch("start.check_dependencies", return_value=False),
         patch("start.start_llama_server_process") as mock_start,
-        patch("start.launch_streamlit") as mock_launch,
+        patch("start.launch_server") as mock_launch,
     ):
         rc = start.main()
 

@@ -140,13 +140,18 @@ _LOCALIZED_SCOPE_PATTERN = re.compile(r"\b(?:section|page|chapter|figure|table|a
 # lexical support check will accept it because the employer text is real.
 _LOCATION_QUESTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\bwhere\s+(?:is|are|was|were)\b[^?.!]{0,80}?"
+        r"\bwhere(?:'s|\s+(?:is|are|was|were))\b[^?.!]{0,80}?"
         r"\b(?:right\s+now|currently|now|live|lives|living|reside|resides|residing|"
         r"based|located|location|address|city|hometown)\b"
     ),
     re.compile(r"\bwhere\s+(?:does|do|did)\b[^?.!]{0,80}?\b(?:live|reside|stay)\b"),
     re.compile(r"\b(?:current|present)\s+(?:location|city|address|residence|home)\b"),
-    re.compile(r"\b(?:what|which)\s+is\s+(?:his|her|their|the)\s+(?:current\s+)?(?:location|city|address)\b"),
+    re.compile(r"\b(?:what|which)(?:'s|\s+is)\s+(?:his|her|their|the)\s+(?:current\s+)?(?:location|city|address)\b"),
+)
+
+_EMPLOYMENT_CUES = re.compile(
+    r"\b(?:work|working|employed|job|role|company|interning|internship)\b",
+    re.IGNORECASE,
 )
 
 # Explicit residence/base cues. Bare city names (for example an institution's
@@ -163,6 +168,9 @@ _LOCATION_EVIDENCE_PATTERN = re.compile(
 def asks_for_current_location(query: str) -> bool:
     """Return True when the question asks for the subject's present location.
 
+    Questions about employment (work, working, employed, job, role, company)
+    are excluded from current residence checks so they do not falsely abstain (B10).
+
     Args:
         query: User prompt or contextualized search query.
 
@@ -172,6 +180,8 @@ def asks_for_current_location(query: str) -> bool:
     if not query or not query.strip():
         return False
     lowered = query.lower()
+    if _EMPLOYMENT_CUES.search(lowered):
+        return False
     return any(pattern.search(lowered) for pattern in _LOCATION_QUESTION_PATTERNS)
 
 

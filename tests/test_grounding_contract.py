@@ -23,7 +23,7 @@ from core.query_intent import (
     evidence_states_current_location,
     is_summary_request,
 )
-from ui.chat_controller import INSUFFICIENT_EVIDENCE_MESSAGE, ChatTurnPreparation, ChatTurnService
+from services.chat_turn import INSUFFICIENT_EVIDENCE_MESSAGE, ChatTurnPreparation, ChatTurnService
 
 RESUME_EXCERPT = (
     "Om Prakash is a software engineer with experience building retrieval systems, "
