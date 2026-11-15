@@ -49,7 +49,7 @@ async def sse_from_worker(
         while True:
             try:
                 item = await asyncio.wait_for(q.get(), timeout=10)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if await request.is_disconnected():
                     stop.set()
                     break

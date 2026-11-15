@@ -3,6 +3,7 @@
 from __future__ import annotations
 import numpy as np
 from fastapi import APIRouter, Depends, Query
+from starlette.concurrency import run_in_threadpool
 
 from api.container import AppContainer
 from api.deps import get_container
@@ -59,16 +60,20 @@ async def get_embeddings_constellation(
 ) -> EmbeddingsResponse:
     """Export 3D-projected chunk embeddings for the Document Constellation."""
     id_list = [d.strip() for d in doc_ids.split(",") if d.strip()] if doc_ids else None
-    c_ids, vectors, metadata = c.retriever.export_embeddings(doc_ids=id_list, limit=limit)
+    c_ids, vectors, metadata = await run_in_threadpool(
+        c.retriever.export_embeddings,
+        doc_ids=id_list,
+        limit=limit,
+    )
 
     if not vectors:
         return EmbeddingsResponse(points=[], dims=dims, total_points=0)
 
-    projected_coords, basis, mean = _project_to_3d(vectors)
+    projected_coords, basis, mean = await run_in_threadpool(_project_to_3d, vectors)
     _PROJECTION_CACHE["last"] = (basis, mean)
 
     points: list[EmbeddingPoint] = []
-    for cid, coord, meta in zip(c_ids, projected_coords, metadata):
+    for cid, coord, meta in zip(c_ids, projected_coords, metadata, strict=False):
         points.append(
             EmbeddingPoint(
                 chunk_id=cid,
@@ -90,7 +95,8 @@ async def trace_query(
 ) -> QueryTraceResponse:
     """Project query into constellation coordinates and trace retrieved chunk candidates."""
     # 1. Embed query
-    query_emb = c.embedding.get_embeddings([body.query])[0]
+    query_embs = await run_in_threadpool(c.embedding.get_embeddings, [body.query])
+    query_emb = query_embs[0]
 
     # 2. Project into current PCA space if available, or compute on the fly
     if "last" in _PROJECTION_CACHE:
@@ -104,7 +110,7 @@ async def trace_query(
         q_point = [0.0, 0.0, 0.0]
 
     # 3. Retrieve top candidates
-    res = c.retriever.search_hybrid(body.query, k=body.k, doc_id=body.doc_ids)
+    res = await run_in_threadpool(c.retriever.search_hybrid, body.query, k=body.k, doc_id=body.doc_ids)
     candidate_ids = [s.chunk_id for s in res.snippets if s.chunk_id]
 
     return QueryTraceResponse(

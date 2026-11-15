@@ -273,9 +273,7 @@ def test_direct_pdf_path_without_retriever_raises_error(mock_llama_provider) -> 
     """Verify calling ask_a_question_from_pdf_stream with unindexed pdf_path raises ValueError."""
     model = AiModel(provider=mock_llama_provider)
 
-    with pytest.raises(
-        ValueError, match="retrieval_result is required in ask_a_question_from_pdf_stream"
-    ):
+    with pytest.raises(ValueError, match="retrieval_result is required in ask_a_question_from_pdf_stream"):
         list(
             model.ask_a_question_from_pdf_stream(
                 pdf_path="some_file.pdf",

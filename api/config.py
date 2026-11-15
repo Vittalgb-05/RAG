@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     allow_non_loopback: bool = False
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     allowed_hosts: list[str] = ["localhost", "127.0.0.1", "[::1]"]
-    serve_frontend: bool = False          # mount frontend/out at "/" (static export)
+    serve_frontend: bool = True  # mount frontend/out at "/" (static export)
     persist_chat: bool = True
-    store_originals: bool = False         # needed for Evidence Lens page images
+    store_originals: bool = True  # needed for Evidence Lens page images
     data_dir: Path = Path("data")
     log_dir: Path = Path("data/logs")
     log_level: str = "INFO"

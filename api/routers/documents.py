@@ -1,9 +1,8 @@
 """Document management, ingestion, and page retrieval endpoints."""
 
 from __future__ import annotations
-import io
 from typing import Literal
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
 
 from api.container import AppContainer
 from api.deps import get_container
@@ -16,6 +15,7 @@ from api.schemas.documents import (
     DocumentUploadResponse,
 )
 from api.schemas.jobs import JobResponse
+from core.limits import MAX_FILE_MB
 from ingestion.upload_validation import validate_pdf_bytes
 
 router = APIRouter(tags=["documents"])
@@ -25,12 +25,12 @@ router = APIRouter(tags=["documents"])
 async def list_documents(c: AppContainer = Depends(get_container)) -> list[DocumentSummary]:
     """List all documents currently registered in the catalog."""
     docs = c.doc_store.list_documents()
+    evidence_counts = c.doc_store.get_evidence_counts_batch()
     summaries: list[DocumentSummary] = []
     for d in docs:
         has_vec = c.retriever.has_document(d.doc_id) if d.status == "indexed" else False
-        evidence = c.doc_store.get_evidence_for_doc(d.doc_id)
-        status_val: Literal["indexing", "indexed", "failed"] = (
-            d.status if d.status in ("indexing", "indexed", "failed") else "failed"
+        status_val: Literal["pending", "indexing", "indexed", "failed"] = (
+            d.status if d.status in ("pending", "indexing", "indexed", "failed") else "failed"
         )
         summaries.append(
             DocumentSummary(
@@ -40,7 +40,7 @@ async def list_documents(c: AppContainer = Depends(get_container)) -> list[Docum
                 status=status_val,
                 pages=d.num_pages,
                 chunks=d.num_chunks,
-                evidence_elements=len(evidence),
+                evidence_elements=evidence_counts.get(d.doc_id, 0),
                 size_bytes=d.size_bytes,
                 created_at=d.upload_time,
                 has_vectors=has_vec,
@@ -57,8 +57,21 @@ async def upload_documents(
     """Upload one or more PDF files and queue asynchronous ingestion jobs."""
     job_items: list[DocumentJobItem] = []
 
+    max_bytes = MAX_FILE_MB * 1024 * 1024
     for file_obj in files:
+        if file_obj.size is not None and file_obj.size > max_bytes:
+            raise ApiError(
+                status_code=413,
+                code="upload_too_large",
+                detail=f"File '{file_obj.filename}' exceeds maximum allowed size of {MAX_FILE_MB}MB.",
+            )
         raw_bytes = await file_obj.read()
+        if len(raw_bytes) > max_bytes:
+            raise ApiError(
+                status_code=413,
+                code="upload_too_large",
+                detail=f"File '{file_obj.filename}' exceeds maximum allowed size of {MAX_FILE_MB}MB.",
+            )
         filename = file_obj.filename or "uploaded.pdf"
 
         # Validate headers, size, and page limits synchronously
@@ -66,25 +79,41 @@ async def upload_documents(
         doc_id = validated.doc_id
         sha256 = validated.sha256
 
+        # Persist original PDF for Evidence Lens page image rendering
+        if c.settings.store_originals:
+            orig_dir = c.settings.data_dir / "originals"
+            orig_dir.mkdir(parents=True, exist_ok=True)
+            orig_file = orig_dir / f"{sha256}.pdf"
+            if not orig_file.exists():
+                orig_file.write_bytes(raw_bytes)
+
         # Fast deduplication check
         existing = c.doc_store.get_by_sha(sha256)
-        if existing and existing.status == "indexed" and existing.num_chunks > 0:
-            if c.retriever.has_document(existing.doc_id):
-                job_items.append(
-                    DocumentJobItem(
-                        job_id="",
-                        filename=existing.filename or filename,
-                        doc_id=existing.doc_id,
-                        duplicate=True,
-                    )
+        if (
+            existing
+            and existing.status == "indexed"
+            and existing.num_chunks > 0
+            and c.retriever.has_document(existing.doc_id)
+        ):
+            job_items.append(
+                DocumentJobItem(
+                    job_id="",
+                    filename=existing.filename or filename,
+                    doc_id=existing.doc_id,
+                    duplicate=True,
                 )
-                continue
+            )
+            continue
 
-        # Submit background ingestion job
-        def run_ingest(handle: JobHandle, raw: bytes = raw_bytes, name: str = filename):
+        # Submit background ingestion job with VLM provider if vision is supported
+        caps = c.ai_model.get_capabilities()
+        vlm = c.ai_model if getattr(caps, "supports_vision", False) else None
+
+        def run_ingest(handle: JobHandle, raw: bytes = raw_bytes, name: str = filename, vlm_provider=vlm):
             return c.ingestion.ingest_pdf(
                 raw,
                 name,
+                vlm_provider=vlm_provider,
                 progress_callback=lambda stage, pct: handle.progress(stage, pct),
             )
 
@@ -144,11 +173,17 @@ async def get_document_page(
             code="not_found",
             detail=f"Page {page_num} for document '{doc_id}' not found.",
         )
+    text = getattr(page, "page_text", None) or ""
+    if not text:
+        chunks = [ch for ch in c.doc_store.get_chunks_for_doc(doc_id) if ch.page == page_num]
+        if chunks:
+            text = "\n\n".join(ch.content for ch in chunks)
     return {
         "doc_id": doc_id,
-        "page_number": page.page_number,
-        "text": page.text,
-        "char_count": page.char_count,
+        "page_num": page.page_num,
+        "page_number": page.page_num,
+        "text": text,
+        "char_count": page.char_count or len(text),
     }
 
 
@@ -184,19 +219,19 @@ async def get_page_image(
     try:
         import fitz  # PyMuPDF
 
-        doc_fitz = fitz.open(orig_path)
-        if page_num < 1 or page_num > len(doc_fitz):
-            raise ApiError(status_code=404, code="not_found", detail=f"Page {page_num} out of bounds.")
-        page = doc_fitz.load_page(page_num - 1)
-        pix = page.get_pixmap(dpi=150)
-        img_bytes = pix.tobytes("png")
-        return Response(content=img_bytes, media_type="image/png")
+        with fitz.open(orig_path) as doc_fitz:
+            if page_num < 1 or page_num > len(doc_fitz):
+                raise ApiError(status_code=404, code="not_found", detail=f"Page {page_num} out of bounds.")
+            page = doc_fitz.load_page(page_num - 1)
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            return Response(content=img_bytes, media_type="image/png")
     except ImportError:
         raise ApiError(
             status_code=501,
             code="unsupported_operation",
             detail="PyMuPDF is required to render page images.",
-        )
+        ) from None
 
 
 @router.post("/documents/{doc_id}/reindex", response_model=JobResponse)

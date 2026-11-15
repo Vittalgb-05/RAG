@@ -136,7 +136,6 @@ def hydrate_startup_state(
     if not indexed_docs:
         return report
 
-    owns_retriever = retriever is None
     if retriever is None:
         try:
             retriever = HybridRetriever()

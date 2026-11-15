@@ -7,7 +7,7 @@ with Windows file locks and Streamlit execution loops.
 """
 
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 import json
 import logging
@@ -200,6 +200,12 @@ SCHEMA_V7_DDL = [
     """,
 ]
 
+SCHEMA_V8_DDL = [
+    """
+    ALTER TABLE pages ADD COLUMN page_text TEXT;
+    """,
+]
+
 MIGRATIONS: dict[int, list[str]] = {
     1: SCHEMA_V1_DDL,
     2: SCHEMA_V2_DDL,
@@ -208,6 +214,7 @@ MIGRATIONS: dict[int, list[str]] = {
     5: SCHEMA_V5_DDL,
     6: SCHEMA_V6_DDL,
     7: SCHEMA_V7_DDL,
+    8: SCHEMA_V8_DDL,
 }
 
 
@@ -301,7 +308,12 @@ class DocStore:
         for version, statements in sorted(MIGRATIONS.items()):
             if current_version < version:
                 for statement in statements:
-                    conn.execute(statement)
+                    try:
+                        conn.execute(statement)
+                    except sqlite3.OperationalError as op_err:
+                        if "duplicate column name" in str(op_err).lower():
+                            continue
+                        raise
                 conn.execute(f"PRAGMA user_version = {version};")
                 logger.info("Applied migration v%d to %s", version, self.db_path.name)
 
@@ -413,13 +425,14 @@ class DocStore:
         if not pages:
             return
         query = """
-        INSERT INTO pages (doc_id, page_num, status, char_count, error, num_chunks)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO pages (doc_id, page_num, status, char_count, error, num_chunks, page_text)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(doc_id, page_num) DO UPDATE SET
             status = excluded.status,
             char_count = excluded.char_count,
             error = excluded.error,
-            num_chunks = excluded.num_chunks;
+            num_chunks = excluded.num_chunks,
+            page_text = excluded.page_text;
         """
         params = []
         for p in pages:
@@ -433,6 +446,7 @@ class DocStore:
                     p.char_count,
                     p.error,
                     p.num_chunks,
+                    getattr(p, "page_text", None),
                 )
             )
         self._execute_write(lambda conn: conn.executemany(query, params))
@@ -482,7 +496,10 @@ class DocStore:
             doc.upload_time,
             doc.num_chunks,
         )
-        page_params = [(p.doc_id, p.page_num, p.status, p.char_count, p.error, p.num_chunks) for p in pages]
+        page_params = [
+            (p.doc_id, p.page_num, p.status, p.char_count, p.error, p.num_chunks, getattr(p, "page_text", None))
+            for p in pages
+        ]
         chunk_params = [
             (
                 c.chunk_id,
@@ -535,13 +552,14 @@ class DocStore:
                 if page_params:
                     conn.executemany(
                         """
-                        INSERT INTO pages (doc_id, page_num, status, char_count, error, num_chunks)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO pages (doc_id, page_num, status, char_count, error, num_chunks, page_text)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(doc_id, page_num) DO UPDATE SET
                             status = excluded.status,
                             char_count = excluded.char_count,
                             error = excluded.error,
-                            num_chunks = excluded.num_chunks;
+                            num_chunks = excluded.num_chunks,
+                            page_text = excluded.page_text;
                         """,
                         page_params,
                     )
@@ -609,6 +627,26 @@ class DocStore:
                 (doc_id,),
             )
             return [Page.model_validate(dict(row)) for row in cursor.fetchall()]
+
+    def get_page(self, doc_id: str, page_num: int) -> Page | None:
+        """Retrieve a specific page record by document ID and page number.
+
+        Args:
+            doc_id: Unique document identifier.
+            page_num: 1-indexed page number.
+
+        Returns:
+            Page instance or None if not found.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM pages WHERE doc_id = ? AND page_num = ?;",
+                (doc_id, page_num),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return Page.model_validate(dict(row))
 
     def record_chunks(self, chunks: list[Chunk]) -> None:
         """
@@ -753,6 +791,12 @@ class DocStore:
                 results.append(EvidenceElement.model_validate(row_dict))
             return results
 
+    def get_evidence_counts_batch(self) -> dict[str, int]:
+        """Return a mapping of doc_id to number of evidence elements in a single query."""
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT doc_id, COUNT(*) FROM evidence_elements GROUP BY doc_id;")
+            return {row[0]: row[1] for row in cursor.fetchall()}
+
     def save_summary(self, summary: SummaryResult) -> None:
         """
         Insert or update a synthesized document summary in SQLite.
@@ -810,17 +854,21 @@ class DocStore:
             raise TypeError("sha256 and profile must be strings")
 
         with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT * FROM document_summaries WHERE sha256 = ? AND profile = ?;",
-                (sha256, profile),
-            )
+            if model_version is not None:
+                cursor = conn.execute(
+                    "SELECT * FROM document_summaries WHERE sha256 = ? AND profile = ? AND model_version = ? ORDER BY created_at DESC;",
+                    (sha256, profile, model_version),
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT * FROM document_summaries WHERE sha256 = ? AND profile = ? ORDER BY created_at DESC;",
+                    (sha256, profile),
+                )
             row = cursor.fetchone()
             if row is None:
                 return None
             row_dict = dict(row)
             if model_version is not None and row_dict.get("model_version") != model_version:
-                # A missing/empty legacy version is stale too: serving it would bypass
-                # invalidation after a model or chunking-config change.
                 return None
             try:
                 page_refs = json.loads(row_dict.get("page_references_json") or "[]")
@@ -1035,10 +1083,8 @@ class DocStore:
             result = []
             for r in rows:
                 scope = {}
-                try:
+                with suppress(Exception):
                     scope = json.loads(r["scope_json"])
-                except Exception:
-                    pass
                 result.append(
                     {
                         "id": r["id"],
@@ -1062,10 +1108,8 @@ class DocStore:
                 return None
 
             scope = {}
-            try:
+            with suppress(Exception):
                 scope = json.loads(row["scope_json"])
-            except Exception:
-                pass
 
             msg_cursor = conn.execute(
                 """

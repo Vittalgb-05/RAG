@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import datetime
+import logging
 import os
 import psutil
 from typing import Literal
@@ -36,8 +37,8 @@ def _build_health(c: AppContainer) -> Health:
     model = c.cloud.model if c.cloud.enabled else (getattr(c.ai_model, "model_path", None) or "local")
 
     try:
-        p_status = c.ai_model.get_provider_status()
-        is_healthy = getattr(p_status, "healthy", True)
+        p_status = c.ai_model.check_health()
+        is_healthy = getattr(p_status, "status", "") == "healthy"
         msg = getattr(p_status, "message", "OK")
     except Exception as exc:
         is_healthy = False
@@ -172,6 +173,15 @@ async def get_diagnostics(c: AppContainer = Depends(get_container)) -> Diagnosti
     )
 
 
+_LEVEL_WEIGHTS: dict[str, int] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+
 @router.get("/diagnostics/logs", response_model=list[LogEntry])
 async def get_logs(
     lines: int = Query(default=100, ge=1, le=1000),
@@ -179,21 +189,29 @@ async def get_logs(
     c: AppContainer = Depends(get_container),
 ) -> list[LogEntry]:
     """Retrieve redacted recent application logs."""
-    log_file = c.settings.log_dir / "rag.log"
+    log_file = c.settings.log_dir / "app.log"
+    if not log_file.exists():
+        log_file = c.settings.log_dir / "rag.log"
     if not log_file.exists():
         return []
 
+    min_weight = _LEVEL_WEIGHTS.get(level.strip().upper(), logging.INFO)
     entries: list[LogEntry] = []
     try:
-        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+        with open(log_file, encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
-        for raw_line in all_lines[-lines:]:
-            clean_line = redact_text(raw_line.strip())
+        for raw_line in all_lines:
+            line_str = raw_line.strip()
+            if not line_str:
+                continue
+            clean_line = redact_text(line_str)
             parts = clean_line.split(" ", 2)
             ts = parts[0] if parts else ""
-            lvl = parts[1] if len(parts) > 1 else level
+            lvl = parts[1].upper() if len(parts) > 1 else "INFO"
             msg = parts[2] if len(parts) > 2 else clean_line
-            entries.append(LogEntry(timestamp=ts, level=lvl, message=msg))
+            entry_weight = _LEVEL_WEIGHTS.get(lvl, logging.INFO)
+            if entry_weight >= min_weight:
+                entries.append(LogEntry(timestamp=ts, level=lvl, message=msg))
     except Exception:
         pass
-    return entries
+    return entries[-lines:]

@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from api.main import app
+from api.main import app  # noqa: E402
 
 
 def export_openapi(check: bool = False) -> int:
@@ -34,7 +34,9 @@ def export_openapi(check: bool = False) -> int:
             return 1
         existing = out_file.read_text(encoding="utf-8")
         if existing.strip() != content.strip():
-            sys.stderr.write("[ERROR] openapi.json is out of date with current FastAPI routers. Run 'python -m api.export_openapi'.\n")
+            sys.stderr.write(
+                "[ERROR] openapi.json is out of date with current FastAPI routers. Run 'python -m api.export_openapi'.\n"
+            )
             return 1
         sys.stdout.write("[OK] openapi.json is up to date.\n")
         sys.stdout.flush()

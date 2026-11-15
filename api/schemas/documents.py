@@ -11,7 +11,7 @@ class DocumentSummary(BaseModel):
     doc_id: str
     filename: str
     sha256: str
-    status: Literal["indexing", "indexed", "failed"]
+    status: Literal["pending", "indexing", "indexed", "failed"]
     pages: int
     chunks: int
     evidence_elements: int = 0

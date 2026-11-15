@@ -10,7 +10,6 @@ from api.deps import get_container
 
 @pytest.fixture
 def client_with_mock_container(tmp_path):
-    from core.doc_store import DocStore
     from api.config import Settings
     from api.container import AppContainer
 

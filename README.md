@@ -3,11 +3,12 @@
 > A production-grade, local-first Retrieval-Augmented Generation (RAG) assistant with visual document intelligence, hybrid dense-lexical search, grounded page-level citations, and optional consent-gated cloud inference.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Next.js](https://img.shields.io/badge/Next.js%2016-Frontend-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org/)
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-Local_Inference-000000?logo=cplusplus)](https://github.com/ggerganov/llama.cpp)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Hybrid_Vector_DB-black)](https://lancedb.com/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-479%20Passed-success)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-Passing-success)](tests/)
 
 ---
 
@@ -28,11 +29,12 @@
 
 ```mermaid
 flowchart TD
-    subgraph UI ["Streamlit Interface (main.py)"]
-        Chat["Grounded Chat and Citations"]
+    subgraph UI ["Next.js 16 Web Console & FastAPI Server"]
+        Chat["Grounded Chat & Citations"]
         Summary["Multi-Profile Summarizer"]
-        Telemetry["Resource Telemetry"]
+        Telemetry["Resource Telemetry & SSE"]
         CloudToggle["Cloud Mode Consent Gate"]
+        Constellation["Document Constellation 3D"]
     end
 
     subgraph Ingestion ["Multimodal Ingestion Pipeline"]
@@ -73,37 +75,27 @@ flowchart TD
 
 ```
 RAG/
-├── start.py                    # One-command launcher (pre-flight checks + Streamlit)
-├── setup.py                    # Standard setuptools package and CLI entry points
-├── main.py                     # Streamlit frontend and application lifecycle
-├── local_llm.py                # Unified AiModel interface and provider orchestration
-├── model_provider.py           # BaseModelProvider interface and data contracts
-├── llama_cpp_provider.py       # Local llama-server client with loopback SSRF guards
-├── litellm_provider.py         # LiteLLM cloud adapter with consent gating
-├── groq_provider.py            # Dedicated Groq cloud adapter
-├── doc_store.py                # SQLite document metadata, chunk, and summary storage
-├── docling_reader.py           # Docling structured layout and table extraction
-├── visual_analyzer.py          # Visual element detection, cropping, and VLM analysis
-├── ocr_fallback.py             # Conditional RapidOCR with per-page fault isolation
-├── hybrid_retriever.py         # LanceDB + BM25 Reciprocal Rank Fusion retrieval engine
-├── summarizer.py               # Single-pass and map-reduce multi-profile summarizer
-├── citation_validator.py       # Citation precision validation and abstention detection
-├── prompt_budget.py            # Context window allocation and XML boundary security
-├── resource_telemetry.py       # GPU VRAM, process RAM, and latency profiling
-├── local_embedding.py          # Sentence-transformers wrapper with shared process cache
-├── vector_index.py             # Pure-stdlib in-memory cosine fallback index
-├── pdf_reader.py               # Memory-safe pypdf reader with chunking
-├── upload_validation.py        # PDF magic-byte, size, and page-count validation
-├── models.py                   # Pydantic v2 canonical schemas (Document, Page, Chunk, ...)
-├── scripts/
-│   ├── benchmark_multimodal.py # Multimodal evaluation (tables, diagrams, abstention)
-│   ├── benchmark_baseline.py   # Baseline retrieval performance suite
-│   └── profile_resources.py    # VRAM and RAM hardware profiling harness
-├── docs/
-│   ├── RUNBOOK.md              # Installation, model acquisition, operations guide
-│   ├── EVALUATION.md           # Benchmarks, VRAM profile, and test metrics
-│   └── LOCAL_INFERENCE.md      # llama-server tuning reference for 4 GB GPUs
-├── tests/                      # Automated pytest suite (389 tests, 100% passing)
+├── start.py                    # One-command launcher (pre-flight checks + FastAPI/Uvicorn)
+├── setup.py                    # Setuptools package and automated setup CLI
+├── api/                        # FastAPI application layer
+│   ├── main.py                 # Lifespan, middlewares, static mount, entry points
+│   ├── config.py               # Pydantic BaseSettings (RAG_* environment vars)
+│   ├── container.py            # AppContainer dependency injection singleton
+│   ├── streaming.py            # SSE formatting and chunking utilities
+│   ├── errors.py               # RFC 9457 Problem Details error handlers
+│   ├── routers/                # Endpoints (chat, documents, search, summaries, system, visualize)
+│   └── schemas/                # Pydantic v2 API contracts
+├── frontend/                   # Next.js 16 / React 19 AMOLED web console
+│   ├── app/                    # App Router pages (chat, library, summarize, telemetry, visualize)
+│   ├── components/             # Reusable UI components & React Three Fiber scenes
+│   └── lib/                    # API client, SSE hooks, types
+├── core/                       # Core domain models, DocStore SQLite, logging, redaction
+├── ingestion/                  # Docling parsing, RapidOCR fallback, visual cropping
+├── retrieval/                  # LanceDB hybrid retriever, embeddings, fallback index
+├── providers/                  # Local llama.cpp, LiteLLM cloud, Groq providers
+├── services/                   # Multi-profile summarizer, grounding, background lifecycle
+├── docs/                       # Operational runbook, evaluation report, local inference guide
+├── tests/                      # Automated pytest suite
 ├── requirements.txt            # Production runtime dependencies
 ├── requirements-lock.txt       # Deterministic deployment lockfile (Python 3.11)
 └── requirements-test.txt       # Test-only dependencies
@@ -213,7 +205,7 @@ Qwen3.5 enables reasoning tokens by default; the app's local provider sends `rea
 
 **Option A: One-command launcher (recommended).**
 
-`start.py` performs environment pre-flight checks, verifies directory structures, probes `llama-server` connectivity, and boots Streamlit:
+`start.py` performs environment pre-flight checks, verifies directory structures, probes `llama-server` connectivity, and boots the FastAPI backend + static Next.js frontend:
 
 ```bash
 python start.py
@@ -221,17 +213,23 @@ python start.py
 
 Options:
 
-- `python start.py --port 8501 --host localhost`
+- `python start.py --port 8000 --host 127.0.0.1`
 - `python start.py --headless`
 - `python start.py --llama-host 127.0.0.1 --llama-port 8080`
+- `python start.py --start-llama`
 
-**Option B: Direct Streamlit run.**
+**Option B: Independent development servers.**
 
 ```bash
-streamlit run main.py
+# Terminal 1: FastAPI Backend
+uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+
+# Terminal 2: Next.js Frontend (dev server)
+cd frontend
+pnpm dev
 ```
 
-Open `http://localhost:8501` in your browser.
+Open `http://localhost:3000` (development) or `http://127.0.0.1:8000` (production unified build) in your browser.
 
 ---
 
@@ -248,9 +246,9 @@ Open `http://localhost:8501` in your browser.
 
 ### Deployment Notes
 
-- **Single-user workstation target.** Streamlit and `llama-server` are designed to run on the same machine (`127.0.0.1`).
-- **Session-scoped routing.** Provider choice, Cloud Mode, and consent flags live in per-session Streamlit state. One session enabling Cloud Mode never affects concurrent sessions.
-- **Hosted deployment caveat.** A Streamlit instance hosted on an external platform cannot reach a `llama-server` on your laptop's loopback. Remote deployment requires dedicated model endpoints or private-network tunneling (for example, WireGuard or Tailscale).
+- **Single-user workstation target.** The FastAPI backend and `llama-server` are designed to run on the same machine (`127.0.0.1`).
+- **Session-scoped routing.** Provider choice, Cloud Mode, and consent flags live in client session state / API requests. One client enabling Cloud Mode never affects concurrent sessions.
+- **Hosted deployment caveat.** An API instance hosted on an external platform cannot reach a `llama-server` on your laptop's loopback. Remote deployment requires dedicated model endpoints or private-network tunneling (for example, WireGuard or Tailscale).
 
 ---
 

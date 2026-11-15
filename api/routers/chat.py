@@ -1,8 +1,7 @@
 """Chat session management and Server-Sent Event completion streaming."""
 
 from __future__ import annotations
-import datetime
-import json
+import logging
 import threading
 import time
 import uuid
@@ -25,6 +24,8 @@ from api.schemas.common import Grounding, Scope, Source
 from api.streaming import Emit, SSE_HEADERS, sse_from_worker
 from core.limits import MAX_CHAT_TURNS
 from core.sanitizer import sanitize_markdown_for_local
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -64,6 +65,69 @@ def _format_sources(snippets: list[Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _format_grounding(raw: Any, session_scope: Scope | None = None) -> Grounding | None:
+    """Map internal GroundingReport or serialized dict to the Grounding schema."""
+    if not raw:
+        return None
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump()
+    if not isinstance(raw, dict):
+        return None
+
+    verdict = raw.get("status") or raw.get("verification_status") or "unverified"
+    status_map = {
+        "grounded": "grounded",
+        "partial": "partial",
+        "unsupported": "unsupported",
+        "rank_only": "rank_only",
+        "abstained": "abstained",
+        "ungrounded": "unsupported",
+        "invalid_citation": "unsupported",
+    }
+    status = status_map.get(verdict, "unverified")
+
+    caption = raw.get("caption") or raw.get("verification_reason") or ""
+    if not caption:
+        if status == "grounded":
+            caption = "All claims verified against cited sources"
+        elif status == "partial":
+            caption = "Partially supported by retrieved context"
+        elif status == "unsupported":
+            caption = "Statements could not be verified in sources"
+        elif status == "rank_only":
+            caption = "Citations present but sentence verification was rank-only"
+        elif status == "abstained":
+            caption = "Model abstained due to insufficient evidence"
+        else:
+            caption = "Grounding unverified"
+
+    citations = raw.get("citations") or raw.get("cited_ranks") or []
+    unsupported_ranks = raw.get("unsupported_ranks") or []
+    uncited_claim_count = raw.get("uncited_claim_count") if "uncited_claim_count" in raw else len(unsupported_ranks)
+
+    raw_scope = raw.get("scope")
+    if isinstance(raw_scope, dict):
+        scope = Scope(**raw_scope)
+    elif session_scope:
+        scope = session_scope
+    else:
+        doc_ids = raw.get("document_ids") or []
+        scope = Scope(type="documents" if doc_ids else "all", doc_ids=doc_ids)
+
+    return Grounding(
+        status=status,
+        caption=caption,
+        citations=citations,
+        uncited_claim_count=uncited_claim_count,
+        incomplete_context=bool(raw.get("incomplete_context", False)),
+        truncation_warning=bool(raw.get("truncation_warning", False) or raw.get("incomplete_context", False)),
+        request_id=raw.get("request_id") or uuid.uuid4().hex[:12],
+        scope=scope,
+        sentence_support=raw.get("sentence_support"),
+        injection_flags=raw.get("injection_flags"),
+    )
+
+
 def _finish(
     emit: Emit,
     c: AppContainer,
@@ -87,9 +151,11 @@ def _finish(
 
     user_msg_id = f"msg_{uuid.uuid4().hex[:16]}"
     asst_msg_id = f"msg_{uuid.uuid4().hex[:16]}"
-    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
 
-    grounding_data = assistant_turn.get("grounding_report") or {}
+    session = c.doc_store.get_chat_session(session_id)
+    session_scope = Scope(**(session.get("scope") or {})) if session else Scope()
+    grounding_obj = _format_grounding(assistant_turn.get("grounding_report"), session_scope)
+    grounding_data = grounding_obj.model_dump() if grounding_obj else None
     sources_data = _format_sources(assistant_turn.get("snippets") or [])
 
     if c.settings.persist_chat:
@@ -109,8 +175,10 @@ def _finish(
                 sources=sources_data,
                 usage=usage,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(
+                "Failed to append chat message to doc_store for session %s: %s", session_id, exc, exc_info=True
+            )
 
     emit(
         "final",
@@ -166,10 +234,11 @@ async def get_session(session_id: str, c: AppContainer = Depends(get_container))
     if not session:
         raise ApiError(status_code=404, code="not_found", detail=f"Chat session '{session_id}' not found.")
 
+    session_scope = Scope(**session.get("scope", {"type": "all", "doc_ids": []}))
     messages = []
     for m in session.get("messages", []):
         g_raw = m.get("grounding")
-        grounding = Grounding(**g_raw) if g_raw else None
+        grounding = _format_grounding(g_raw, session_scope) if g_raw else None
         s_raw = m.get("sources")
         sources = [Source(**s) for s in s_raw] if s_raw else None
         u_raw = m.get("usage")

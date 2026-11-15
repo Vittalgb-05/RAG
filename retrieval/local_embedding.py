@@ -45,8 +45,14 @@ def get_shared_sentence_transformer(model_name: str = "all-MiniLM-L6-v2", device
     cache_key = (model_name, device)
     if cache_key not in _MODEL_CACHE:
         logger.info("Loading SentenceTransformer model %s on %s...", model_name, device)
-        _MODEL_CACHE[cache_key] = SentenceTransformer(model_name, device=device)
-        logger.info("SentenceTransformer model %s ready and cached in process memory.", model_name)
+        model = SentenceTransformer(model_name, device=device)
+        model.max_seq_length = EMBEDDING_MAX_LENGTH
+        _MODEL_CACHE[cache_key] = model
+        logger.info(
+            "SentenceTransformer model %s ready (max_seq_length=%d) and cached in process memory.",
+            model_name,
+            EMBEDDING_MAX_LENGTH,
+        )
     return _MODEL_CACHE[cache_key]
 
 

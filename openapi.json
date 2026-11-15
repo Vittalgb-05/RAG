@@ -2027,6 +2027,7 @@
           "status": {
             "type": "string",
             "enum": [
+              "pending",
               "indexing",
               "indexed",
               "failed"

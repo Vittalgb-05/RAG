@@ -1,10 +1,12 @@
 """Document lifecycle service managing atomic deletion, purge, and reindexing."""
 
 from __future__ import annotations
+import contextlib
 import logging
 from pathlib import Path
 import shutil
 import sqlite3
+from typing import Any
 
 from core.doc_store import DocStore
 from retrieval.hybrid_retriever import HybridRetriever
@@ -170,8 +172,6 @@ class LifecycleService:
             return True
         except (OSError, RuntimeError, ValueError) as err:
             logger.error("Failed to reindex document %s: %s", doc_id, err, exc_info=True)
-            try:
+            with contextlib.suppress(Exception):
                 self.doc_store.update_document_status(doc_id, "failed")
-            except Exception:
-                pass
             return False

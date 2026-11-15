@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from fastapi import APIRouter, Depends
+from starlette.concurrency import run_in_threadpool
 
 from api.container import AppContainer
 from api.deps import get_container
@@ -18,7 +19,8 @@ async def search_endpoint(
 ) -> SearchResponse:
     """Execute hybrid retrieval across documents with optional X-Ray ranking breakdown."""
     doc_filter = body.doc_ids if body.doc_ids else None
-    result = c.retriever.search_hybrid(
+    result = await run_in_threadpool(
+        c.retriever.search_hybrid,
         query=body.query,
         k=body.k,
         doc_id=doc_filter,

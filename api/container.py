@@ -3,7 +3,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
-from pathlib import Path
 import threading
 from typing import TYPE_CHECKING
 

@@ -127,8 +127,8 @@ class Document(BaseModel):
     sha256: str = Field(..., pattern=r"^[0-9a-f]{64}$", description="64-character lowercase SHA-256 hex digest.")
     size_bytes: int = Field(..., ge=0, description="Total file size in bytes.")
     num_pages: int = Field(..., ge=0, description="Total number of pages in the PDF.")
-    status: Literal["pending", "indexed", "failed"] = Field(
-        default="pending", description="Processing status: 'pending', 'indexed', or 'failed'."
+    status: Literal["pending", "indexing", "indexed", "failed"] = Field(
+        default="pending", description="Processing status: 'pending', 'indexing', 'indexed', or 'failed'."
     )
     upload_time: str = Field(..., description="ISO 8601 UTC timestamp of upload.")
     num_chunks: int = Field(default=0, ge=0, description="Total number of indexable chunks generated.")

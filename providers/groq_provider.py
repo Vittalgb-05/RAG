@@ -4,11 +4,14 @@ Used as optional cloud inference fallback when configured with a GROQ_API_KEY.
 """
 
 from collections.abc import Generator
+import logging
 import os
 from typing import Any
 
 from core.redaction import redact_text
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
+
+logger = logging.getLogger(__name__)
 
 try:
     from groq import Groq

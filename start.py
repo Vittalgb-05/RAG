@@ -365,24 +365,29 @@ def launch_server(port: int = 8000, host: str = "127.0.0.1", reload: bool = Fals
         cmd.append("--reload")
 
     print(f"\n🚀 Launching RAG Assistant on http://{host}:{port} ...")
+    env = os.environ.copy()
     if (REPO_ROOT / "frontend" / "out").exists():
+        env["RAG_SERVE_FRONTEND"] = "1"
         print("   ✓ Static frontend build detected in frontend/out (serving unified web app)")
     else:
         print("   ℹ️ Static frontend build not found; serving API endpoints only.")
     print("   Press Ctrl+C to stop the server.\n")
 
     if not headless and is_loopback_host(host):
+
         def _open_browser():
             time.sleep(1.2)
             import webbrowser
+
             with contextlib.suppress(Exception):
                 webbrowser.open(f"http://{host}:{port}")
 
         import threading
+
         threading.Thread(target=_open_browser, daemon=True).start()
 
     try:
-        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
         return proc.returncode
     except KeyboardInterrupt:
         print("\n\n🛑 Application stopped by user.")
@@ -469,4 +474,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

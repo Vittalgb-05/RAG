@@ -97,28 +97,28 @@ async def create_summary(
             )
 
     pages = c.doc_store.get_pages_for_doc(body.doc_id)
-    if not pages:
+    chunks = c.doc_store.get_chunks_for_doc(body.doc_id)
+    if not pages and not chunks:
         raise ApiError(
             status_code=422,
             code="empty_document",
-            detail=f"Document '{body.doc_id}' has no stored page text to summarize.",
+            detail=f"Document '{body.doc_id}' has no stored page text or chunks to summarize.",
         )
-
-    full_text = "\n\n".join(p.text for p in pages if p.text)
 
     def run_summary(handle: JobHandle):
         handle.progress("summarize", 10, "Starting document summary...")
-        summarizer = Summarizer(doc_store=c.doc_store, ai_model=c.ai_model)
+        summarizer = Summarizer(provider=c.ai_model.provider, doc_store=c.doc_store)
         result = summarizer.summarize_document(
-            raw_text=full_text,
             doc_id=body.doc_id,
             sha256=doc.sha256,
+            pages=pages,
+            chunks=chunks,
             profile=body.profile,
             length=body.length,
             force_refresh=body.force,
-            progress=lambda done, total, msg: handle.progress(
+            progress=lambda stage, pct, msg: handle.progress(
                 "summarize",
-                round((done / max(1, total)) * 100, 1),
+                round(pct, 1),
                 msg,
             ),
             cancel=handle.cancelled,

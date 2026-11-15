@@ -1,7 +1,6 @@
 """Unit tests for startup state hydration from SQLite and LanceDB."""
 
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import MagicMock
 
 from core.doc_store import DocStore
 from core.models import Chunk, Document

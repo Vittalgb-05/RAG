@@ -1120,8 +1120,9 @@ class HybridRetriever:
             try:
                 query = self._table.search()
                 if doc_ids:
-                    allowed = ", ".join(f"'{d}'" for d in doc_ids)
-                    query = query.where(f"doc_id IN ({allowed})")
+                    clause = _doc_filter_clause(doc_ids)
+                    if clause:
+                        query = query.where(clause)
                 records = query.limit(limit).to_list()
                 for r in records:
                     vec = r.get("vector")
@@ -1142,11 +1143,15 @@ class HybridRetriever:
             except Exception as err:
                 logger.warning("LanceDB vector export failed, trying in-memory fallback: %s", err)
 
-        for chunk_id, d in list(self._store.items())[:limit]:
+        self._load_fallback_store()
+        for i, d in enumerate(self._fallback_store.documents):
+            if len(ids) >= limit:
+                break
             if doc_ids and d.get("doc_id") not in doc_ids:
                 continue
-            vec = d.get("vector")
-            if vec is not None:
+            if i < len(self._fallback_store.vectors):
+                vec = self._fallback_store.vectors[i]
+                chunk_id = str(d.get("chunk_id", f"chunk_{i}"))
                 ids.append(chunk_id)
                 vectors.append(list(vec))
                 meta.append(

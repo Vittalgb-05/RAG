@@ -9,10 +9,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 import logging
 import threading
-import warnings
 
 from core.citation_validator import CitationVerificationResult, validate_citations
-from core.query_intent import contextualize_query, resolve_retrieval, whole_document_char_budget
 from retrieval.hybrid_retriever import HybridRetriever
 from providers.llama_cpp_provider import LlamaCppProvider
 from retrieval.local_embedding import LocalEmbedding
@@ -220,9 +218,7 @@ class AiModel:
         old = self.provider
         if cloud:
             if new_provider is None or not getattr(new_provider, "user_consented", False):
-                raise PermissionError(
-                    "Cloud mode requires an explicitly consented provider (user_consented=True)."
-                )
+                raise PermissionError("Cloud mode requires an explicitly consented provider (user_consented=True).")
             self.provider = new_provider
             self.cloud_provider = new_provider
             self.cloud_mode = True

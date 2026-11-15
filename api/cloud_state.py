@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pydantic import SecretStr
 
 from providers.litellm_provider import LiteLLMProvider
@@ -35,7 +35,7 @@ class CloudState:
         with self._lock:
             self._ledger.append(
                 {
-                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ts": datetime.now(UTC).isoformat(),
                     "provider": provider,
                     "model": model,
                     "doc_filenames": doc_filenames,

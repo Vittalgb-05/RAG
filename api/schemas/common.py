@@ -35,9 +35,7 @@ class Source(BaseModel):
     bbox: list[float] | None = None
 
 
-GroundingStatus = Literal[
-    "grounded", "partial", "unsupported", "rank_only", "abstained", "unverified"
-]
+GroundingStatus = Literal["grounded", "partial", "unsupported", "rank_only", "abstained", "unverified"]
 
 
 class Grounding(BaseModel):

@@ -123,7 +123,6 @@ CLAUDE.md.graphicle-bak
 .github/copilot-instructions.md
 .zcode/
 **/.zcode/
-AGENTS.md
 scripts/changeset/
 scripts/lib/
 scripts/*.cjs

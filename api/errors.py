@@ -1,6 +1,7 @@
 """RFC 9457 Problem Details for HTTP APIs error handling with redaction."""
 
 from __future__ import annotations
+import logging
 import uuid
 from typing import Any
 from fastapi import FastAPI, Request
@@ -9,6 +10,8 @@ from fastapi.responses import JSONResponse
 
 from core.redaction import redact_text
 from retrieval.hybrid_retriever import VectorIndexError
+
+logger = logging.getLogger(__name__)
 
 
 class ApiError(Exception):
@@ -127,7 +130,7 @@ def problem_from_exc(exc: Exception, request_id: str | None = None) -> dict[str,
         500,
         "internal",
         "Internal server error",
-        str(exc),
+        "An internal server error occurred.",
         request_id,
     )
 
@@ -171,5 +174,6 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
         req_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+        logger.exception("Unhandled server exception [request_id=%s]: %s", req_id, exc)
         payload = problem_from_exc(exc, req_id)
         return JSONResponse(status_code=payload["status"], content=payload, media_type="application/problem+json")

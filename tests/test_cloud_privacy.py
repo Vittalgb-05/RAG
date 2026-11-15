@@ -236,4 +236,3 @@ def test_per_provider_api_key_lookup(monkeypatch) -> None:
     # 3. Env fallback allowed when RAG_ALLOW_ENV_KEYS=1
     monkeypatch.setenv("RAG_ALLOW_ENV_KEYS", "1")
     assert _resolve_api_key_for_model("groq/llama-3.3-70b-versatile") == "env-key"
-

@@ -24,28 +24,16 @@ from api.routers import (
     visualize,
 )
 
+from core.logging_setup import configure_logging
+
 logger = logging.getLogger(__name__)
-
-
-def configure_logging(log_dir: Path, level: str = "INFO") -> None:
-    """Ensure logging directory exists and configure file handler."""
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / "rag.log"
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(log_file, encoding="utf-8"),
-        ],
-    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup, singletons, and background hydration."""
     s = Settings()
-    configure_logging(log_dir=s.log_dir, level=s.log_level)
+    configure_logging(level=s.log_level, log_dir=s.log_dir)
     app.state.container = AppContainer.build(s)
     app.state.container.start_background_hydration()
     yield
