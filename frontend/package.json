@@ -36,9 +36,5 @@
     "tailwindcss": "^4.0.9",
     "typescript": "^5.8.2"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "sharp"
-    ]
-  }
+  "packageManager": "pnpm@12.18.0"
 }
