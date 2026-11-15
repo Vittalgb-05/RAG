@@ -104,7 +104,6 @@ def test_ai_model_non_crashing_when_offline(monkeypatch) -> None:
     Resolves Risk #1 in CONCERNS.md with structured HealthStatus feedback.
     """
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
 
     unreachable_status = HealthStatus(
         status="unreachable",
@@ -172,7 +171,6 @@ def test_ai_model_local_mode_does_not_silently_fallback_to_groq(monkeypatch) -> 
 def test_groq_provider_capabilities_and_health_unconfigured(monkeypatch) -> None:
     """Verify GroqProvider reports unreachable when GROQ_API_KEY is not configured."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
 
     provider = GroqProvider()
     caps = provider.get_capabilities()
@@ -188,7 +186,6 @@ def test_groq_provider_capabilities_and_health_unconfigured(monkeypatch) -> None
 def test_ai_model_dynamic_self_healing(monkeypatch) -> None:
     """Verify AiModel recovers dynamically when llama-server becomes healthy after initial failure."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
 
     server_running = False
 

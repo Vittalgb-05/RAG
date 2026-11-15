@@ -115,6 +115,7 @@ def test_doc_store_migration_is_logged_not_printed(tmp_path, capsys):
 
 def test_get_module_paths_torch_classes_warning_is_suppressed():
     """End-to-end: after suppression, scanning torch.classes emits no watcher warning."""
+    pytest.importorskip("streamlit")
     import torch
     from streamlit.watcher.local_sources_watcher import get_module_paths
 
