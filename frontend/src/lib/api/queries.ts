@@ -1,14 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "./client";
 import {
-  MOCK_DOCUMENTS,
-  MOCK_HEALTH,
-  MOCK_JOBS,
-  MOCK_SESSIONS,
-  MOCK_SETTINGS,
-  MOCK_TELEMETRY,
-} from "./mocks";
-import {
   AppSettings,
   ChatSession,
   ConstellationData,
@@ -20,12 +12,10 @@ import {
   Telemetry,
 } from "./types";
 
-const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "1";
-
 export function useHealth() {
   return useQuery<Health>({
     queryKey: ["health"],
-    queryFn: () => (USE_MOCKS ? Promise.resolve(MOCK_HEALTH) : apiClient<Health>("/health")),
+    queryFn: () => apiClient<Health>("/health"),
     refetchInterval: 10000,
   });
 }
@@ -33,7 +23,7 @@ export function useHealth() {
 export function useTelemetry() {
   return useQuery<Telemetry>({
     queryKey: ["telemetry"],
-    queryFn: () => (USE_MOCKS ? Promise.resolve(MOCK_TELEMETRY) : apiClient<Telemetry>("/telemetry")),
+    queryFn: () => apiClient<Telemetry>("/telemetry"),
     refetchInterval: 3000,
   });
 }
@@ -41,7 +31,7 @@ export function useTelemetry() {
 export function useSettings() {
   return useQuery<AppSettings>({
     queryKey: ["settings"],
-    queryFn: () => (USE_MOCKS ? Promise.resolve(MOCK_SETTINGS) : apiClient<AppSettings>("/settings")),
+    queryFn: () => apiClient<AppSettings>("/settings"),
   });
 }
 
@@ -83,8 +73,7 @@ export function useRevokeCloudCredentials() {
 export function useDocuments() {
   return useQuery<DocumentSummary[]>({
     queryKey: ["documents"],
-    queryFn: () =>
-      USE_MOCKS ? Promise.resolve(MOCK_DOCUMENTS) : apiClient<DocumentSummary[]>("/documents"),
+    queryFn: () => apiClient<DocumentSummary[]>("/documents"),
     refetchInterval: 5000,
   });
 }
@@ -127,7 +116,7 @@ export function usePurgeDocuments() {
 export function useJobs() {
   return useQuery<Job[]>({
     queryKey: ["jobs"],
-    queryFn: () => (USE_MOCKS ? Promise.resolve(MOCK_JOBS) : apiClient<Job[]>("/jobs")),
+    queryFn: () => apiClient<Job[]>("/jobs"),
     refetchInterval: 2000,
   });
 }
@@ -148,21 +137,14 @@ export function useCancelJob() {
 export function useChatSessions() {
   return useQuery<ChatSession[]>({
     queryKey: ["chat_sessions"],
-    queryFn: () =>
-      USE_MOCKS ? Promise.resolve(MOCK_SESSIONS) : apiClient<ChatSession[]>("/chat/sessions"),
+    queryFn: () => apiClient<ChatSession[]>("/chat/sessions"),
   });
 }
 
 export function useChatSession(sessionId: string | null) {
   return useQuery<ChatSession>({
     queryKey: ["chat_sessions", sessionId],
-    queryFn: () => {
-      if (USE_MOCKS) {
-        const found = MOCK_SESSIONS.find((s) => s.id === sessionId);
-        return found ? Promise.resolve(found) : Promise.reject(new Error("Not found"));
-      }
-      return apiClient<ChatSession>(`/chat/sessions/${sessionId}`);
-    },
+    queryFn: () => apiClient<ChatSession>(`/chat/sessions/${sessionId}`),
     enabled: Boolean(sessionId),
   });
 }
@@ -234,7 +216,7 @@ export function useConstellation(docIds?: string[]) {
 export function usePrivacyLedger() {
   return useQuery<{ entries: any[] }>({
     queryKey: ["privacy", "ledger"],
-    queryFn: () => (USE_MOCKS ? Promise.resolve({ entries: [] }) : apiClient<{ entries: any[] }>("/privacy/ledger")),
+    queryFn: () => apiClient<{ entries: any[] }>("/privacy/ledger"),
     refetchInterval: 10000,
   });
 }

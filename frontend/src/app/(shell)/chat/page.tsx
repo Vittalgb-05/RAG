@@ -31,7 +31,6 @@ import {
   useDocuments,
 } from "@/lib/api/queries";
 import { streamSSE } from "@/lib/api/sse";
-import { streamMockMessage } from "@/lib/api/mocks";
 import { apiClient } from "@/lib/api/client";
 import { ChatMessage, Source } from "@/lib/api/types";
 import { MessageBubble } from "@/components/chat/message-bubble";
@@ -41,7 +40,6 @@ import { SpotlightCard } from "@/components/motion/spotlight-card";
 import { Magnet } from "@/components/motion/magnet";
 import { cn } from "@/lib/utils";
 
-const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "1";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 const SUGGESTED_PROMPTS = [
@@ -208,23 +206,7 @@ function ChatContent() {
   const handleExportChat = async () => {
     if (!activeSessionId) return;
     try {
-      if (USE_MOCKS) {
-        const lines = [`# ${activeSession?.title || "Conversation"}\n\n`];
-        for (const m of activeSession?.messages || []) {
-          lines.push(`**${m.role === "user" ? "User" : "Assistant"}**:\n${m.content}\n\n`);
-        }
-        const blob = new Blob([lines.join("")], { type: "text/markdown" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `chat-${activeSessionId}.md`;
-        a.click();
-        URL.revokeObjectURL(url);
-        toast.success("Chat exported to markdown");
-        return;
-      }
-
-      const res = await fetch(`${API_URL}/api/v1/chat/sessions/${activeSessionId}/export?format=md`);
+      const res = await fetch(`${API_URL.replace(/\/$/, "")}/api/v1/chat/sessions/${activeSessionId}/export?format=md`);
       if (!res.ok) throw new Error("Failed to export chat");
       const text = await res.text();
       const blob = new Blob([text], { type: "text/markdown" });
@@ -296,7 +278,7 @@ function ChatContent() {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
-    if (activeSessionId && !USE_MOCKS) {
+    if (activeSessionId) {
       try {
         await apiClient(`/chat/sessions/${activeSessionId}/stop`, { method: "POST" });
       } catch {}
@@ -355,26 +337,22 @@ function ChatContent() {
       }
     };
 
-    if (USE_MOCKS) {
-      streamMockMessage(onEvent, abortControllerRef.current.signal);
-    } else {
-      try {
-        await streamSSE({
-          url: `/chat/sessions/${targetSessionId}/messages/stream`,
-          body: { content: promptToSend, scope: scopeObj },
-          signal: abortControllerRef.current.signal,
-          onEvent,
-          onError: (err) => {
-            setIsStreaming(false);
-            setCurrentPhase(null);
-            toast.error(err.message || "Streaming connection failed");
-          },
-        });
-      } catch (err: any) {
-        setIsStreaming(false);
-        setCurrentPhase(null);
-        toast.error(err.message || "Failed to start answer generation");
-      }
+    try {
+      await streamSSE({
+        url: `/chat/sessions/${targetSessionId}/messages/stream`,
+        body: { content: promptToSend, scope: scopeObj },
+        signal: abortControllerRef.current.signal,
+        onEvent,
+        onError: (err) => {
+          setIsStreaming(false);
+          setCurrentPhase(null);
+          toast.error(err.message || "Streaming connection failed");
+        },
+      });
+    } catch (err: any) {
+      setIsStreaming(false);
+      setCurrentPhase(null);
+      toast.error(err.message || "Failed to start answer generation");
     }
   };
 

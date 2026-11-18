@@ -18,7 +18,8 @@ export function EvidenceLensModal({ source, onClose }: EvidenceLensModalProps) {
 
   const docId = source.doc_id;
   const bbox = source.bbox; // [x0, y0, x1, y1] normalized coords
-  const imageUrl = `/api/v1/documents/${docId}/pages/${currentPage}/image`;
+  const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+  const imageUrl = `${baseUrl.replace(/\/$/, "")}/api/v1/documents/${docId}/pages/${currentPage}/image`;
 
   return (
     <AnimatePresence>
