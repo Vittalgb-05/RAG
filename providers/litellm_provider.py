@@ -11,6 +11,7 @@ import logging
 import os
 from typing import Any
 
+from core.redaction import redact_text
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
@@ -42,50 +43,24 @@ VISION_SUPPORTED_PREFIXES = (
 
 
 def _resolve_api_key_for_model(model_name: str, explicit_key: str | None = None) -> str | None:
-    """Resolve API key from explicit arg, session state, Streamlit secrets, or env vars."""
+    """Resolve API key strictly from constructor argument, or env if RAG_ALLOW_ENV_KEYS=1 (C7)."""
     if explicit_key:
         return explicit_key
 
-    provider_prefix = model_name.split("/")[0].lower() if "/" in model_name else "groq"
-    env_var_map = {
-        "groq": "GROQ_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "anthropic": "ANTHROPIC_API_KEY",
-    }
-    target_var = env_var_map.get(provider_prefix, f"{provider_prefix.upper()}_API_KEY")
+    if os.environ.get("RAG_ALLOW_ENV_KEYS") == "1":
+        provider_prefix = model_name.split("/")[0].lower() if "/" in model_name else "groq"
+        env_var_map = {
+            "groq": "GROQ_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+        }
+        target_var = env_var_map.get(provider_prefix, f"{provider_prefix.upper()}_API_KEY")
+        key = os.environ.get(target_var)
+        if key:
+            logger.info("Resolved %s API key from environment variable %s", provider_prefix, target_var)
+            return key
 
-    # 1. Try Streamlit session_state if running inside Streamlit
-    try:
-        import streamlit as st
-
-        if hasattr(st, "session_state"):
-            session_state = st.session_state
-            keys_dict = getattr(session_state, "cloud_api_keys", None)
-            if keys_dict is None and hasattr(session_state, "get"):
-                keys_dict = session_state.get("cloud_api_keys")
-
-            if isinstance(keys_dict, dict):
-                val = keys_dict.get(provider_prefix)
-                if val:
-                    return str(val)
-    except Exception:
-        pass
-
-    # 2. Try Streamlit secrets
-    try:
-        import streamlit as st
-
-        if hasattr(st, "secrets"):
-            try:
-                if target_var in st.secrets:
-                    return str(st.secrets[target_var])
-            except (KeyError, FileNotFoundError, AttributeError):
-                pass
-    except Exception:
-        pass
-
-    # 3. Try os.environ
-    return os.environ.get(target_var)
+    return None
 
 
 def _detect_image_mime_type(image_bytes: bytes) -> str:
@@ -133,11 +108,9 @@ class LiteLLMProvider(BaseModelProvider):
         self.user_consented = bool(consented)
 
     def _scrub_credentials(self, text: str) -> str:
-        """Scrub raw API key from error strings or logs."""
-        resolved_key = self.api_key or _resolve_api_key_for_model(self.model_name)
-        if resolved_key and resolved_key in text:
-            return text.replace(resolved_key, "[REDACTED_API_KEY]")
-        return text
+        """Scrub API keys and token patterns from error strings or logs."""
+        resolved_key = self.api_key or _resolve_api_key_for_model(self.model_name) or ""
+        return redact_text(text, extra_secrets=(resolved_key,))
 
     def _assert_consent(self) -> None:
         """Verify user consent prior to transmitting document data."""

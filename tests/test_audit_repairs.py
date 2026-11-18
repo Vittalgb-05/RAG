@@ -17,7 +17,7 @@ from core.summarizer import MAX_BATCH_TOKENS, Summarizer
 from ingestion.docling_reader import DoclingReader
 from providers.groq_provider import GroqProvider
 from retrieval.hybrid_retriever import DEFAULT_DB_URI, HybridRetriever, VectorIndexError
-from ui.sanitizer import sanitize_markdown_for_local
+from core.sanitizer import sanitize_markdown_for_local
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -207,21 +207,23 @@ def test_long_markdown_table_split_repeats_header() -> None:
 
 
 @pytest.mark.skipif(
-    not (REPO_ROOT / "models" / "qwen3-vl-2b-instruct-q4_k_m.gguf").exists(),
+    not (REPO_ROOT / "models" / "qwen3.5-2b-q4_k_m.gguf").exists(),
     reason="local GGUF artifacts are not installed",
 )
 def test_local_model_identity_matches_declared_architecture() -> None:
-    """The shipped files must be a compatible Qwen-VL LM/projector pair."""
-    lm_path = REPO_ROOT / "models" / "qwen3-vl-2b-instruct-q4_k_m.gguf"
-    proj_path = REPO_ROOT / "models" / "mmproj-f16.gguf"
+    """The shipped files must be a compatible Qwen3.5-2B LM/projector pair."""
+    lm_path = REPO_ROOT / "models" / "qwen3.5-2b-q4_k_m.gguf"
+    proj_path = REPO_ROOT / "models" / "qwen3.5-2b-mmproj-f16.gguf"
     lm = read_gguf_metadata(lm_path)
-    assert lm.architecture == "qwen2vl"
+    assert lm.architecture == "qwen35"
+    proj = read_gguf_metadata(proj_path)
+    assert proj.metadata.get("clip.projector_type") == "qwen3vl_merger"
     assert verify_local_model_pair(lm_path, proj_path) == []
 
 
 def test_lifecycle_delete_aborts_before_sqlite_on_vector_failure(tmp_path) -> None:
     """A vector deletion failure must leave the SQLite row intact for retry."""
-    from ui.lifecycle_service import LifecycleService
+    from services.lifecycle import LifecycleService
 
     class FailingRetriever:
         def delete_document(self, doc_id):
@@ -239,7 +241,7 @@ def test_lifecycle_delete_aborts_before_sqlite_on_vector_failure(tmp_path) -> No
 
 def test_purge_reports_vector_failure_but_clears_session_state(tmp_path) -> None:
     """Purge surfaces tier failures instead of reporting a silent success."""
-    from ui.lifecycle_service import LifecycleService
+    from services.lifecycle import LifecycleService
 
     class FailingRetriever:
         def purge_all(self):

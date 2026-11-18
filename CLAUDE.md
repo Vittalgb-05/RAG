@@ -21,13 +21,13 @@ A local-first, privacy-respecting PDF intelligence application that delivers fas
 ### Languages & Runtime
 - **Python 3.11+** — all application code (`main.py`, `start.py`, `setup.py`, domain modules, `ui/` package, and `tests/`).
 - **CPython 3.11** runtime on Windows 11 and Linux (`Dockerfile` based on `python:3.11-slim-bookworm`).
-- **Streamlit 1.42.0** — web presentation server running on port `8501`.
-- **llama.cpp / llama-server `b11718`** — native local inference server bound to `127.0.0.1:8080`.
+- **Streamlit 1.66.1** — web presentation server running on port `8501`.
+- **llama.cpp / llama-server `v0.8.0` (build `b11960`)** — native local inference server bound to `127.0.0.1:8080`; the detected version is read from the binary by `core/runtime_info.py`.
 - **pip** with universal lockfile `requirements-lock.txt` (uv-compiled for Python 3.11); editable packaging via `setup.py`.
 - **No JavaScript, TypeScript, or CSS files** — UI is pure Python with dynamic AMOLED CSS injection in `ui/theme.py` and local monochrome SVGs in `assets/icons/`.
 
 ### Core Frameworks & Libraries
-- **Streamlit 1.42.0** (`main.py`, `ui/*`) — Chatbot-first AMOLED user interface, workspace router, session hydration.
+- **Streamlit 1.66.1** (`main.py`, `ui/*`) — Chatbot-first AMOLED user interface, workspace router, session hydration.
 - **Pydantic 2.11.9** (`models.py`, `model_provider.py`) — Canonical data schemas (`Document`, `Page`, `Chunk`, `EvidenceElement`, `RetrievalResult`, `SummaryResult`, `ProviderCapabilities`, `HealthStatus`).
 - **LanceDB 0.40.0 & PyArrow 23.0.1** (`hybrid_retriever.py`) — Persistent vector index and native Full-Text Search (FTS) with Reciprocal Rank Fusion (RRF).
 - **SQLite (sqlite3 WAL mode)** (`doc_store.py`) — Relational metadata store at `data/documents.db` with schema migrations v1–v4, indexing `chunks(doc_id)` and `pages(doc_id)`, plus physical `VACUUM` on purge.
@@ -173,3 +173,9 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 > Profile not yet configured. Run `/gsd:profile-user` to generate your developer profile.
 > This section is managed by `generate-claude-profile` -- do not edit manually.
 <!-- GSD:profile-end -->
+
+<!-- graphicle:start (added by graphicle setup; graphicle disconnect removes it) -->
+## Graphicle
+Use the `graphicle` MCP server for where or how something works, for questions across files or history, and before changing unfamiliar code: `recall_project` or `query_graph` with the question, then `get_node` and `get_neighbors` for one symbol; answers cite file and lines. For an exact identifier you already know, grep is enough.
+Without the server, run `graphicle context "<question>"` in a terminal.
+<!-- graphicle:end -->

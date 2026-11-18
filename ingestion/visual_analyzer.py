@@ -232,7 +232,7 @@ class VisualAnalyzer:
         Args:
             pdf_bytes: Raw PDF bytes.
             doc_id: Canonical document identifier.
-            provider: Optional BaseModelProvider instance (e.g. Qwen2-VL 2B or Groq fallback).
+            provider: Optional BaseModelProvider instance (e.g. local Qwen3.5-2B or Groq fallback).
             prompt: Targeted vision query prompt.
             max_regions: Maximum visual regions to analyze to preserve memory/time budgets (default 20).
             progress_callback: Optional callable (current, total, label) -> None for UI progress updates.

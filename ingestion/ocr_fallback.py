@@ -502,10 +502,27 @@ def apply_conditional_ocr(
                     break
 
             while pending:
-                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                remaining = max(0.0, deadline - time.monotonic())
+                if remaining <= 0.0:
+                    time_budget_exceeded = True
+                    for task in pending.values():
+                        page_results[task[0]] = (task[1], task[2])
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                done, not_done = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+                if not done:
+                    time_budget_exceeded = True
+                    for task in pending.values():
+                        page_results[task[0]] = (task[1], task[2])
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
                 for future in done:
                     task = pending.pop(future)
-                    page_results[task[0]] = future.result()
+                    try:
+                        page_results[task[0]] = future.result()
+                    except Exception as err:
+                        logger.warning("OCR worker error: %s", err)
+                        page_results[task[0]] = (task[1], task[2])
                     _submit_next()
 
             # Any candidate that never started because the deadline elapsed keeps

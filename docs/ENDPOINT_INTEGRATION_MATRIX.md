@@ -40,7 +40,8 @@ There are **no** FastAPI/Flask routes, no upload endpoint, and no citation API. 
 | Interface | Direction | Address | Code | Evidence |
 |---|---|---|---|---|
 | llama-server process launch | `start.py` → OS | `127.0.0.1:8080`, `-ngl 28`, `-c 4096` | `start.py`, `providers/llama_cpp_provider.py` | `test_start_launcher` (11) |
-| Artifact identity check | launcher → GGUF files | local paths | `core/model_identity.py` | passes on installed Qwen2-VL pair |
+| Artifact identity check | launcher → GGUF files | local paths | `core/model_identity.py` | passes on installed Qwen3.5 pair (`qwen35` + `qwen3vl_merger`) |
+| Runtime version detection | launcher/app → `llama-server --version` | local subprocess | `core/runtime_info.py` | `test_runtime_info` |
 | GPU serialization | any inference caller → `InferenceGate` | in-process | `core/local_llm.py::InferenceGate` | `test_concurrency_lock` (8) |
 | Hardware telemetry | app → `nvidia-smi`/psutil | local subprocess/OS | `core/resource_telemetry.py` | `test_resource_telemetry` (14) |
 
@@ -54,12 +55,12 @@ curl.exe http://127.0.0.1:8080/v1/models
 # 2. Blocking generation
 curl.exe -X POST http://127.0.0.1:8080/v1/chat/completions `
   -H "Content-Type: application/json" `
-  -d '{\"model\":\"qwen2-vl-2b\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK\"}],\"max_tokens\":16}'
+  -d '{\"model\":\"qwen3.5-2b\",\"reasoning_effort\":\"none\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK\"}],\"max_tokens\":16}'
 
 # 3. Streaming generation (expect SSE data: frames)
 curl.exe -N -X POST http://127.0.0.1:8080/v1/chat/completions `
   -H "Content-Type: application/json" `
-  -d '{\"model\":\"qwen2-vl-2b\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Count to 3\"}]}'
+  -d '{\"model\":\"qwen3.5-2b\",\"reasoning_effort\":\"none\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Count to 3\"}]}'
 
 # 4. App-level flow
 python start.py --start-llama

@@ -1,129 +1,114 @@
-<!-- refreshed: 2026-10-22 -->
+---
+last_mapped_commit: 6acbd27a48dddbd1b122277663ebab42d9f83f7e
+last_mapped_at: 2026-11-14
+---
 # Technology Stack
 
-**Analysis Date:** 2026-10-22
+**Analysis Date:** 2026-11-14
 
 ## Languages
 
 **Primary:**
-- **Python 3.11+** — all application code: `main.py`, `start.py`, `setup.py`, `core/`, `ingestion/`, `retrieval/`, `providers/`, `ui/`, `tests/`, and `scripts/`. Declared by `python_requires=">=3.11"` in `setup.py`, `target-version = "py311"` in `pyproject.toml`, and a runtime guard in `start.py` (`sys.version_info < (3, 11)`).
-- **CPython 3.11** is the reference runtime: `Dockerfile` uses `python:3.11-slim-bookworm`, `.github/workflows/ci.yml` uses `python-version: "3.11"`, and `.devcontainer/devcontainer.json` uses `mcr.microsoft.com/devcontainers/python:1-3.11-bookworm`.
-- **Python 3.12** is listed as a supported classifier in `setup.py`; Python 3.13+ switches OCR packages via environment markers (`rapidocr>=3.0.0` instead of `rapidocr-onnxruntime`).
+- Python 3.11+ - Backend API, ingestion/retrieval pipeline, model providers, launcher and setup tooling. Minimum declared in `pyproject.toml` (`target-version = "py311"`), `setup.py` (`python_requires=">=3.11"`), and CI (`.github/workflows/ci.yml`, Python 3.11). `requirements.txt` has Python-version markers covering 3.13 (`rapidocr>=3.0.0; python_version >= "3.13"`).
+- TypeScript 5.8 / TSX - All frontend code under `frontend/src/`.
 
 **Secondary:**
-- No JavaScript, TypeScript, or standalone CSS. The UI is server-rendered Streamlit Python; AMOLED CSS is injected from a Python string in `ui/theme.py`, and icons are local SVGs under `assets/icons/`.
-- Declarative/config formats only: `Dockerfile`, `docker-compose.yml`, `pyproject.toml`, `.streamlit/config.toml`, `.github/workflows/ci.yml`, `.devcontainer/devcontainer.json`, Markdown docs in `docs/`.
+- SQL (SQLite dialect) - Schema DDL and queries in `core/doc_store.py`.
+- Dockerfile / YAML - Deployment and CI configuration in `Dockerfile`, `docker-compose.yml`, `.github/workflows/ci.yml`.
 
 ## Runtime
 
 **Environment:**
-- **CPython 3.11** on Windows 11 / PowerShell (primary), Linux x86_64, or Docker.
-- **Streamlit** web server on port `8501` (`main.py`, `start.py`, `Dockerfile`, `.streamlit/config.toml`).
-- **llama.cpp / llama-server** native inference server (`b11718`) on `127.0.0.1:8080`, launched manually or by `python start.py --start-llama` (`start.py`, `setup.py`).
-- **NVIDIA GPU** optional but required for the target VRAM profile; CPU-only operation degrades telemetry and local inference capability gracefully.
+- Python 3.11-slim-bookworm container runtime (`Dockerfile` line 12); host development on Windows 11 or Linux x86_64 (`docs/RUNBOOK.md`).
+- Node.js 20 (build stage only) for the Next.js static export (`Dockerfile` lines 2-9).
+- ASGI server: Uvicorn (`uvicorn==0.54.0` in `requirements-lock.txt`; declared `uvicorn[standard]>=0.30.0` in `requirements.txt`).
+- Concurrency model: single-process FastAPI app with `threading` workers for inference/jobs (`api/streaming.py`, `api/jobs.py`, `core/local_llm.py::InferenceGate`), plus a daemon hydration thread (`api/container.py`).
 
 **Package Manager:**
-- **pip** for direct/editable installs; **uv** in CI (`astral-sh/setup-uv@v5`) and for lockfile generation.
-- **Lockfile: canonical and required for reproducible installs — `requirements-lock.txt`** (645 lines), generated with:
-  `uv pip compile --universal --python-version 3.11 requirements.txt -o requirements-lock.txt` (header of `requirements-lock.txt:1-2`). CI and `README.md` install from it.
-- **`requirements.txt`** is the human-maintained runtime declaration. It mixes exact pins (`streamlit==1.42.0`, `pydantic==2.11.9`, `httpx==0.28.1`, `psutil==6.1.1`) with ranges (`docling>=2.0.0`, `pymupdf>=1.24.0`, `pillow>=10.2.0`, `lancedb>=0.17.0`, `pyarrow>=14.0.0`, `litellm>=1.50.0`, `numpy>=1.26.0,<3.0.0`, RapidOCR markers). Do not treat it as resolved.
-- **`requirements-test.txt`** carries test-only ranges (`pytest>=8.3.0`, `reportlab>=4.2.0`, `ruff>=0.9.0`, `psutil>=6.1.0`).
-- **Packaging:** setuptools via `setup.py` (name `rag-assistant`, version `1.0.0`, `packages=find_packages()`, `py_modules=["main", "setup", "start"]`). There is no `[build-system]` table in `pyproject.toml`; `setup.py` is the build entry point.
+- Backend: `pip` for installs, `uv` for lockfile compilation and CI installs. `requirements-lock.txt` header records `uv pip compile --universal --python-version 3.11 requirements.txt`.
+- Frontend: `pnpm` (version 9 in CI via `pnpm/action-setup@v4`; `Dockerfile` activates `pnpm@latest` through corepack).
+- Lockfiles: backend `requirements-lock.txt` (present), frontend `frontend/pnpm-lock.yaml` (present).
 
 ## Frameworks
 
 **Core:**
-- **Streamlit 1.42.0** — the entire presentation layer and workspace router (`main.py`, `ui/views.py`, `ui/components.py`, `ui/theme.py`, `ui/session_state.py`).
-- **Pydantic 2.11.9** — domain schemas and frozen provider contracts (`core/models.py`, `providers/model_provider.py`).
-- **Docling 2.138.0** (lock; declared `>=2.0.0`) — structured PDF layout, reading order, and markdown tables, pinned to CPU (`ingestion/docling_reader.py`).
-- **LanceDB 0.40.0 + PyArrow 23.0.1** — persistent dense vector index and native full-text search fused with RRF (`retrieval/hybrid_retriever.py`).
-- **sentence-transformers 3.4.1** — CPU-pinned `all-MiniLM-L6-v2` embeddings, 384 dimensions, L2-normalized (`retrieval/local_embedding.py`).
-- **httpx 0.28.1** — blocking/SSE HTTP client for local llama-server (`providers/llama_cpp_provider.py`).
-- **LiteLLM 1.105.0** (Python <3.14) / **1.102.4** (Python >=3.14), per conditional pins in `requirements-lock.txt` — optional cloud adapter (`providers/litellm_provider.py`).
-- **Groq SDK 0.15.0** — optional direct cloud adapter (`providers/groq_provider.py`).
+- FastAPI >=0.115.0 - HTTP API, routing, dependency injection, static frontend mount (`api/main.py`, `api/routers/*.py`). Starlette is the underlying ASGI toolkit (`starlette==1.10.0` in lockfile).
+- Pydantic 2.11.9 / pydantic-settings 2.15.0 - API schemas and env-driven settings (`api/schemas/*.py`, `api/config.py`).
+- Next.js 15.2.1 (App Router, `output: "export"` static export) - Frontend application (`frontend/src/app/`, `frontend/next.config.mjs`).
+- React 19 - UI runtime (`frontend/package.json`).
+- Tailwind CSS 4.0.9 via `@tailwindcss/postcss` - Styling (`frontend/postcss.config.mjs`, `frontend/src/styles/globals.css`).
 
 **Testing:**
-- **pytest >=8.3.0** — 388 `test_*` functions across 32 `tests/test_*.py` modules (count from source; no `pytest` markers beyond default collection). Config: `pyproject.toml` (`testpaths=["tests"]`, `python_files=["test_*.py"]`, filters `UserWarning`/`DeprecationWarning`).
-- **reportlab >=4.2.0** — generates six synthetic PDFs in `tests/data/corpus/generate_corpus.py`, including a CI generation step.
+- pytest >=8.3.0 - Test runner; configuration in `pyproject.toml` (`testpaths = ["tests"]`).
+- reportlab >=4.2.0 - Synthetic PDF corpus generation for tests.
+- ruff >=0.9.0 - Lint and format checks in CI (also the formatter, not Black).
 
 **Build/Dev:**
-- **Ruff >=0.9.0** — lint and format. `pyproject.toml`: `line-length = 120`, `target-version = "py311"`, `select = ["E", "F", "W", "B", "UP", "SIM"]`, `ignore = ["E501", "W291", "W293"]`; per-file ignores `scripts/* = ["E402"]` and `start.py = ["UP036"]`.
-- **setuptools CLI commands** — `download_models`, `setup_llama_server` (`setup.py`), plus console scripts `rag-assistant`, `rag-setup`, `rag-download-models`, `rag-setup-llama`.
-- **Docker** — `python:3.11-slim-bookworm` image installing `build-essential`, `curl`, `libgl1`, `libglib2.0-0`, `libgomp1`.
-- **Docker Compose** — `app` service plus an optional CUDA `llama-server` service under the `gpu` profile.
-- **GitHub Actions** — `.github/workflows/ci.yml` (lint, format check, corpus generation, pytest).
-- **Dev container** — `.devcontainer/devcontainer.json`, Python 3.11 Bookworm, forwards port 8501.
+- Ruff - Linter/formatter config in `pyproject.toml` (`line-length = 120`, rules `E,F,W,B,UP,SIM`).
+- Docker multi-stage build - Node frontend build then Python runtime (`Dockerfile`).
+- Docker Compose - `app` service plus optional GPU `llama-server` profile (`docker-compose.yml`).
+- GitHub Actions - `.github/workflows/ci.yml` (backend lint/contract/tests, frontend typecheck/static build).
+- pnpm scripts - `dev`, `build`, `start`, `lint`, `typecheck` (`frontend/package.json`).
 
 ## Key Dependencies
 
 **Critical:**
-- `streamlit==1.42.0` — the only inbound listener and the whole UI.
-- `pydantic==2.11.9` — `BBox`, `Chunk`, `Page`, `Document`, `EvidenceElement`, `EvidenceSnippet`, `RetrievalResult`, `SummaryResult` in `core/models.py`; `ProviderCapabilities` and `HealthStatus` in `providers/model_provider.py`.
-- `lancedb==0.40.0` + `pyarrow==23.0.1` — durable `chunks` table at `data/lancedb/`, FTS on `content`, and `compute_rrf` in `retrieval/hybrid_retriever.py`; in-memory `VectorIndex` fallback in `retrieval/vector_index.py`.
-- `sentence-transformers==3.4.1` — pulls `torch==2.14.1`, `transformers==4.57.6`, `scikit-learn==1.9.1`, `huggingface-hub==0.36.2` (lock).
-- `docling==2.138.0` — pulls `docling-slim==2.138.0`, `docling-core==2.101.1`, `docling-parse==7.22.2`, `docling-ibm-models==4.0.3` (lock).
-- `pymupdf==1.28.2` (`import pymupdf as fitz`) — page rasterization and 2x visual crops (`ingestion/ocr_fallback.py`, `ingestion/visual_analyzer.py`).
-- `pypdf==5.3.0` — fallback text extraction, page counting, and magic-byte validation (`ingestion/pdf_reader.py`, `ingestion/upload_validation.py`).
-- `rapidocr-onnxruntime==1.4.4` (Python <3.13) / `rapidocr==3.10.0` (>=3.13), with `onnxruntime==1.31.0` and `opencv-python==5.0.0.93` — CPU OCR fallback (`ingestion/ocr_fallback.py`).
-- `httpx==0.28.1` — llama-server transport, including SSE streaming and base64 vision payloads.
-- `litellm==1.105.0`, `openai==2.54.0`, `groq==0.15.0` — optional cloud inference.
-- `langchain-text-splitters==0.3.6` (pulls `langchain-core==0.3.86`) — chunking only; no LangChain agents/chains.
-- `numpy==2.4.6`, `pillow==11.3.0`, `pandas==2.3.3` — embedding, raster, and Docling/Streamlit support.
-- `python-dotenv==1.0.1` — optional `.env` loading in `main.py`.
+- `lancedb==0.40.0` + `pyarrow==23.0.1` - Persistent vector table `chunks` with 384-dim vectors and full-text index (`retrieval/hybrid_retriever.py`).
+- `sentence-transformers==3.4.1` / `torch==2.14.1` - Local embeddings with `all-MiniLM-L6-v2`, CPU-pinned, 384 dimensions, 256-token truncation (`retrieval/local_embedding.py`).
+- `docling==2.138.0` - Primary PDF layout/table extraction, gracefully falls back to pypdf (`ingestion/docling_reader.py`).
+- `rapidocr==3.10.0` (Python >= 3.13) or `rapidocr-onnxruntime==1.4.4` (Python < 3.13) - Conditional OCR on low-text pages via ONNX Runtime CPU (`ingestion/ocr_fallback.py`).
+- `pymupdf==1.28.2` (`>=1.24.0,<2.0`) - Page rasterization and crops for OCR/vision (`ingestion/visual_analyzer.py`, `ingestion/ocr_fallback.py`).
+- `pypdf==6.21.4` - Validation and text-extraction fallback (`ingestion/upload_validation.py`, `ingestion/pdf_reader.py`).
+- `langchain-text-splitters==0.3.6` - `RecursiveCharacterTextSplitter` chunking (`ingestion/docling_reader.py`, `ingestion/pdf_reader.py`).
+- `litellm==1.105.0` - Cloud provider adapter for Groq/OpenAI/Anthropic with consent gating (`providers/litellm_provider.py`).
+- `groq==0.15.0` - Direct Groq SDK provider (`providers/groq_provider.py`).
+- `httpx==0.28.1` - HTTP client to local `llama-server` (`providers/llama_cpp_provider.py`).
+- `numpy==2.4.6` - Embedding arrays and vector math (`retrieval/local_embedding.py`, `retrieval/vector_index.py`).
 
 **Infrastructure:**
-- SQLite via stdlib `sqlite3` — WAL mode, `busy_timeout=5000`, `foreign_keys=ON`, `PRAGMA user_version` migrations v1–v4 (`core/doc_store.py`).
-- `psutil==6.1.1` + `nvidia-smi` subprocess — RAM/VMS and GPU VRAM telemetry with a 5-second TTL cache (`core/resource_telemetry.py`).
-- `altair==5.5.0`, `jinja2==3.1.6`, `faker==40.43.0` — Streamlit/Docling transitive dependencies (lock only).
+- `psutil==6.1.1` - Process RAM/CPU telemetry (`core/resource_telemetry.py`, `api/routers/system.py`).
+- `python-multipart==0.0.32` - Multipart PDF uploads (`api/routers/documents.py`).
+- `python-dotenv==1.0.1` - `.env` loading for pydantic-settings and setup/launcher.
+- `pillow==11.3.0` - Image handling for cropped page/figure analysis; ceiling `<13` imposed by Docling.
+- `tiktoken==0.14.0` (transitive in lockfile) - present in the environment but prompt budgeting uses a character heuristic, not tiktoken (`core/prompt_budget.py`).
+- Frontend: `@tanstack/react-query` 5.67 (server-state cache), `zustand` 5.0 (client store), `zod` 3.24 (validation), `eventsource-parser` 3.0 (SSE), `react-markdown`/`remark-gfm`/`rehype-sanitize` (rendering), `cmdk`, `sonner`, `lucide-react`, `motion`, `clsx`, `tailwind-merge` (`frontend/package.json`).
 
 ## Configuration
 
 **Environment:**
-- `.streamlit/config.toml`: dark theme (`#050608`), `server.address = "127.0.0.1"`, `enableCORS = true`, `enableXsrfProtection = true`, `maxUploadSize = 50` MB, `browser.gatherUsageStats = false`.
-- No `.env` file is present in the workspace, and no `.env.example` exists. `.env`/`.env.*` are gitignored; `main.py` calls `load_dotenv()` so an operator-created `.env` is honored.
-- No `.streamlit/secrets.toml` is present. `providers/litellm_provider.py` and `providers/groq_provider.py` read secrets only if Streamlit provides them.
-- Environment surface actually read by code:
-  - `LLAMA_SERVER_URL`, `LLAMA_SERVER_HOST`, `LLAMA_SERVER_PORT` — local provider endpoint (`providers/llama_cpp_provider.py`).
-  - `DOCLING_ARTIFACTS_PATH` — local Docling model artifacts directory (`ingestion/docling_reader.py`).
-  - `GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` — cloud mode only.
-  - `RAG_LOG_LEVEL` (default `INFO`), `RAG_LOG_DIR` (default `data/logs`) — `core/logging_setup.py`.
-  - `RAG_REQUIRE_CHECKSUMS` — when truthy, `setup.py` refuses any download without a pinned SHA-256.
-  - `RAG_ALLOW_NON_LOOPBACK` — allows the Streamlit bind guard in `start.py` to be bypassed.
-  - `USE_TF=0`, `USE_TORCH=1`, `TF_ENABLE_ONEDNN_OPTS=0` — set by default in `main.py`, `start.py`, `setup.py`, and `retrieval/local_embedding.py`.
-  - `LITELLM_TELEMETRY=False` — set by `providers/litellm_provider.py`.
-- Docker/Compose environment: `PYTHONUNBUFFERED=1`, `USE_TF=0`, `USE_TORCH=1`, `LLAMA_SERVER_HOST=host.docker.internal`, `LLAMA_SERVER_PORT=8080`, optional cloud keys; `app` publishes only `127.0.0.1:8501` and the GPU-profile `llama-server` only `127.0.0.1:8080`.
-- Docker note: `Dockerfile` installs `pip install -r requirements.txt`, not the canonical lockfile. CI and README use `requirements-lock.txt`; treat the Dockerfile as a reproducibility gap when changing dependencies.
+- Backend settings are loaded by `pydantic-settings` with prefix `RAG_` and `.env` (`api/config.py`): `RAG_API_HOST`, `RAG_API_PORT`, `RAG_ALLOW_NON_LOOPBACK`, `RAG_CORS_ORIGINS`, `RAG_ALLOWED_HOSTS`, `RAG_SERVE_FRONTEND`, `RAG_PERSIST_CHAT`, `RAG_STORE_ORIGINALS`, `RAG_DATA_DIR`, `RAG_LOG_DIR`, `RAG_LOG_LEVEL`.
+- `.env.example` documents provider/model/inference variables: `GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LLAMA_SERVER_URL`, `LLAMA_SERVER_HOST`, `LLAMA_SERVER_PORT`, `DOCLING_ARTIFACTS_PATH`, `RAG_REQUIRE_CHECKSUMS`, `RAG_ALLOW_NON_LOOPBACK`.
+- Additional runtime variables read directly in code: `RAG_ALLOW_ENV_KEYS` (`providers/litellm_provider.py`, `providers/groq_provider.py`), `RAG_VENV_PATH` (`setup.py`, `start.py`), `LITELLM_TELEMETRY` (forced off in `providers/litellm_provider.py`), `USE_TF=0`, `USE_TORCH=1`, `TF_ENABLE_ONEDNN_OPTS=0` (`start.py`, `Dockerfile`, `retrieval/local_embedding.py`).
+- Frontend variables (`frontend/.env.example`): `NEXT_PUBLIC_API_URL` (default `http://127.0.0.1:8000`), `NEXT_PUBLIC_USE_MOCKS` (`1` enables `frontend/src/lib/api/mocks.ts`).
+- Secrets are not stored in the repo; `.env` is the local mechanism and cloud API keys are held in process memory only (`api/cloud_state.py`).
 
 **Build:**
-- `requirements.txt`, `requirements-lock.txt`, `requirements-test.txt`.
-- `pyproject.toml` — Ruff and pytest configuration only.
-- `setup.py` — setuptools packaging, model/server download CLI, and **SHA-256 integrity pinning**:
-  - `MODEL_REGISTRY` pins `qwen3-vl-2b-instruct-q4_k_m.gguf` and `mmproj-f16.gguf` with `sha256` values and minimum sizes (`800_000_000` and `500_000_000` bytes). The `qwen3-vl` filename is a legacy artifact name; GGUF metadata reports Qwen2-VL (`core/model_identity.py`).
-  - `LLAMA_ARCHIVE_SHA256` pins Windows CUDA 12.4, Windows CPU, Linux CPU, and Linux CUDA 12.8 archives from llama.cpp release `b11718`.
-  - Downloads verify size and digest, write to a `.tmp` file, and only then replace the destination. Archive extraction rejects path traversal and skips symlinks/hardlinks (`safe_extract_archive`).
-- `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.devcontainer/devcontainer.json`, `.github/workflows/ci.yml`.
-
-## Data & Cache Layout
-
-- `data/documents.db` — SQLite source of truth; `data/lancedb/` — LanceDB index; `data/logs/app.log` — rotating file log (5 MB x 3 backups).
-- `models/` — GGUF weights and projector (gitignored); `tools/llama-server/` — native server binary (gitignored).
-- `.cache/` is still mounted in `docker-compose.yml` and removed on document delete/purge, but **the write-only extraction cache has been removed**: `IngestionService` no longer writes `pages.json`, `chunks.json`, or `manifest.json`. `ui/ingestion_service.py` stores a `cache_dir` path only; `ui/lifecycle_service.py` and `core/models.py::cache_dir_for` use it solely for best-effort cleanup. `CONFIG_VERSION = "docling-1000-200-v1"` remains for summary-cache keying and legacy path cleanup.
-- `.gitignore` excludes `data/`, `.cache/`, `models/`, `tools/`, `*.gguf`, `*.onnx`, `*.lance`, and database journals.
+- `pyproject.toml` - Ruff + pytest configuration.
+- `requirements.txt` / `requirements-lock.txt` - direct ranges and pinned universal lock.
+- `frontend/next.config.mjs` - static export, unoptimized images, trailing slashes.
+- `frontend/tsconfig.json` - strict TypeScript, `@/*` -> `./src/*` alias.
+- `Dockerfile` / `docker-compose.yml` - image build and service topology.
 
 ## Platform Requirements
 
 **Development:**
-- Python 3.11+, pip or uv; Windows 11/PowerShell primary, Linux x86_64 supported.
-- NVIDIA driver with `nvidia-smi` for VRAM telemetry and GPU inference; CPU-only hosts still run OCR, Docling, and embeddings.
-- Local GGUF artifacts expected in `models/`: `qwen3-vl-2b-instruct-q4_k_m.gguf` and `mmproj-f16.gguf`; identity verified by `core/model_identity.py` and `start.py` before launch.
-- `llama-server` on `PATH` or in `tools/llama-server/`. Installer supports Windows CUDA 12.4, Windows CPU, Linux CUDA 12.8, and Linux CPU.
-- Target envelope: 4 GB VRAM (RTX 3050 Laptop class), 16 GB RAM, one active LLM/VLM serialized by `InferenceGate` (`core/local_llm.py`), context 4096 tokens, `-ngl 28`.
+- Python 3.11+ with a virtual environment at `.venv` by default (`setup.py` `DEFAULT_VENV_DIRNAME`).
+- Node.js 20 + pnpm 9 to build/serve the frontend.
+- Optional NVIDIA GPU with 4 GB VRAM and CUDA 12.x for local vision-language inference (`docs/LOCAL_INFERENCE.md`).
+- `llama-server` binary at `tools/llama-server/` or on `PATH`; expected llama.cpp v0.8.0 build `b11960` (`core/runtime_info.py`).
 
 **Production:**
-- Single-user local deployment: Streamlit bound to loopback `:8501`, llama-server bound to loopback `:8080`. No external application server, database service, or auth provider.
-- Docker Compose: `app` container with host-mounted `./data`, `./models`, `./.cache`; optional `llama-server` from `ghcr.io/ggml-org/llama.cpp:server-cuda` with `-c 4096 -ngl 28` and one NVIDIA GPU.
-- Windows executable staging: `tools/llama-server` is populated by `python setup.py setup-llama` / `--llama-only`.
+- Container image exposing port 8000 (`Dockerfile` `EXPOSE 8000`); `docker-compose.yml` publishes `127.0.0.1:8000` only.
+- Persistent mounts: `./data` (SQLite + LanceDB + logs), `./models` (GGUF weights), `./.cache`.
+- Single-user deployment with no authentication; loopback binding is enforced unless `RAG_ALLOW_NON_LOOPBACK=1` (`start.py`, `api/config.py`).
+
+## Version and Packaging Notes
+
+- `requirements-lock.txt` is generated from `requirements.txt`, but **does not contain a `fastapi` pin** (verified: no `fastapi` entry in the file), even though `Dockerfile` installs only the lockfile. Starlette, Uvicorn, and Pydantic are pinned. Treat `fastapi` as installed transitively only if the chosen base already provides it; this is a packaging gap to verify before relying on the Docker image.
+- `requirements-lock.txt` still contains `streamlit==1.66.1` and `pandas==2.3.3`, but no application module imports Streamlit (only `tests/test_logging_setup.py` references `streamlit.watcher`). These are historical residue from the pre-FastAPI UI.
+- `README.md` badges/architecture and `docs/ENDPOINT_INTEGRATION_MATRIX.md` still describe a Streamlit single-process UI; the implemented runtime is FastAPI + Next.js static export (`api/main.py`, `frontend/next.config.mjs`).
+- `.devcontainer/devcontainer.json` still provisions Streamlit on port 8501; it does not match the current FastAPI/Next.js workflow.
 
 ---
 
-*Stack analysis: 2026-10-22*
+*Stack analysis: 2026-11-14*

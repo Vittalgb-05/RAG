@@ -98,7 +98,9 @@ To evaluate citation reliability, test documents containing verified factual ans
 
 ## 5. Hardware Resource Budget Audit (4 GB VRAM)
 
-Testing was conducted on an NVIDIA GeForce RTX 3050 Laptop GPU (4096 MB physical VRAM, 3584 MB usable after OS display overhead):
+Testing was conducted on an NVIDIA GeForce RTX 3050 Laptop GPU (4096 MB physical VRAM, 3584 MB usable after OS display overhead).
+
+The table below records the **previous** configuration (Qwen2-VL-2B, llama.cpp `b11718`). The current Qwen3.5-2B / v0.8.0 measurement follows it.
 
 ```
 +-----------------------------------------------------------------------------+
@@ -116,7 +118,21 @@ Testing was conducted on an NVIDIA GeForce RTX 3050 Laptop GPU (4096 MB physical
 +-----------------------------------------------------------------------------+
 ```
 
-### Safety Margin Assessment:
+### Current configuration (Qwen3.5-2B Q4_K_M + v0.8.0, measured 2026-10-29)
+
+Measured with `nvidia-smi --query-gpu=memory.used,memory.total` after model load, idle, `-c 4096 -ngl 28`, projector offloaded:
+
+| Metric | Value |
+| :--- | :--- |
+| Total GPU VRAM in use | **2,658 MiB of 4,096 MiB** (65%) |
+| Same measurement on Qwen2-VL-2B (`b11718`) | 2,987 MiB |
+| Throughput (single text request, RTX 3050) | ~97 tok/s generated, ~440 tok/s prompt |
+| Image analysis latency (720×480 chart crop) | 0.62 s (363 prompt tokens) |
+| Text QA latency (20-page document, citations) | 1.7-3.3 s including retrieval |
+
+The new pair is **329 MiB lighter** at the same context window, so the ~1.4 GB of remaining headroom absorbs larger prompts than the previous configuration.
+
+### Safety Margin Assessment (previous configuration):
 - The system leaves **> 1.1 GB of headroom**, completely preventing CUDA Out of Memory (OOM) exceptions and eliminating GPU-to-system-RAM paging thrash.
 - Process RAM usage on the host CPU remains modest: **RSS 420 MB - 610 MB**, well within typical 16 GB host memory configurations.
 

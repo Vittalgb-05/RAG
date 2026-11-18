@@ -60,7 +60,6 @@ def test_check_health_reports_unreachable_when_api_key_missing(monkeypatch) -> N
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
 
     provider = LiteLLMProvider(model_name="groq/llama-3.3-70b-versatile", api_key=None)
     health = provider.check_health()

@@ -9,6 +9,11 @@ Usage:
     python setup.py --models-only   # Download only models via CLI flag
     python setup.py --deps-only     # Install only dependencies via pip
     pip install -e .                # Standard editable package install
+
+On hosts where the system interpreter refuses pip installs (PEP 668
+``EXTERNALLY-MANAGED``, e.g. Ubuntu 24.04), dependency installation is redirected
+into an isolated environment (default ``.venv``, override with ``--venv-path`` or
+``RAG_VENV_PATH``) and the exact launch command is printed for it.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import time
 import urllib.error
@@ -30,6 +36,10 @@ from typing import Any
 
 from setuptools import Command, find_packages, setup
 
+# The expected native runtime build is defined once in core.runtime_info and imported
+# here so the installer, the launcher banner, and the diagnostics page cannot drift.
+from core.runtime_info import EXPECTED_LLAMA_CPP_BUILD, EXPECTED_LLAMA_CPP_SEMVER
+
 # Ensure UTF-8 stdout/stderr across Windows consoles (cp1252/cp437)
 if hasattr(sys.stdout, "reconfigure"):
     with contextlib.suppress(Exception):
@@ -39,6 +49,23 @@ if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+# Isolated-environment provisioning. ``.venv`` in the repo root is the default so the
+# interpreter printed by setup.py is always the one start.py should be run with.
+DEFAULT_VENV_DIRNAME = ".venv"
+VENV_PATH_ENV = "RAG_VENV_PATH"
+
+# Modules that must import for the RAG Assistant API server to start.
+REQUIRED_RUNTIME_MODULES: tuple[str, ...] = (
+    "fastapi",
+    "uvicorn",
+    "dotenv",
+    "pydantic",
+    "pydantic_settings",
+    "httpx",
+    "langchain_text_splitters",
+    "pypdf",
+)
 
 # Read the long description from README.md
 readme_path = REPO_ROOT / "README.md"
@@ -54,35 +81,43 @@ if req_path.exists():
             requirements.append(line)
 
 
+# Hugging Face revision pinned so a re-run fetches the exact bytes the digests below
+# were computed from, not whatever ``main`` happens to hold later.
+QWEN35_GGUF_REVISION = "377fa65bb36aa83414de1ab3b40f6f15b0324cdc"
+
 MODEL_REGISTRY: list[dict[str, Any]] = [
     {
-        "name": "qwen3-vl-2b-instruct-q4_k_m.gguf",
-        "description": "Qwen2-VL 2B Instruct GGUF (4-bit quantized base language/vision model)",
-        "min_size_bytes": 800_000_000,
-        "sha256": "4ef095263343fc1237e8ca879790bb262bcf209f082e0a9bfce219b7ece55e8b",
+        "name": "qwen3.5-2b-q4_k_m.gguf",
+        "description": "Qwen3.5-2B GGUF (Q4_K_M; architecture qwen35, image input supported)",
+        "min_size_bytes": 1_200_000_000,
+        "sha256": "a8b50de00b780c0f3c16f07cb041a1ecd678b6e22fd8cde91e57fe4b5031523b",
         "urls": [
-            "https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q4_K_M.gguf",
+            f"https://huggingface.co/SoAIHQ/Qwen3.5-2B-GGUF/resolve/{QWEN35_GGUF_REVISION}/Qwen3.5-2B-Q4_K_M.gguf",
         ],
     },
     {
-        "name": "mmproj-f16.gguf",
-        "description": "Qwen2-VL 2B Multimodal Projector Adapter GGUF (FP16 vision encoder)",
-        "min_size_bytes": 500_000_000,
-        "sha256": "05cc3ae461a7b6aa4023312ccab549ecab77cf8677efee04f049fcbab55b8bc3",
+        "name": "qwen3.5-2b-mmproj-f16.gguf",
+        "description": "Qwen3.5-2B multimodal projector (F16 vision encoder, qwen3vl_merger)",
+        "min_size_bytes": 600_000_000,
+        "sha256": "044a0ea136cca70711ae16e23b24d754b44eab6f2462d187aee4d7c7a9503d36",
         "urls": [
-            "https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-2B-Instruct-f16.gguf",
+            f"https://huggingface.co/SoAIHQ/Qwen3.5-2B-GGUF/resolve/{QWEN35_GGUF_REVISION}/mmproj-Qwen3.5-2B-f16.gguf",
         ],
     },
 ]
 
 
+LLAMA_SERVER_RELEASE = EXPECTED_LLAMA_CPP_BUILD
+LLAMA_SERVER_SEMVER = EXPECTED_LLAMA_CPP_SEMVER
 LLAMA_ARCHIVE_SHA256: dict[str, str] = {
-    "llama-b11718-bin-win-cuda-12.4-x64.zip": "c13fda0ef74f47cd2bccda1eea2a62980c12a5778d39b39bedadb525b4e81aff",
+    "llama-b11960-bin-win-cuda-12.4-x64.zip": "8d9d819261de10cc2f03921b8b79c779c5c458e21edb60c170ee30a7d462d684",
     "cudart-llama-bin-win-cuda-12.4-x64.zip": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
-    "llama-b11718-bin-win-cpu-x64.zip": "92cc529b29a43f9a30e21d490cb2e95062acd0b59af6fee8b3b52b28074f838c",
-    "llama-b11718-bin-ubuntu-x64.tar.gz": "99f83b15cea9a4fb8945516c276b5f42b11608f82104fc6fa98a541cac826de7",
-    "llama-b11718-bin-ubuntu-cuda-12.8-x64.tar.gz": "491595b522685a7b51974e80c21a8458e3afb5cf630fa48dc74fa854c378b3e0",
+    "llama-b11960-bin-win-cpu-x64.zip": "73f962f82850d244db47eaacb9d913637027b82399124324298576d58c5f4287",
+    "llama-b11960-bin-ubuntu-x64.tar.gz": "31cc3a6bc638ac6c48dc4b1b74888f1eaadf3d14227c1e5f67daf9a49541d97a",
+    "llama-b11960-bin-ubuntu-cuda-12.8-x64.tar.gz": "64d57beb9abb637c177c6afb313760a0c0782224cac71e74869eed5b8f9a1ea4",
 }
+LLAMA_SERVER_BASE_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
+LLAMA_SERVER_MIRROR_BASE_URL = f"https://github.com/ggerganov/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
 
 
 def require_pinned_checksums() -> bool:
@@ -121,19 +156,92 @@ def ensure_project_directories() -> None:
 
 def _safe_destination(dest_dir: Path, member_name: str) -> Path:
     """Resolve an archive member path, rejecting traversal outside dest_dir."""
-    target = (dest_dir / member_name).resolve()
     root = dest_dir.resolve()
-    if target != root and root not in target.parents:
+    # Normalize lexically: resolve() would follow pre-existing symlinks from a
+    # previous extraction and redirect writes to their targets.
+    target = Path(os.path.normpath(root / member_name))
+    if target == root:
+        return target
+    if root not in target.parents:
         raise ValueError(f"Archive member escapes destination: {member_name!r}")
+    for parent in target.parents:
+        if parent == root:
+            break
+        if parent.is_symlink():
+            raise ValueError(f"Archive member would traverse a symlink: {member_name!r}")
     return target
 
 
-def safe_extract_archive(archive_path: Path, dest_dir: Path) -> None:
+def _archive_root_prefix(names: list[str]) -> str | None:
+    """Return the single directory enclosing every archive member, if there is one."""
+    roots: set[str] = set()
+    has_nested_member = False
+    for name in names:
+        parts = Path(name).parts
+        if not parts:
+            continue
+        if parts[0] in {"/", ".."}:
+            return None
+        roots.add(parts[0])
+        has_nested_member = has_nested_member or len(parts) > 1
+    return roots.pop() if has_nested_member and len(roots) == 1 else None
+
+
+def _stripped_member_name(name: str, prefix: str | None) -> str:
+    """Drop the shared archive root from a member name when flattening."""
+    if prefix is None:
+        return name
+    parts = Path(name).parts
+    return str(Path(*parts[1:])) if len(parts) > 1 and parts[0] == prefix else ""
+
+
+def _contained_link_target(link_path: Path, link_name: str, dest_dir: Path) -> Path | None:
+    """Resolve a relative link target, returning None when it escapes *dest_dir*."""
+    candidate = Path(os.path.normpath(link_path.parent / link_name))
+    root = dest_dir.resolve()
+    if candidate != root and root not in candidate.parents:
+        return None
+    # Follow any pre-existing chain only to prove it stays inside the destination.
+    resolved = candidate.resolve()
+    if resolved != root and root not in resolved.parents:
+        return None
+    return candidate
+
+
+def _create_archive_links(pending_links: list[tuple[Path, Path, bool]]) -> None:
+    """Recreate validated symlinks/hardlinks, retrying chained links until stable."""
+    remaining = list(pending_links)
+    while remaining:
+        deferred: list[tuple[Path, Path, bool]] = []
+        progress = False
+        for link_path, link_target, is_hardlink in remaining:
+            if not link_target.exists():
+                deferred.append((link_path, link_target, is_hardlink))
+                continue
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            if link_path.is_symlink() or link_path.is_file():
+                link_path.unlink()
+            with contextlib.suppress(OSError):
+                if is_hardlink:
+                    os.link(link_target, link_path)
+                else:
+                    os.symlink(os.path.relpath(link_target, link_path.parent), link_path)
+            progress = True
+        if not progress:
+            for link_path, link_target, _ in deferred:
+                print(f"  ⚠️ Skipping archive link with missing target: {link_path.name} -> {link_target.name}")
+            return
+        remaining = deferred
+
+
+def safe_extract_archive(archive_path: Path, dest_dir: Path, *, strip_root: bool = False) -> None:
     """Extract a zip/tar archive without allowing path traversal or symlink escapes.
 
     Args:
         archive_path: Path to a ``.zip``, ``.tar.gz``, or ``.tgz`` archive.
         dest_dir: Destination directory.
+        strip_root: If True, drop a single enclosing directory shared by every member
+            (e.g. ``llama-b11960/``) so the archive contents land directly in *dest_dir*.
 
     Raises:
         ValueError: If any member would be written outside *dest_dir*.
@@ -147,13 +255,41 @@ def safe_extract_archive(archive_path: Path, dest_dir: Path) -> None:
         return
 
     with tarfile.open(archive_path, "r:*") as tf:
-        for member in tf.getmembers():
-            if member.issym() or member.islnk():
-                # Links could point outside the extraction root; skip them.
+        members = tf.getmembers()
+        prefix = _archive_root_prefix([m.name for m in members]) if strip_root else None
+        pending_links: list[tuple[Path, Path, bool]] = []
+        for member in members:
+            name = _stripped_member_name(member.name, prefix)
+            if not name:
                 continue
-            if member.isfile() or member.isdir():
-                _safe_destination(dest_dir, member.name)
-        tf.extractall(dest_dir, members=[m for m in tf.getmembers() if not (m.issym() or m.islnk())])
+            target = _safe_destination(dest_dir, name)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = tf.extractfile(member)
+                if source is None:
+                    continue
+                with source, open(target, "wb") as sink:
+                    shutil.copyfileobj(source, sink)
+                with contextlib.suppress(OSError):
+                    os.chmod(target, member.mode & 0o777)
+            elif member.islnk():
+                # Hardlink names are relative to the archive root.
+                link_name = _stripped_member_name(member.linkname, prefix)
+                if not link_name:
+                    print(f"  ⚠️ Skipping unsafe archive link: {member.name} -> {member.linkname}")
+                    continue
+                link_source = _safe_destination(dest_dir, link_name)
+                pending_links.append((target, link_source, True))
+            elif member.issym():
+                # Symlink names are relative to the symlink's own directory.
+                link_source = _contained_link_target(target, member.linkname, dest_dir)
+                if link_source is None:
+                    print(f"  ⚠️ Skipping unsafe archive link: {member.name} -> {member.linkname}")
+                    continue
+                pending_links.append((target, link_source, False))
+        _create_archive_links(pending_links)
 
 
 def validate_gguf_file(path: Path) -> bool:
@@ -410,11 +546,6 @@ def download_all_models(
     return all_ok
 
 
-LLAMA_SERVER_RELEASE = "b11718"
-LLAMA_SERVER_BASE_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
-LLAMA_SERVER_MIRROR_BASE_URL = f"https://github.com/ggerganov/llama.cpp/releases/download/{LLAMA_SERVER_RELEASE}"
-
-
 def detect_nvidia_gpu() -> bool:
     """Detect if an NVIDIA GPU with driver support is available."""
     try:
@@ -437,6 +568,7 @@ def download_and_extract_archive(
     min_size_bytes: int = 1_000_000,
     force: bool = False,
     expected_sha256: str | None = None,
+    strip_root: bool = False,
 ) -> bool:
     """Download an archive and extract its contents into dest_dir.
 
@@ -447,6 +579,7 @@ def download_and_extract_archive(
         min_size_bytes: Minimum expected archive size.
         force: If True, re-download archive.
         expected_sha256: Optional pinned SHA-256 digest for the archive.
+        strip_root: If True, drop a single enclosing directory shared by every member.
 
     Returns:
         True if successfully downloaded and extracted.
@@ -467,7 +600,7 @@ def download_and_extract_archive(
     print(f"  📦 Extracting {archive_name} to {dest_dir.name}...")
     try:
         if archive_name.endswith((".zip", ".tar.gz", ".tgz")):
-            safe_extract_archive(temp_archive, dest_dir)
+            safe_extract_archive(temp_archive, dest_dir, strip_root=strip_root)
         else:
             print(f"  ⚠️ Unsupported archive format: {archive_name}")
             return False
@@ -591,14 +724,19 @@ def setup_llama_server(
             if has_gpu
             else f"llama-{LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz"
         )
-        download_and_extract_archive(
+        extract_ok = download_and_extract_archive(
             urls=urls,
             dest_dir=dest_dir,
             archive_name=f"llama-{LLAMA_SERVER_RELEASE}-linux.tar.gz",
             min_size_bytes=10_000_000,
             force=force,
             expected_sha256=LLAMA_ARCHIVE_SHA256.get(linux_archive),
+            strip_root=True,
         )
+        if not extract_ok:
+            print(f"  ❌ Failed to download or extract {linux_archive}.")
+        elif not exe_path.exists():
+            print(f"  ❌ {exe_path.name} was not found after extracting {linux_archive}.")
         if exe_path.exists():
             with contextlib.suppress(Exception):
                 exe_path.chmod(exe_path.stat().st_mode | 0o755)
@@ -624,18 +762,277 @@ def setup_llama_server(
     return False
 
 
+def resolve_venv_dir(venv_path: str | Path | None = None) -> Path:
+    """Return the isolated environment directory to provision.
+
+    Precedence: explicit ``--venv-path`` argument, then the ``RAG_VENV_PATH``
+    environment variable, then ``.venv`` in the repository root.
+
+    Args:
+        venv_path: Explicit override supplied on the command line.
+
+    Returns:
+        Absolute path to the environment directory (it may not exist yet).
+    """
+    if venv_path:
+        return Path(venv_path).expanduser().resolve()
+
+    env_value = os.environ.get(VENV_PATH_ENV, "").strip()
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+
+    return (REPO_ROOT / DEFAULT_VENV_DIRNAME).resolve()
+
+
+def venv_python_path(venv_dir: Path) -> Path:
+    """Return the interpreter path inside *venv_dir* for the current platform."""
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def externally_managed_marker() -> Path | None:
+    """Return the PEP 668 marker for the running interpreter, when one exists."""
+    candidates: list[Path] = []
+    stdlib_path = sysconfig.get_path("stdlib")
+    if stdlib_path:
+        candidates.append(Path(stdlib_path) / "EXTERNALLY-MANAGED")
+    version_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    candidates.append(Path(sys.base_prefix) / "lib" / version_dir / "EXTERNALLY-MANAGED")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def interpreter_accepts_pip_installs() -> bool:
+    """Return True when pip can install into the running interpreter as-is.
+
+    A virtual environment (or virtualenv) always qualifies. A system interpreter
+    that ships a PEP 668 ``EXTERNALLY-MANAGED`` marker, or whose site-packages is
+    not writable, does not: installing into it either fails outright or needs
+    ``--break-system-packages``, which this installer never forces on a user.
+    """
+    if sys.prefix != sys.base_prefix:
+        return True
+
+    if externally_managed_marker() is not None:
+        return False
+
+    purelib_path = sysconfig.get_path("purelib")
+    if purelib_path:
+        target = Path(purelib_path)
+        if target.exists() and not os.access(target, os.W_OK):
+            return False
+
+    return True
+
+
+def install_blocked_reason() -> str:
+    """Describe why the running interpreter cannot take pip installs."""
+    marker = externally_managed_marker()
+    if marker is not None:
+        return f"PEP 668 externally-managed environment ({marker})"
+    return f"{sys.executable} cannot write to {sysconfig.get_path('purelib')}"
+
+
+_DEPENDENCY_PROBE = """\
+import importlib
+import sys
+
+missing = []
+for name in sys.argv[1:]:
+    try:
+        importlib.import_module(name)
+    except Exception:
+        missing.append(name)
+print(" ".join(missing))
+sys.exit(1 if missing else 0)
+"""
+
+
+def missing_modules(
+    python_executable: str | Path,
+    modules: tuple[str, ...] = REQUIRED_RUNTIME_MODULES,
+) -> list[str]:
+    """Return the modules that fail to import under *python_executable*.
+
+    Runs the probe out-of-process so the answer describes the target interpreter,
+    not whichever environment happens to be importing setup.py.
+
+    Args:
+        python_executable: Interpreter to probe.
+        modules: Import names to verify.
+
+    Returns:
+        Names that failed to import; empty when the interpreter is usable.
+    """
+    try:
+        proc = subprocess.run(
+            [str(python_executable), "-c", _DEPENDENCY_PROBE, *modules],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except Exception:
+        return list(modules)
+
+    if proc.returncode == 0:
+        return []
+
+    reported = [name for name in proc.stdout.split() if name in modules]
+    return reported or list(modules)
+
+
+def launch_command(python_executable: str | Path, *args: str) -> str:
+    """Render a copy-pasteable command that runs the app with *python_executable*."""
+    python = str(python_executable)
+    if " " in python:
+        python = f'"{python}"'
+    return " ".join([python, *args])
+
+
+def app_python_executable(venv_path: str | Path | None = None) -> Path:
+    """Return the interpreter a user should launch the application with.
+
+    A usable isolated environment wins when the system interpreter refuses pip
+    installs; otherwise the running interpreter is already the right one.
+    """
+    if interpreter_accepts_pip_installs():
+        return Path(sys.executable)
+
+    candidate = venv_python_path(resolve_venv_dir(venv_path))
+    if candidate.exists() and not missing_modules(candidate):
+        return candidate
+    return Path(sys.executable)
+
+
+def create_venv(venv_dir: Path) -> bool:
+    """Create an isolated environment at *venv_dir* using the running interpreter."""
+    print(f"  • Creating isolated environment at {venv_dir} ...")
+    try:
+        proc = subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], cwd=str(REPO_ROOT))
+    except Exception as err:
+        print(f"  ❌ Could not create virtual environment: {err}", file=sys.stderr)
+        return False
+
+    if proc.returncode != 0 or not venv_python_path(venv_dir).exists():
+        print("  ❌ Virtual environment creation failed.", file=sys.stderr)
+        print("     On Debian/Ubuntu install the venv module first: sudo apt install python3-venv", file=sys.stderr)
+        return False
+
+    print(f"  ✓ Isolated environment created at {venv_dir}")
+    return True
+
+
+def provision_venv_dependencies(
+    venv_dir: Path,
+    use_lockfile: bool = False,
+    upgrade: bool = False,
+) -> Path | None:
+    """Create or reuse *venv_dir* and install the project into it.
+
+    An environment that already imports every required module is reused untouched,
+    so repeated setup runs cost nothing.
+
+    Args:
+        venv_dir: Environment directory to provision.
+        use_lockfile: Install from requirements-lock.txt instead of requirements.txt.
+        upgrade: Pass --upgrade to the requirements install.
+
+    Returns:
+        The environment's interpreter when all required modules import, else None.
+    """
+    python_executable = venv_python_path(venv_dir)
+    if python_executable.exists() and not missing_modules(python_executable):
+        print(f"  ✓ Reusing isolated environment at {venv_dir} (dependencies already satisfied)")
+        return python_executable
+
+    if not python_executable.exists() and not create_venv(venv_dir):
+        return None
+
+    req_file = REPO_ROOT / ("requirements-lock.txt" if use_lockfile else "requirements.txt")
+    requirements_cmd = [str(python_executable), "-m", "pip", "install", "-r", str(req_file)]
+    if upgrade:
+        requirements_cmd.append("--upgrade")
+
+    install_cmds = [
+        requirements_cmd,
+        [str(python_executable), "-m", "pip", "install", "-e", "."],
+    ]
+    for cmd in install_cmds:
+        try:
+            proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
+        except Exception as err:
+            print(f"\n  ❌ Error running pip in {venv_dir}: {err}", file=sys.stderr)
+            return None
+        if proc.returncode != 0:
+            print(f"\n  ❌ pip install exited with status {proc.returncode}", file=sys.stderr)
+            return None
+
+    missing = missing_modules(python_executable)
+    if missing:
+        print(f"\n  ❌ Still missing inside {venv_dir}: {', '.join(missing)}", file=sys.stderr)
+        return None
+
+    print(f"  ✓ Dependencies verified inside {venv_dir} (streamlit imports cleanly)")
+    return python_executable
+
+
+def report_dependency_preflight(venv_path: str | Path | None = None) -> bool:
+    """Report whether the app's dependencies are ready, with exact next commands.
+
+    ``--llama-server`` is deliberately llama-only, so this never installs anything:
+    it only makes an incomplete environment explicit and names the command that
+    finishes the job.
+
+    Args:
+        venv_path: Explicit environment override (see ``resolve_venv_dir``).
+
+    Returns:
+        True when the launcher interpreter imports every required module.
+    """
+    python_executable = app_python_executable(venv_path)
+    missing = missing_modules(python_executable)
+    if not missing:
+        print(f"\n  ✓ Python dependencies ready for {python_executable}")
+        print(f"     Launch with: {launch_command(python_executable, 'start.py', '--start-llama')}")
+        return True
+
+    venv_dir = resolve_venv_dir(venv_path)
+    print("\n" + "=" * 68)
+    print("  ⚠️ Python dependencies are NOT installed for the launcher interpreter")
+    print(f"     Interpreter: {python_executable}")
+    print(f"     Missing modules: {', '.join(missing)}")
+    print(f"     '{python_executable.name} start.py' would fail with 'No module named {missing[0]}'.")
+    print("  Install them first (creates an isolated environment automatically when the")
+    print("  system Python refuses installs, e.g. PEP 668 externally-managed hosts):")
+    print("      python3 setup.py")
+    print("  Then launch with:")
+    print(f"      {launch_command(venv_python_path(venv_dir), 'start.py', '--start-llama')}")
+    print("=" * 68)
+    return False
+
+
 def install_dependencies(
     use_lockfile: bool = False,
     upgrade: bool = False,
+    venv_path: str | Path | None = None,
 ) -> bool:
-    """Install project dependencies using pip.
+    """Install project dependencies, provisioning an isolated environment if needed.
+
+    On an externally-managed (PEP 668) system interpreter the install is redirected
+    into a virtual environment instead of being attempted and failing, so the
+    reported success always means "the launcher interpreter can import the app".
 
     Args:
         use_lockfile: If True, install from requirements-lock.txt instead of requirements.txt.
         upgrade: If True, pass --upgrade to pip.
+        venv_path: Explicit environment override (see ``resolve_venv_dir``).
 
     Returns:
-        True if pip install exited with code 0.
+        True if the provisioned interpreter imports every required module.
     """
     req_file = REPO_ROOT / ("requirements-lock.txt" if use_lockfile else "requirements.txt")
     if not req_file.exists():
@@ -646,18 +1043,31 @@ def install_dependencies(
     print(f"  📦 INSTALLING DEPENDENCIES ({req_file.name})")
     print("=" * 68)
 
+    if not interpreter_accepts_pip_installs():
+        venv_dir = resolve_venv_dir(venv_path)
+        print(f"  • Cannot install into {sys.executable}: {install_blocked_reason()}")
+        print(f"  • Provisioning an isolated environment instead: {venv_dir}")
+        return provision_venv_dependencies(venv_dir, use_lockfile=use_lockfile, upgrade=upgrade) is not None
+
     cmd = [sys.executable, "-m", "pip", "install", "-r", str(req_file)]
     if upgrade:
         cmd.append("--upgrade")
 
+    print(f"  • Interpreter: {sys.executable}")
     try:
         proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
         if proc.returncode == 0:
+            missing = missing_modules(sys.executable)
+            if missing:
+                print(
+                    f"\n❌ pip succeeded, but these modules still fail to import: {', '.join(missing)}",
+                    file=sys.stderr,
+                )
+                return False
             print(f"\n✓ Successfully installed dependencies from {req_file.name}")
             return True
-        else:
-            print(f"\n❌ pip install exited with status {proc.returncode}", file=sys.stderr)
-            return False
+        print(f"\n❌ pip install exited with status {proc.returncode}", file=sys.stderr)
+        return False
     except Exception as err:
         print(f"\n❌ Error running pip: {err}", file=sys.stderr)
         return False
@@ -669,18 +1079,43 @@ def run_full_setup(
     use_lockfile: bool = False,
     skip_llama: bool = False,
     cpu_only: bool = False,
+    venv_path: str | Path | None = None,
 ) -> int:
-    """Execute complete initial setup: directories, dependencies, models, and native llama-server."""
+    """Execute complete initial setup: directories, dependencies, models, and native llama-server.
+
+    Args:
+        skip_vlm: Skip the large VLM GGUF downloads.
+        force_models: Re-download artifacts that already exist.
+        use_lockfile: Install from requirements-lock.txt instead of requirements.txt.
+        skip_llama: Skip native llama-server acquisition.
+        cpu_only: Force the CPU llama-server build.
+        venv_path: Explicit isolated-environment override.
+
+    Returns:
+        Process exit code: 0 only when dependencies are verified importable.
+    """
     print("=" * 68)
     print("  🚀 Local-First Multimodal PDF Intelligence System — Setup")
     print("=" * 68)
 
     ensure_project_directories()
 
-    # Step 1: Install dependencies
-    deps_ok = install_dependencies(use_lockfile=use_lockfile)
-    if not deps_ok:
-        print("⚠️ Warning: Dependency installation reported issues. Continuing with setup...")
+    # Step 1: Install dependencies into an interpreter that can actually run the app
+    if not install_dependencies(use_lockfile=use_lockfile, venv_path=venv_path):
+        print("\n❌ Setup failed: Python dependencies are not installed for a usable interpreter.", file=sys.stderr)
+        print("   start.py cannot launch the Streamlit UI without them, so no launch hint is printed.", file=sys.stderr)
+        print("   Fix the pip error above (or install python3-venv on Debian/Ubuntu) and re-run:", file=sys.stderr)
+        print("       python3 setup.py", file=sys.stderr)
+        print("   To provision the environment manually instead:", file=sys.stderr)
+        print(f"       python3 -m venv {resolve_venv_dir(venv_path)}", file=sys.stderr)
+        print(
+            f"       {launch_command(venv_python_path(resolve_venv_dir(venv_path)), 'setup.py', '--deps-only')}",
+            file=sys.stderr,
+        )
+        return 1
+
+    launch_python = app_python_executable(venv_path)
+    installed_in_venv = launch_python != Path(sys.executable)
 
     # Step 2: Download models
     download_all_models(
@@ -695,19 +1130,22 @@ def run_full_setup(
     else:
         print("  ℹ️ Skipping llama-server setup (--skip-llama-server).")
 
-    # Step 4: Install current package in editable mode
-    print("\n📦 Registering local package...")
-    with contextlib.suppress(Exception):
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", "."],
-            cwd=str(REPO_ROOT),
-            check=False,
-        )
+    # Step 4: Install current package in editable mode into the launcher interpreter.
+    # The venv path already did this while provisioning, so do not repeat it there.
+    if not installed_in_venv:
+        print("\n📦 Registering local package...")
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-e", "."],
+                cwd=str(REPO_ROOT),
+                check=False,
+            )
 
     print("\n" + "=" * 68)
     print("  🎉 Setup Complete!")
+    print(f"  Dependencies are installed into: {launch_python}")
     print("  To launch the application, run:")
-    print("      python start.py --start-llama")
+    print(f"      {launch_command(launch_python, 'start.py', '--start-llama')}")
     print("=" * 68 + "\n")
     return 0
 
@@ -812,7 +1250,6 @@ setup_kwargs: dict[str, Any] = dict(
     python_requires=">=3.11",
     packages=find_packages(),
     py_modules=[
-        "main",
         "setup",
         "start",
     ],
@@ -820,6 +1257,7 @@ setup_kwargs: dict[str, Any] = dict(
     entry_points={
         "console_scripts": [
             "rag-assistant=start:main",
+            "rag-api=api.main:run",
             "rag-setup=setup:main_cli",
             "rag-download-models=setup:download_models_cli",
             "rag-setup-llama=setup:setup_llama_server_cli",
@@ -854,6 +1292,7 @@ if __name__ == "__main__":
         "--cpu-only",
         "--lockfile",
         "--force",
+        "--venv-path",
     }
     subcommands = {
         "setup",
@@ -864,7 +1303,7 @@ if __name__ == "__main__":
         "setup-llama",
     }
     is_custom_invocation = bool(
-        not raw_args or raw_args[0] in subcommands or any(arg in custom_flags for arg in raw_args)
+        not raw_args or raw_args[0] in subcommands or any(arg.split("=", 1)[0] in custom_flags for arg in raw_args)
     )
 
     if is_custom_invocation:
@@ -897,12 +1336,21 @@ if __name__ == "__main__":
         parser.add_argument("--cpu-only", action="store_true", help="Force CPU build for llama-server")
         parser.add_argument("--force", action="store_true", help="Force re-download existing files")
         parser.add_argument("--lockfile", action="store_true", help="Use requirements-lock.txt for install")
+        parser.add_argument(
+            "--venv-path",
+            type=str,
+            default=None,
+            help=f"Isolated environment directory (default: {DEFAULT_VENV_DIRNAME} or ${VENV_PATH_ENV})",
+        )
 
         parsed, _ = parser.parse_known_args(filtered_args)
 
         if parsed.deps_only:
             ensure_project_directories()
-            sys.exit(0 if install_dependencies(use_lockfile=parsed.lockfile) else 1)
+            deps_ok = install_dependencies(use_lockfile=parsed.lockfile, venv_path=parsed.venv_path)
+            if deps_ok:
+                report_dependency_preflight(venv_path=parsed.venv_path)
+            sys.exit(0 if deps_ok else 1)
         elif parsed.models_only or is_download_cmd:
             ensure_project_directories()
             target_dir = REPO_ROOT / parsed.models_dir
@@ -912,9 +1360,12 @@ if __name__ == "__main__":
         elif parsed.llama_only or is_llama_cmd:
             ensure_project_directories()
             target_tools = REPO_ROOT / parsed.tools_dir
-            sys.exit(
-                0 if setup_llama_server(tools_dir=target_tools, force=parsed.force, cpu_only=parsed.cpu_only) else 1
-            )
+            llama_ok = setup_llama_server(tools_dir=target_tools, force=parsed.force, cpu_only=parsed.cpu_only)
+            if llama_ok:
+                # llama-only setup intentionally installs no Python packages, but it must
+                # never leave the user believing the app is launchable when it is not.
+                report_dependency_preflight(venv_path=parsed.venv_path)
+            sys.exit(0 if llama_ok else 1)
         else:
             sys.exit(
                 run_full_setup(
@@ -923,6 +1374,7 @@ if __name__ == "__main__":
                     use_lockfile=parsed.lockfile,
                     skip_llama=parsed.skip_llama,
                     cpu_only=parsed.cpu_only,
+                    venv_path=parsed.venv_path,
                 )
             )
 

@@ -1,6 +1,7 @@
 """Unit tests for start.py application launcher."""
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import urllib.error
 
@@ -87,19 +88,18 @@ def test_check_llama_server_offline(capsys):
         assert "Local llama-server not detected" in captured.out
 
 
-def test_launch_streamlit_invokes_subprocess():
-    """Verify launch_streamlit constructs correct CLI invocation."""
+def test_launch_server_invokes_subprocess():
+    """Verify launch_server constructs correct CLI invocation."""
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
-        rc = start.launch_streamlit(port=8501, host="localhost", headless=True)
+        rc = start.launch_server(port=8000, host="127.0.0.1", headless=True)
         assert rc == 0
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert "streamlit" in cmd
-        assert "--server.port=8501" in cmd
-        assert "--server.address=localhost" in cmd
-        assert "--server.headless=true" in cmd
-        assert "--browser.gatherUsageStats=false" in cmd
+        assert "uvicorn" in cmd
+        assert "--port=8000" in cmd
+        assert "--host=127.0.0.1" in cmd
+        assert "api.main:app" in cmd
 
 
 def test_main_cli_args_parsing():
@@ -108,13 +108,14 @@ def test_main_cli_args_parsing():
     with (
         patch.object(sys, "argv", test_args),
         patch("start.check_python_version", return_value=True),
+        patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.check_llama_server"),
-        patch("start.launch_streamlit", return_value=0) as mock_launch,
+        patch("start.launch_server", return_value=0) as mock_launch,
     ):
         rc = start.main()
         assert rc == 0
-        mock_launch.assert_called_once_with(port=9000, host="127.0.0.1", headless=True)
+        mock_launch.assert_called_once_with(port=9000, host="127.0.0.1", reload=False, headless=True)
 
 
 def test_is_loopback_host_classification():
@@ -143,9 +144,10 @@ def test_main_refuses_non_loopback_bind_without_opt_in(monkeypatch):
     with (
         patch.object(sys, "argv", test_args),
         patch("start.check_python_version", return_value=True),
+        patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.check_llama_server"),
-        patch("start.launch_streamlit") as mock_launch,
+        patch("start.launch_server") as mock_launch,
     ):
         rc = start.main()
     assert rc == 2
@@ -159,13 +161,14 @@ def test_main_allows_non_loopback_with_flag(monkeypatch):
     with (
         patch.object(sys, "argv", test_args),
         patch("start.check_python_version", return_value=True),
+        patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.check_llama_server"),
-        patch("start.launch_streamlit", return_value=0) as mock_launch,
+        patch("start.launch_server", return_value=0) as mock_launch,
     ):
         rc = start.main()
     assert rc == 0
-    mock_launch.assert_called_once_with(port=8501, host="0.0.0.0", headless=False)
+    mock_launch.assert_called_once_with(port=8000, host="0.0.0.0", reload=False, headless=False)
 
 
 def test_main_allows_non_loopback_with_env(monkeypatch):
@@ -175,9 +178,10 @@ def test_main_allows_non_loopback_with_env(monkeypatch):
     with (
         patch.object(sys, "argv", test_args),
         patch("start.check_python_version", return_value=True),
+        patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.check_llama_server"),
-        patch("start.launch_streamlit", return_value=0) as mock_launch,
+        patch("start.launch_server", return_value=0) as mock_launch,
     ):
         rc = start.main()
     assert rc == 0
@@ -191,12 +195,97 @@ def test_main_cli_start_llama_lifecycle(tmp_path):
     with (
         patch.object(sys, "argv", test_args),
         patch("start.check_python_version", return_value=True),
+        patch("start.check_dependencies", return_value=True),
         patch("start.ensure_directories"),
         patch("start.start_llama_server_process", return_value=mock_proc) as mock_start,
-        patch("start.launch_streamlit", return_value=0),
+        patch("start.launch_server", return_value=0),
     ):
         rc = start.main()
         assert rc == 0
         mock_start.assert_called_once()
         mock_proc.terminate.assert_called_once()
         mock_proc.wait.assert_called_once_with(timeout=5)
+
+
+def test_refuse_unsafe_bind_warns_when_non_loopback_opted_in(capsys):
+    """Explicitly allowing a non-loopback bind must still surface the exposure warning."""
+    assert start.refuse_unsafe_bind("0.0.0.0", allow_non_loopback=True) is True
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "non-loopback" in captured.err
+    assert "NO authentication" in captured.err
+
+
+def test_refuse_unsafe_bind_warns_when_env_opt_in(monkeypatch, capsys):
+    """The environment opt-in must warn as clearly as the explicit CLI flag."""
+    monkeypatch.setenv("RAG_ALLOW_NON_LOOPBACK", "1")
+
+    assert start.refuse_unsafe_bind("192.168.1.10") is True
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "192.168.1.10" in captured.err
+
+
+def test_missing_required_modules_reports_absent_module():
+    """A module that cannot be located is reported by name."""
+    with (
+        patch.object(start, "REQUIRED_MODULES", ("streamlit", "pypdf")),
+        patch("start.importlib.util.find_spec", return_value=None),
+    ):
+        assert start.missing_required_modules() == ["streamlit", "pypdf"]
+
+
+def test_missing_required_modules_empty_when_all_present():
+    """Every module resolving cleanly means nothing is missing."""
+    with patch("start.importlib.util.find_spec", return_value=object()):
+        assert start.missing_required_modules() == []
+
+
+def test_check_dependencies_passes_when_modules_present():
+    """A provisioned interpreter passes the pre-flight silently."""
+    with patch("start.missing_required_modules", return_value=[]):
+        assert start.check_dependencies() is True
+
+
+def test_check_dependencies_message_names_module_interpreter_and_fix(monkeypatch, capsys):
+    """The failure message names the module, the interpreter, and the remediation."""
+    monkeypatch.delenv(start.VENV_PATH_ENV, raising=False)
+    with (
+        patch.object(start, "REQUIRED_MODULES", ("streamlit",)),
+        patch("start.missing_required_modules", return_value=["streamlit"]),
+    ):
+        assert start.check_dependencies() is False
+
+    err = capsys.readouterr().err
+    assert "streamlit" in err
+    assert sys.executable in err
+    assert "llama-server was NOT launched" in err
+    assert "python3 setup.py" in err
+    assert str(start.repo_venv_python()) in err
+
+
+def test_main_fails_fast_without_dependencies(monkeypatch):
+    """--start-llama must not spawn llama-server when imports are missing."""
+    monkeypatch.delenv(start.VENV_PATH_ENV, raising=False)
+    test_args = ["start.py", "--start-llama"]
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("start.check_python_version", return_value=True),
+        patch("start.check_dependencies", return_value=False),
+        patch("start.start_llama_server_process") as mock_start,
+        patch("start.launch_server") as mock_launch,
+    ):
+        rc = start.main()
+
+    assert rc != 0
+    mock_start.assert_not_called()
+    mock_launch.assert_not_called()
+
+
+def test_repo_venv_python_honours_env_override(monkeypatch, tmp_path):
+    """RAG_VENV_PATH relocates the interpreter hinted in the failure message."""
+    monkeypatch.setenv(start.VENV_PATH_ENV, str(tmp_path / "custom"))
+    suffix = ("Scripts", "python.exe") if sys.platform == "win32" else ("bin", "python")
+    assert start.repo_venv_python() == tmp_path / "custom" / Path(*suffix)

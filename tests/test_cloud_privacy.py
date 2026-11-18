@@ -222,39 +222,17 @@ def test_ai_model_set_cloud_mode_idempotent_preserves_connections() -> None:
 
 
 def test_per_provider_api_key_lookup(monkeypatch) -> None:
-    """Verify LiteLLMProvider uses per-provider dictionary in session state (WR-01)."""
+    """Verify LiteLLMProvider strictly uses constructor key or gated env vars (C7)."""
     from providers.litellm_provider import _resolve_api_key_for_model
 
-    class FakeSessionState(dict):
-        pass
+    # 1. Explicit key always wins
+    assert _resolve_api_key_for_model("groq/llama-3.3-70b-versatile", explicit_key="my-key") == "my-key"
 
-    fake_state = FakeSessionState(
-        cloud_api_keys={
-            "groq": "gsk_groq_secret",
-            "openai": "sk_openai_secret",
-            "anthropic": "sk_ant_secret",
-        },
-        cloud_api_key="legacy_polluted_key",
-    )
-
-    import streamlit as st
-
-    monkeypatch.setattr(st, "session_state", fake_state, raising=False)
-
-    groq_key = _resolve_api_key_for_model("groq/llama-3.3-70b-versatile")
-    assert groq_key == "gsk_groq_secret"
-
-    openai_key = _resolve_api_key_for_model("openai/gpt-4o-mini")
-    assert openai_key == "sk_openai_secret"
-
-    anthropic_key = _resolve_api_key_for_model("anthropic/claude-3-5-haiku-20241022")
-    assert anthropic_key == "sk_ant_secret"
-
-    # Verify that if provider key is empty, legacy cloud_api_key is strictly ignored
-    fake_state_empty = FakeSessionState(
-        cloud_api_keys={"groq": "", "openai": "", "anthropic": ""},
-        cloud_api_key="legacy_polluted_key",
-    )
-    monkeypatch.setattr(st, "session_state", fake_state_empty, raising=False)
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    # 2. Env fallback blocked when RAG_ALLOW_ENV_KEYS is not set
+    monkeypatch.delenv("RAG_ALLOW_ENV_KEYS", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "env-key")
     assert _resolve_api_key_for_model("groq/llama-3.3-70b-versatile") is None
+
+    # 3. Env fallback allowed when RAG_ALLOW_ENV_KEYS=1
+    monkeypatch.setenv("RAG_ALLOW_ENV_KEYS", "1")
+    assert _resolve_api_key_for_model("groq/llama-3.3-70b-versatile") == "env-key"

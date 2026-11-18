@@ -2,17 +2,17 @@
 
 Usage:
     python start.py
-    python start.py --port 8501 --host localhost
+    python start.py --port 8000 --host 127.0.0.1
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import ipaddress
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import contextlib
 import sys
@@ -35,7 +35,25 @@ os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 REPO_ROOT = Path(__file__).resolve().parent
 
-# Host values that keep the single-user Streamlit UI reachable only from this machine.
+# Modules the API server resolves at import time. Checking them before spawning anything is
+# what turns "llama-server is up but FastAPI cannot import" into an immediate,
+# actionable exit.
+REQUIRED_MODULES: tuple[str, ...] = (
+    "fastapi",
+    "uvicorn",
+    "dotenv",
+    "pydantic",
+    "pydantic_settings",
+    "httpx",
+    "langchain_text_splitters",
+    "pypdf",
+)
+
+# Must match setup.py's provisioning default so the remediation hint is accurate.
+DEFAULT_VENV_DIRNAME = ".venv"
+VENV_PATH_ENV = "RAG_VENV_PATH"
+
+# Host values that keep the single-user API / UI reachable only from this machine.
 _LOOPBACK_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"}
 _NON_LOOPBACK_OPT_IN_ENV = "RAG_ALLOW_NON_LOOPBACK"
 
@@ -57,7 +75,7 @@ def non_loopback_opt_in() -> bool:
 
 
 def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
-    """Refuse a non-loopback UI bind unless the operator explicitly opted in.
+    """Refuse a non-loopback bind unless the operator explicitly opted in.
 
     The application has no authentication layer: every indexed document and the
     cloud API-key settings page are readable by anyone who can reach the port.
@@ -66,11 +84,21 @@ def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
     Returns:
         True when the bind is allowed, False when it must be refused.
     """
-    if is_loopback_host(host) or allow_non_loopback or non_loopback_opt_in():
+    if is_loopback_host(host):
+        return True
+
+    if allow_non_loopback or non_loopback_opt_in():
+        print(
+            f"WARNING: Binding server to non-loopback host '{host}'.\n"
+            "   This application has NO authentication: anyone who can reach this\n"
+            "   port can read every indexed document and the cloud API-key page.\n"
+            "   Only do this on a trusted, isolated network.",
+            file=sys.stderr,
+        )
         return True
 
     print(
-        f"❌ Refusing to bind Streamlit to non-loopback host '{host}'.\n"
+        f"❌ Refusing to bind server to non-loopback host '{host}'.\n"
         "   This application is single-user and has NO authentication: any host\n"
         "   that can reach this port can read every indexed document and the\n"
         "   cloud API-key settings page.\n"
@@ -82,10 +110,11 @@ def refuse_unsafe_bind(host: str, allow_non_loopback: bool = False) -> bool:
 
 
 def print_banner() -> None:
-    """Print ASCII startup banner."""
+    """Print ASCII startup banner with the detected native runtime version."""
     print("=" * 68)
     print("  📄 Local-First Multimodal PDF Intelligence System")
-    print("  Hybrid Search • RapidOCR • Docling • Qwen2-VL 2B • Verifiable Citations")
+    print("  Hybrid Search • RapidOCR • Docling • Qwen3.5-2B • Verifiable Citations")
+    print(f"  Runtime: {runtime_status_label()}")
     print("=" * 68)
 
 
@@ -95,6 +124,82 @@ def check_python_version() -> bool:
         print(f"❌ Error: Python 3.11+ required. Detected: {sys.version.split()[0]}", file=sys.stderr)
         return False
     return True
+
+
+def repo_venv_dir() -> Path:
+    """Return the isolated environment directory setup.py provisions into."""
+    override = os.environ.get(VENV_PATH_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return REPO_ROOT / DEFAULT_VENV_DIRNAME
+
+
+def repo_venv_python() -> Path:
+    """Return the interpreter path inside the project virtual environment."""
+    venv_dir = repo_venv_dir()
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def missing_required_modules() -> list[str]:
+    """Return the modules main.py needs that this interpreter cannot import."""
+    missing: list[str] = []
+    for name in REQUIRED_MODULES:
+        try:
+            if importlib.util.find_spec(name) is None:
+                missing.append(name)
+        except (ImportError, AttributeError, ValueError):
+            missing.append(name)
+    return missing
+
+
+def check_dependencies() -> bool:
+    """Fail fast when the running interpreter is missing the app's dependencies.
+
+    Called before any subprocess is spawned: if Streamlit cannot be imported there is
+    no point starting llama-server, and doing so would leave an orphan process behind
+    once the UI launch fails.
+
+    Returns:
+        True when every required module is importable, False otherwise.
+    """
+    missing = missing_required_modules()
+    if not missing:
+        return True
+
+    venv_python = repo_venv_python()
+    venv_hint = ""
+    if venv_python.exists():
+        venv_hint = (
+            f"\n   A project environment already exists at {repo_venv_dir()}.\n"
+            f"   Launch with that interpreter instead:\n"
+            f"       {venv_python} start.py"
+        )
+
+    # Echo the user's own intent so the suggested command is a drop-in replacement.
+    relaunch = f"{venv_python} start.py"
+    if "--start-llama" in sys.argv:
+        relaunch += " --start-llama"
+
+    sys.stdout.flush()
+    print(
+        f"❌ Error: this Python interpreter is missing required modules: {', '.join(missing)}\n"
+        f"   Interpreter: {sys.executable}\n"
+        f"   The Streamlit UI cannot start, so llama-server was NOT launched.\n"
+        f"\n"
+        f"   Install the dependencies with:\n"
+        f"       python3 setup.py\n"
+        f"   That command creates {repo_venv_dir()} (or reuses it) and installs every\n"
+        f"   dependency plus this package into it. Then launch with:\n"
+        f"       {relaunch}"
+        f"{venv_hint}\n"
+        f"\n"
+        f"   To install into this interpreter instead:\n"
+        f"       {sys.executable} -m pip install -r requirements.txt",
+        file=sys.stderr,
+    )
+    return False
 
 
 def ensure_directories() -> None:
@@ -109,17 +214,26 @@ def ensure_directories() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+# Local artifacts: Qwen3.5-2B weights plus its F16 vision projector.
+LOCAL_GGUF_FILENAME = "qwen3.5-2b-q4_k_m.gguf"
+LOCAL_MMPROJ_FILENAME = "qwen3.5-2b-mmproj-f16.gguf"
+
+
+def runtime_status_label() -> str:
+    """Describe the installed native runtime relative to the expected build."""
+    try:
+        from core.runtime_info import runtime_status_line
+
+        return runtime_status_line(REPO_ROOT)
+    except Exception:
+        return "llama-server not detected (run 'python setup.py --llama-server')"
+
+
 def get_llama_server_binary() -> Path | None:
     """Locate llama-server executable on system PATH or local tools/ directory."""
-    on_path = shutil.which("llama-server")
-    if on_path:
-        return Path(on_path)
-    local_bin = (
-        REPO_ROOT / "tools" / "llama-server" / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
-    )
-    if local_bin.exists():
-        return local_bin
-    return None
+    from core.runtime_info import find_llama_server_binary
+
+    return find_llama_server_binary(REPO_ROOT)
 
 
 def check_llama_server(host: str = "127.0.0.1", port: int = 8080) -> None:
@@ -148,8 +262,8 @@ def check_llama_server(host: str = "127.0.0.1", port: int = 8080) -> None:
     print(f"  ℹ️ Local llama-server not detected at http://{host}:{port}")
     print("     The UI will launch in local offline mode (or user-consented cloud mode).")
     print(
-        f"     To launch llama-server, run: {bin_cmd} -m models/qwen3-vl-2b-instruct-q4_k_m.gguf "
-        f"--mmproj models/mmproj-f16.gguf -c 4096 -ngl 28 --port {port}"
+        f"     To launch llama-server, run: {bin_cmd} -m models/{LOCAL_GGUF_FILENAME} "
+        f"--mmproj models/{LOCAL_MMPROJ_FILENAME} -c 4096 -ngl 28 --port {port}"
     )
     print("     (Or start both together with: python start.py --start-llama)")
 
@@ -167,9 +281,9 @@ def start_llama_server_process(
         print("   Run 'python setup.py --llama-server' to install it automatically.", file=sys.stderr)
         return None
 
-    # Legacy artifact filename; GGUF metadata reports Qwen2-VL-2B-Instruct.
-    model_path = REPO_ROOT / "models" / "qwen3-vl-2b-instruct-q4_k_m.gguf"
-    mmproj_path = REPO_ROOT / "models" / "mmproj-f16.gguf"
+    # Qwen3.5-2B weights and its matching Qwen3-VL merger projector.
+    model_path = REPO_ROOT / "models" / LOCAL_GGUF_FILENAME
+    mmproj_path = REPO_ROOT / "models" / LOCAL_MMPROJ_FILENAME
 
     if not model_path.exists():
         print(f"⚠️ Warning: Model weights not found at {model_path}.", file=sys.stderr)
@@ -237,37 +351,54 @@ def start_llama_server_process(
     return proc
 
 
-def launch_streamlit(port: int = 8501, host: str = "localhost", headless: bool = False) -> int:
-    """Launch Streamlit frontend subprocess with forwarded arguments."""
-    main_script = REPO_ROOT / "main.py"
-    if not main_script.exists():
-        print(f"❌ Error: main.py not found at {main_script}", file=sys.stderr)
-        return 1
-
+def launch_server(port: int = 8000, host: str = "127.0.0.1", reload: bool = False, headless: bool = False) -> int:
+    """Launch FastAPI + Uvicorn server subprocess with forwarded arguments."""
     cmd = [
         sys.executable,
         "-m",
-        "streamlit",
-        "run",
-        str(main_script),
-        f"--server.port={port}",
-        f"--server.address={host}",
-        f"--server.headless={'true' if headless else 'false'}",
-        "--browser.gatherUsageStats=false",
+        "uvicorn",
+        "api.main:app",
+        f"--port={port}",
+        f"--host={host}",
     ]
+    if reload:
+        cmd.append("--reload")
 
-    print(f"\n🚀 Launching Streamlit web application on http://{host}:{port} ...")
+    print(f"\n🚀 Launching RAG Assistant on http://{host}:{port} ...")
+    env = os.environ.copy()
+    if (REPO_ROOT / "frontend" / "out").exists():
+        env["RAG_SERVE_FRONTEND"] = "1"
+        print("   ✓ Static frontend build detected in frontend/out (serving unified web app)")
+    else:
+        print("   ℹ️ Static frontend build not found; serving API endpoints only.")
     print("   Press Ctrl+C to stop the server.\n")
 
+    if not headless and is_loopback_host(host):
+
+        def _open_browser():
+            time.sleep(1.2)
+            import webbrowser
+
+            with contextlib.suppress(Exception):
+                webbrowser.open(f"http://{host}:{port}")
+
+        import threading
+
+        threading.Thread(target=_open_browser, daemon=True).start()
+
     try:
-        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
         return proc.returncode
     except KeyboardInterrupt:
         print("\n\n🛑 Application stopped by user.")
         return 0
     except Exception as err:
-        print(f"\n❌ Error starting Streamlit process: {err}", file=sys.stderr)
+        print(f"\n❌ Error starting server process: {err}", file=sys.stderr)
         return 1
+
+
+# Backward compatibility alias for tests
+launch_streamlit = launch_server
 
 
 def main() -> int:
@@ -276,8 +407,12 @@ def main() -> int:
         description="Launch Local-First Multimodal PDF Intelligence System",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--port", type=int, default=8501, help="Streamlit port")
-    parser.add_argument("--host", type=str, default="localhost", help="Streamlit bind address")
+    default_port = int(os.environ.get("RAG_API_PORT", "8000"))
+    default_host = os.environ.get("RAG_API_HOST", "127.0.0.1")
+
+    parser.add_argument("--port", type=int, default=default_port, help="API server port")
+    parser.add_argument("--host", type=str, default=default_host, help="API bind address")
+    parser.add_argument("--reload", action="store_true", help="Enable live code reload (uvicorn --reload)")
     parser.add_argument(
         "--allow-non-loopback",
         action="store_true",
@@ -304,6 +439,11 @@ def main() -> int:
     if not check_python_version():
         return 1
 
+    # Fail before any subprocess exists: a missing dependency would otherwise surface
+    # only after llama-server had been started in the background.
+    if not check_dependencies():
+        return 3
+
     if not refuse_unsafe_bind(args.host, allow_non_loopback=args.allow_non_loopback):
         return 2
 
@@ -321,7 +461,7 @@ def main() -> int:
         check_llama_server(host=args.llama_host, port=args.llama_port)
 
     try:
-        return launch_streamlit(port=args.port, host=args.host, headless=args.headless)
+        return launch_server(port=args.port, host=args.host, reload=args.reload, headless=args.headless)
     finally:
         if llama_proc is not None:
             print("\n🛑 Stopping background llama-server...")

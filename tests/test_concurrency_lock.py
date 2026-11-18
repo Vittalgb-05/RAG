@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.local_llm import AiModel, InferenceGate
+from core.models import EvidenceSnippet, RetrievalResult
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 
 
@@ -186,13 +187,30 @@ def test_ai_model_generate_text_guarded() -> None:
     assert not InferenceGate.is_locked(), "InferenceGate must be released after generation"
 
 
+def _dummy_retrieval_result() -> RetrievalResult:
+    return RetrievalResult(
+        query="hello",
+        snippets=[
+            EvidenceSnippet(
+                content="dummy evidence",
+                doc_id="doc_1",
+                filename="doc.pdf",
+                page=1,
+                chunk_id="chk_1",
+                score=0.9,
+                rank=1,
+            )
+        ],
+    )
+
+
 def test_ai_model_streaming_busy_yields_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test ask_a_question_from_pdf_stream yields busy warning when gate cannot be acquired."""
     provider = DummyProvider()
     model = AiModel(provider=provider)
 
     monkeypatch.setattr(InferenceGate, "acquire", MagicMock(return_value=False))
-    tokens = list(model.ask_a_question_from_pdf_stream(prompt="hello"))
+    tokens = list(model.ask_a_question_from_pdf_stream(prompt="hello", retrieval_result=_dummy_retrieval_result()))
     assert len(tokens) == 1
     assert "System is busy processing another inference request" in tokens[0]
 
@@ -202,7 +220,7 @@ def test_streaming_generator_close_releases_gate() -> None:
     provider = DummyProvider()
     model = AiModel(provider=provider)
 
-    stream = model.ask_a_question_from_pdf_stream(prompt="hello")
+    stream = model.ask_a_question_from_pdf_stream(prompt="hello", retrieval_result=_dummy_retrieval_result())
     assert next(stream) == "token1 "
     assert InferenceGate.is_locked()
 
@@ -216,7 +234,7 @@ def test_streaming_consumer_exception_releases_gate() -> None:
     provider = DummyProvider()
     model = AiModel(provider=provider)
 
-    stream = model.ask_a_question_from_pdf_stream(prompt="hello")
+    stream = model.ask_a_question_from_pdf_stream(prompt="hello", retrieval_result=_dummy_retrieval_result())
     assert next(stream) == "token1 "
     assert InferenceGate.is_locked()
 

@@ -2,25 +2,32 @@
 
 Provides unified streaming response generation, bounded context budgeting,
 prompt injection isolation (<document_context>), and resilient fallback between
-local llama-server (Qwen2-VL 2B GGUF) and cloud Groq inference.
+local llama-server (Qwen3.5-2B GGUF) and cloud Groq inference.
 """
 
 from collections.abc import Generator
 from contextlib import contextmanager
 import logging
 import threading
-import warnings
 
 from core.citation_validator import CitationVerificationResult, validate_citations
-from core.query_intent import contextualize_query, resolve_retrieval, whole_document_char_budget
 from retrieval.hybrid_retriever import HybridRetriever
 from providers.llama_cpp_provider import LlamaCppProvider
 from retrieval.local_embedding import LocalEmbedding
 from providers.model_provider import BaseModelProvider, HealthStatus, ProviderCapabilities
 from core.models import RetrievalResult
-from core.prompt_budget import DEFAULT_MAX_OUTPUT_TOKENS, assemble_grounded_messages
+from core.prompt_budget import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    SUMMARY_SYSTEM_TEMPLATE,
+    SYSTEM_GROUNDING_TEMPLATE,
+    assemble_grounded_messages,
+)
 
 logger = logging.getLogger(__name__)
+
+# Canonical abstention text. It is recognised by core.citation_validator.is_abstention
+# so an empty-evidence request is treated as a valid abstention, never as a grounded answer.
+INSUFFICIENT_EVIDENCE_MESSAGE = "The document does not contain sufficient evidence to answer this question."
 
 
 class InferenceGate:
@@ -201,9 +208,27 @@ class AiModel:
         if cloud_provider is not None:
             self.cloud_provider = cloud_provider
 
-        self.close()
-        self.provider = self._detect_provider()
+        if target_mode:
+            self.swap_provider(self.cloud_provider, cloud=True)
+        else:
+            self.swap_provider(None, cloud=False)
+
+    def swap_provider(self, new_provider: BaseModelProvider | None, *, cloud: bool) -> None:
+        """Construct/validate new provider first, assign, then close old provider (B3)."""
+        old = self.provider
+        if cloud:
+            if new_provider is None or not getattr(new_provider, "user_consented", False):
+                raise PermissionError("Cloud mode requires an explicitly consented provider (user_consented=True).")
+            self.provider = new_provider
+            self.cloud_provider = new_provider
+            self.cloud_mode = True
+        else:
+            local = LlamaCppProvider()
+            self.provider = local
+            self.cloud_mode = False
         self.model_name = self.provider.get_capabilities().model_name
+        if old is not None and old is not self.provider:
+            old.close()
 
     def _detect_provider(self) -> BaseModelProvider:
         """Select active provider based on local health and explicit cloud_mode.
@@ -252,74 +277,56 @@ class AiModel:
         chat_history: list[dict[str, str]] | None = None,
         retrieval_result: RetrievalResult | None = None,
         doc_id: str | None = None,
+        mode: str = "qa",
+        cancel: threading.Event | None = None,
     ) -> Generator[str, None, None]:
         """Stream answer tokens grounded in retrieved document context.
 
         Args:
-            pdf_path: Path to PDF if building embedding on-the-fly.
+            pdf_path: Path to PDF (deprecated/legacy).
             prompt: User question.
             local_embedding: Existing vector index or hybrid retriever instance.
-            chat_history: Prior conversation turns.
-            retrieval_result: Optional pre-computed canonical RetrievalResult (RETR-04).
+            chat_history: Prior conversation turns. Ignored for summary requests.
+            retrieval_result: Canonical RetrievalResult (required for grounded QA).
             doc_id: Optional document scope used when retrieving internally.
+            mode: ``"qa"`` for targeted questions or ``"summary"`` for the dedicated
+                  document-wide summary pipeline (summary template, no chat history).
+            cancel: Optional threading.Event to abort token streaming cooperatively.
 
         Yields:
             Token text chunks as generated.
         """
+        is_summary = mode == "summary"
         caps = self.provider.get_capabilities()
-        if retrieval_result is not None:
-            relevant_sections = retrieval_result.formatted_evidence()
-        else:
-            if local_embedding is None and pdf_path:
-                warnings.warn(
-                    "Direct unindexed PDF ingestion in ask_a_question_from_pdf_stream has been deprecated and removed. "
-                    "Callers must index documents via DocStore/LanceDB and provide an indexed retriever or explicit RetrievalResult.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                raise ValueError(
-                    "Direct unindexed PDF ingestion in ask_a_question_from_pdf_stream has been removed. "
-                    "Please provide an indexed retriever (LocalEmbedding or HybridRetriever) or explicit RetrievalResult."
-                )
+        if retrieval_result is None:
+            raise ValueError(
+                "retrieval_result is required in ask_a_question_from_pdf_stream; "
+                "direct unindexed retrieval paths have been removed."
+            )
 
-            # Contextualize the search query only when the prompt is a short follow-up.
-            # Shared helper keeps the UI and AiModel paths from drifting (CONCERNS.md).
-            search_query = contextualize_query(prompt, chat_history)
-
-            if local_embedding:
-                if isinstance(local_embedding, HybridRetriever):
-                    retrieval_result = resolve_retrieval(
-                        local_embedding,
-                        search_query,
-                        doc_id=doc_id,
-                        k=10,
-                        max_context_chars=whole_document_char_budget(caps.context_window),
-                    )
-                    relevant_sections = retrieval_result.formatted_evidence()
-                elif hasattr(local_embedding, "get_context"):
-                    relevant_sections = local_embedding.get_context(search_query, k=10)
-                    if hasattr(local_embedding, "last_retrieval_result"):
-                        retrieval_result = local_embedding.last_retrieval_result
-                elif hasattr(local_embedding, "search_hybrid"):
-                    retrieval_result = local_embedding.search_hybrid(search_query, k=10)
-                    relevant_sections = (
-                        retrieval_result.formatted_evidence()
-                        if hasattr(retrieval_result, "formatted_evidence")
-                        else str(retrieval_result)
-                    )
-                else:
-                    relevant_sections = ""
-            else:
-                relevant_sections = ""
-
+        relevant_sections = retrieval_result.formatted_evidence()
         self.last_retrieval_result = retrieval_result
+
+        # Summary requests must abstain when no evidence reached the prompt. Calling
+        # the model with an empty context is what allowed a summary-shaped template
+        # to invent content for a document that produced no usable text.
+        if is_summary and not relevant_sections.strip():
+            yield INSUFFICIENT_EVIDENCE_MESSAGE
+            return
+
+        # Summaries are built from document evidence only. Prior chat turns may
+        # discuss a different document, so they are deliberately excluded to stop
+        # cross-document leakage after a document switch.
+        effective_history = [] if is_summary else (chat_history or [])
+        system_template = SUMMARY_SYSTEM_TEMPLATE if is_summary else SYSTEM_GROUNDING_TEMPLATE
 
         messages = assemble_grounded_messages(
             prompt=prompt,
             context_text=relevant_sections,
-            history=chat_history,
+            history=effective_history,
             max_context_tokens=caps.context_window,
             truncation_meta=self.last_truncation_warning,
+            system_template=system_template,
         )
 
         system_prompt = messages[0]["content"]
@@ -328,16 +335,19 @@ class AiModel:
 
         acquired = InferenceGate.acquire(timeout=60.0)
         if not acquired:
-            yield "⚠️ System is busy processing another inference request. Please retry in a moment."
+            yield "System is busy processing another inference request. Please retry in a moment."
             return
 
         try:
-            yield from self.provider.stream_text(
+            for chunk in self.provider.stream_text(
                 prompt=bounded_prompt,
                 system_prompt=system_prompt,
                 history=history_turns,
                 max_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
-            )
+            ):
+                if cancel is not None and cancel.is_set():
+                    break
+                yield chunk
         finally:
             # Guarantees the gate is released when the stream finishes normally,
             # when the provider raises, and when a consumer abandons the

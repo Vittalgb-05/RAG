@@ -1,60 +1,10 @@
 """Unit tests for startup state hydration from SQLite and LanceDB."""
 
-from unittest.mock import MagicMock, patch
-import pytest
-import streamlit as st
+from unittest.mock import MagicMock
 
 from core.doc_store import DocStore
 from core.models import Chunk, Document
-from ui.hydration import hydrate_startup_state
-
-
-@pytest.fixture(autouse=True)
-def clean_session_state():
-    """Ensure clean Streamlit session state for hydration testing."""
-    st.session_state.clear()
-    st.session_state.doc_ids = set()
-    st.session_state.failed_doc_ids = set()
-    st.session_state.indexed_files = set()
-    st.session_state.document_metadata = {}
-    st.session_state.hybrid_retriever = None
-    st.session_state.local_embedding = None
-
-
-def test_hydrate_startup_state_populates_session(tmp_path):
-    """Verify indexed documents from DocStore populate session_state upon startup."""
-    db_file = tmp_path / "test_hydrate.db"
-    store = DocStore(db_file)
-
-    doc = Document(
-        doc_id="doc_hydrate_01",
-        filename="report.pdf",
-        sha256="a" * 64,
-        size_bytes=1024,
-        num_pages=3,
-        status="indexed",
-        upload_time="2026-10-19T00:00:00Z",
-        num_chunks=5,
-    )
-    store.upsert_document(doc)
-
-    with patch("ui.hydration.HybridRetriever") as mock_retriever_cls:
-        mock_instance = MagicMock()
-        mock_instance.count_chunks.return_value = 5
-        mock_retriever_cls.return_value = mock_instance
-
-        with patch("ui.hydration.LocalEmbedding") as mock_embed_cls:
-            mock_embed = MagicMock()
-            mock_embed_cls.return_value = mock_embed
-
-            hydrate_startup_state(store)
-
-    assert "doc_hydrate_01" in st.session_state.doc_ids
-    assert "report.pdf" in st.session_state.indexed_files
-    meta = st.session_state.document_metadata.get("doc_hydrate_01")
-    assert meta is not None
-    assert meta["pages"] == 3
-    assert meta["chunks"] == 5
+from services.hydration import HydrationReport, hydrate_startup_state
 
 
 def _indexed_document(doc_id: str = "doc_valid") -> Document:
@@ -70,27 +20,56 @@ def _indexed_document(doc_id: str = "doc_valid") -> Document:
     )
 
 
+def test_hydrate_startup_state_returns_report(tmp_path):
+    """Verify indexed documents from DocStore return proper HydrationReport."""
+    db_file = tmp_path / "test_hydrate.db"
+    store = DocStore(db_file)
+
+    doc = Document(
+        doc_id="doc_hydrate_01",
+        filename="report.pdf",
+        sha256="a" * 64,
+        size_bytes=1024,
+        num_pages=3,
+        status="indexed",
+        upload_time="2026-10-19T00:00:00Z",
+        num_chunks=5,
+    )
+    store.upsert_document(doc)
+
+    mock_retriever = MagicMock()
+    mock_retriever.count_chunks.return_value = 5
+    mock_retriever.has_document.return_value = True
+    mock_retriever.get_visual_evidence.return_value = []
+
+    mock_embed = MagicMock()
+
+    report = hydrate_startup_state(store, retriever=mock_retriever, embedding=mock_embed)
+
+    assert isinstance(report, HydrationReport)
+    assert report.restored == 1
+    assert report.repaired == 0
+    assert report.failed == 0
+
+
 def test_hydration_skips_reembedding_when_vectors_valid(tmp_path):
     """A healthy vector index must not trigger any embedding work."""
     store = DocStore(tmp_path / "valid.db")
     doc = _indexed_document()
     store.upsert_document(doc)
 
-    with patch("ui.hydration.HybridRetriever") as mock_retriever_cls:
-        retriever = MagicMock()
-        retriever.has_document.return_value = True
-        mock_retriever_cls.return_value = retriever
+    retriever = MagicMock()
+    retriever.has_document.return_value = True
+    retriever.get_visual_evidence.return_value = []
 
-        with patch("ui.hydration.LocalEmbedding") as mock_embed_cls:
-            embedding = MagicMock()
-            mock_embed_cls.return_value = embedding
+    embedding = MagicMock()
 
-            hydrate_startup_state(store)
+    report = hydrate_startup_state(store, retriever=retriever, embedding=embedding)
 
     retriever.index_chunks.assert_not_called()
     embedding.get_embeddings.assert_not_called()
-    assert st.session_state.document_metadata[doc.doc_id]["needs_reindex"] is False
-    assert st.session_state._startup_hydrated is True
+    assert report.restored == 1
+    assert report.repaired == 0
 
 
 def test_hydration_reports_progress_when_repairing_missing_vectors(tmp_path):
@@ -112,25 +91,51 @@ def test_hydration_reports_progress_when_repairing_missing_vectors(tmp_path):
 
     progress: list[tuple[int, int, str]] = []
 
-    with patch("ui.hydration.HybridRetriever") as mock_retriever_cls:
-        retriever = MagicMock()
-        # First call is the coverage scan (missing), second is post-write verification.
-        retriever.has_document.side_effect = [False, True]
-        mock_retriever_cls.return_value = retriever
+    retriever = MagicMock()
+    # First call is the coverage scan (missing), second is post-write verification.
+    retriever.has_document.side_effect = [False, True]
+    retriever.get_visual_evidence.return_value = []
 
-        with patch("ui.hydration.LocalEmbedding") as mock_embed_cls:
-            embedding = MagicMock()
-            embedding.get_embeddings.return_value.tolist.return_value = [[0.1] * 384]
-            mock_embed_cls.return_value = embedding
+    embedding = MagicMock()
+    embedding.get_embeddings.return_value.tolist.return_value = [[0.1] * 384]
 
-            hydrate_startup_state(
-                store,
-                progress_callback=lambda done, total, label: progress.append((done, total, label)),
-            )
+    report = hydrate_startup_state(
+        store,
+        retriever=retriever,
+        embedding=embedding,
+        progress_callback=lambda done, total, label: progress.append((done, total, label)),
+    )
 
     assert retriever.index_chunks.call_count == 1
     assert progress, "Repair should report progress"
-    assert progress[0][:2] == (0, 1)
-    assert progress[-1][:2] == (1, 1)
-    assert st.session_state.document_metadata[doc.doc_id]["needs_reindex"] is False
-    assert st.session_state._startup_hydrated is True
+    assert report.restored == 0
+    assert report.repaired == 1
+    assert report.failed == 0
+
+
+def test_hydration_consumes_deletion_tombstones_without_indexed_documents(tmp_path):
+    """A pending tombstone must purge vectors even when SQLite has no indexed docs."""
+    store = DocStore(tmp_path / "tombstone_hydrate.db")
+    store.record_deletion_tombstone("doc_deleted_offline")
+
+    retriever = MagicMock()
+
+    report = hydrate_startup_state(store, retriever=retriever)
+
+    retriever.delete_document.assert_called_once_with("doc_deleted_offline")
+    assert store.list_deletion_tombstones() == []
+    assert report.tombstones_consumed == 1
+
+
+def test_hydration_keeps_tombstone_when_vector_purge_fails(tmp_path):
+    """A failed vector purge must leave the tombstone for the next retry."""
+    store = DocStore(tmp_path / "tombstone_retry.db")
+    store.record_deletion_tombstone("doc_retry")
+
+    retriever = MagicMock()
+    retriever.delete_document.side_effect = RuntimeError("index unavailable")
+
+    report = hydrate_startup_state(store, retriever=retriever)
+
+    assert store.list_deletion_tombstones() == ["doc_retry"]
+    assert report.tombstones_consumed == 0

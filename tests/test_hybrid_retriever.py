@@ -5,6 +5,7 @@ import logging
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from retrieval.hybrid_retriever import DEFAULT_DB_URI, HybridRetriever, compute_rrf
 from retrieval.local_embedding import LocalEmbedding
@@ -736,3 +737,46 @@ def test_fts_status_reports_degradation_and_warns_once(tmp_path, caplog):
 
     warnings = [r for r in caplog.records if "full-text search unavailable" in r.getMessage()]
     assert len(warnings) == 1
+
+
+def test_index_health_falls_back_on_expected_storage_error(tmp_path, caplog):
+    """Index-health probes warn and fall back for storage errors instead of silently swallowing them."""
+    retriever = HybridRetriever(db_uri=tmp_path / "health")
+
+    class _BrokenTable:
+        def __len__(self):
+            raise ValueError("corrupt table metadata")
+
+        def search(self):
+            raise ValueError("corrupt table metadata")
+
+    retriever._has_lancedb = True
+    retriever._table = _BrokenTable()
+
+    with caplog.at_level(logging.WARNING, logger="retrieval.hybrid_retriever"):
+        assert retriever.count_chunks() == 0
+        assert retriever.has_document("doc_missing") is False
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("count indexed chunks" in message for message in messages)
+    assert any("check document presence" in message for message in messages)
+
+
+def test_index_health_propagates_process_fatal_errors(tmp_path):
+    """MemoryError must not be swallowed by index-health fallback handling."""
+    retriever = HybridRetriever(db_uri=tmp_path / "health_fatal")
+
+    class _FatalTable:
+        def __len__(self):
+            raise MemoryError("out of memory")
+
+        def search(self):
+            raise MemoryError("out of memory")
+
+    retriever._has_lancedb = True
+    retriever._table = _FatalTable()
+
+    with pytest.raises(MemoryError):
+        retriever.count_chunks()
+    with pytest.raises(MemoryError):
+        retriever.has_document("doc_missing")

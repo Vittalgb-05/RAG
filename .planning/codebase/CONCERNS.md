@@ -1,414 +1,358 @@
-<!-- refreshed: 2026-10-22 -->
+---
+last_mapped_commit: 6acbd27a48dddbd1b122277663ebab42d9f83f7e
+last_mapped_at: 2026-11-14
+---
 # Codebase Concerns
 
-**Analysis Date:** 2026-10-22
-**Scope:** Full repository at the on-disk working-tree state.
-**Core value under assessment:** Fast, evidence-grounded PDF summarization and QA with page-level citations, local-only operation, and a strict 4 GB VRAM ceiling.
+**Analysis Date:** 2026-11-14
 
-**Verification snapshot (2026-10-22):**
-
-- `python -m pytest -q` -> `392 passed in 49.02s`
-- `ruff check .` -> passed
-- `ruff format --check .` -> `76 files already formatted`
-- No live `llama-server` or GPU inference run was performed; `docs/TEST_RESULTS.md:17-18` still marks that path `UNTESTED`.
-
-Severity reflects impact on grounded answers, privacy/local-only guarantees, or the 4 GB runtime envelope.
-
-## Repair Verification (2026-10-22)
-
-The previously reported high-priority defects were checked against current source, not against the prior report.
-
-| Prior claim | Status | Current evidence |
-|---|---|---|
-| Downloads lacked checksum pinning | **Fixed** | Every `MODEL_REGISTRY` entry and every llama archive path has a pinned SHA-256; `download_file_with_progress()` verifies before install and deletes bad bytes; `RAG_REQUIRE_CHECKSUMS` fails closed. Covered by `tests/test_setup_checksums.py`. |
-| Streaming download could report success on a short read | **Fixed via checksum** | `setup.py:231-278` enforces `min_size_bytes` and post-write SHA-256; tests cover mismatch, and wrong existing files are replaced. There is no explicit `Content-Length` comparison; pinned checksums are the truncation guard. |
-| Write-only extraction cache with unbounded growth | **Fixed in code** | No production module persists `pages.json` / `chunks.json`; `ui/ingestion_service.py` no longer writes `.cache`. Legacy `.cache/<sha256>/...` directories from earlier runs can remain until lifecycle cleanup. Stale UI/docs still claim cache persistence (see Documentation drift). |
-| `print()` used throughout library modules | **Fixed** | Active prints remain only in operator CLIs (`setup.py`, `start.py`) and comments. Library modules use `logging.getLogger(__name__)`. |
-| Deprecated `HybridRetriever.add_vector()` shim wrote empty vectors | **Fixed** | Only `retrieval/vector_index.py::VectorIndex.add_vector()` remains. `retrieval/retriever.py` is gone. |
-| `LocalEmbedding` deprecated facades silently ran another vector store | **Open** | `retrieval/local_embedding.py:114,152` still exposes `search_hybrid()` / `get_context()` and `core/local_llm.py:299-304` still falls back to them. |
-| Ruff did not enable bugbear/pyupgrade/Sim rules | **Fixed (partial)** | `pyproject.toml` selects `E`, `F`, `W`, `B`, `UP`, `SIM` and ignores `E501`/`W291`/`W293`; `start.py` ignores `UP036`. `I` and `RUF` are not selected, and `BLE001` is not selected. |
-| Fallback mirror merge broke after lazy load | **Fixed** | `retrieval/hybrid_retriever.py:312-347` merges with the on-disk mirror instead of writing a one-document file. Correctness is fixed; cost remains O(N) (see Performance). |
-| Whole-document extraction used a fixed 10,000-character cutoff | **Fixed** | `retrieval/hybrid_retriever.py:623-637` filters in SQL before ordering/limits; `tests/test_whole_document_extraction.py` covers long documents. |
-| Visual evidence was dropped before summarization | **Fixed** | `_build_summary_sources()` in `core/summarizer.py` merges `[E#]` elements into pages. |
-| Scoped retrievals could emit no truncation warning | **Fixed** | `core/local_llm.py:351-356` and `ui/views.py:750-770` surface context truncation; intent-scoped queries now still produce an indicator when chunks were clipped. |
-| Summary session keys omitted the model version | **Fixed** | `ui/views.py:39-41` uses `summary_<doc>_<profile>_<model_version>`; `model_version` is stored and filtered at `core/doc_store.py:704-751`. |
-| JPEG visual bytes were passed to llama.cpp as `image/png` | **Fixed** | `providers/llama_cpp_provider.py:281-302` sniffs JPEG/PNG and sets the matching MIME. |
-| Library logging was unconfigured | **Fixed** | `core/logging_setup.py` configures UTF-8 rotating logs; `main.py` initializes it. |
-
-The deferred items below were re-checked and remain open. The largest residual risks are the inconsistent token budgets, silent extraction/OCR caps, unauthenticated network mode, plaintext-at-rest data, and incomplete end-to-end verification.
+Findings below were verified against source and, where noted, by constructing the Pydantic models or tracing the exact call path. Severity is scoped to the current local-first, single-user deployment: **P0** blocks a primary user flow, **P1** breaks a secondary flow or hides state, **P2** degrades quality or maintainability.
 
 ## Tech Debt
 
-**Monolithic installer and packaging (`setup.py`):**
-- Issue: `setup.py` is 930 lines mixing setuptools metadata, model registry/download verification, archive extraction, llama-server installation, dependency installation, environment diagnostics, shell profile mutation, and a custom CLI (`setup.py:686-930`).
-- Impact: every installer change is high-blast-radius; download, extraction, venv, and packaging concerns are coupled. `setup_kwargs` includes `py_modules=["setup"]` at `setup.py:814`, so the installer is also installed as an importable module; `find_packages()` can include `tests` because `tests/__init__.py` exists.
-- Fix approach: split into `installer/models.py`, `installer/llama_server.py`, `installer/deps.py`, `installer/__main__.py`, leaving a thin shim in `setup.py`; exclude `tests` explicitly from packaging; add focused failure-path tests.
+**Three divergent grounding contracts:**
+- Issue: `GroundingReport` (`core/models.py:226`) is the internal contract, `Grounding` (`api/schemas/common.py:43`) is the wire contract, and `Grounding` in `frontend/src/lib/api/types.ts:136` is a third copy. They are not compatible: the report has `verification_status` and a string `scope`, while the API schema requires `status`, `caption`, and a `Scope` object.
+- Impact: the same payload cannot be validated by the API and rendered by the UI; this has already produced the chat-history and grounding-badge failures below.
+- Fix approach: add one explicit `GroundingReport -> Grounding` mapper (or make the report the response model) and derive the frontend type from the OpenAPI schema.
 
-**Two retrieval/facade layers (`retrieval/local_embedding.py`, `retrieval/vector_index.py`, `retrieval/hybrid_retriever.py`):**
-- Issue: `LocalEmbedding` retains deprecated `search_hybrid()` / `get_context()` facades and an unused `db_uri` constructor argument (`retrieval/local_embedding.py:60-172`). The live path is `HybridRetriever` plus `VectorIndex`; `core/local_llm.py:299-304` still has a legacy fallback branch.
-- Impact: readers and future agents can follow the wrong retrieval implementation; the deprecated objects are in-memory and do not share LanceDB persistence semantics.
-- Fix approach: move callers to `HybridRetriever`, remove the facades and `db_uri`, then delete the `tests/test_hybrid_retriever.py`-level facade tests. Do this after confirming no external users.
+**Page text is modeled but never persisted:**
+- Issue: `Page.page_text` (`core/models.py:89`) is populated by Docling (`ingestion/docling_reader.py:403`), but the `pages` table has no `page_text` column (`core/doc_store.py:59-67`) and both insert paths omit it (`core/doc_store.py:415-423`, `core/doc_store.py:535-547`).
+- Impact: stored pages can only report `char_count`/status; page readers and summary generation cannot recover their text from SQLite.
+- Fix approach: add `page_text` with a schema migration and persist it in `record_pages_batch`/`record_ingestion`, or remove the field and always reconstruct pages from `Chunk` rows.
 
-**Broad exception handling and suppressed linting (`pyproject.toml`, ingestion modules):**
-- Issue: 93 `except Exception` sites remain. `BLE001` is not selected by Ruff. Some paths silently pass instead of logging: `ingestion/docling_reader.py:140`, `ingestion/docling_reader.py:224`, `ingestion/pdf_reader.py:41`.
-- Impact: conversion, indexing, and UI failures can degrade to empty content without an operator-visible cause; future broad catches compile cleanly.
-- Fix approach: enable `BLE001` with a narrow, documented per-file ignore list; replace silent passes with `logger.warning(..., exc_info=True)`; convert recoverable ingestion failures into explicit warnings returned by `IngestionService`.
+**Inert configuration and duplicated logging setup:**
+- Issue: `Settings.allow_non_loopback` (`api/config.py:14`) is never read by the API (enforcement lives separately in `start.py:72-90`). `Settings.store_originals` (`api/config.py:19`) is never consumed by ingestion. `core/logging_setup.configure_logging` (rotating handler, `core/logging_setup.py:118`) is used only by tests; runtime uses a separate implementation with a plain `FileHandler` (`api/main.py:30-41`).
+- Impact: settings appear operational but do nothing; the two logging paths diverge and the reviewed/rotated one is not the one production runs.
+- Fix approach: wire or delete the dead settings; call `core.logging_setup.configure_logging` from `api/main.py` and delete the duplicate.
 
-**Stale extraction-cache controls and documentation (`ui/views.py`, `ui/lifecycle_service.py`, `README.md`):**
-- Issue: production extraction caching was removed, but Settings still offers “Clear Disk Cache (.cache/)” (`ui/views.py:1268-1278`), lifecycle still deletes legacy cache directories, and architecture docs still describe `.cache/<sha256>/<version>` as a live cache.
-- Impact: UI controls promise a cache that no longer exists; documentation misstates startup behavior. Legacy empty directories may remain until cleanup.
-- Fix approach: remove the control or relabel it “Remove legacy cache directories”; update `README.md`, `ARCHITECTURE.md`, and `docs/EVALUATION.md` to state that extraction is recomputed.
+**README describes a removed architecture:**
+- Issue: `README.md:6`, `README.md:31`, `README.md:78`, `README.md:231` document a Streamlit UI driven by root-level `main.py` and `ui/`, which no longer exist; the runtime is FastAPI (`api/main.py`) plus Next.js (`frontend/`).
+- Impact: setup and run instructions are wrong; onboarding follows dead paths.
+- Fix approach: regenerate the architecture/run sections from `STRUCTURE.md` and the actual launcher (`start.py`).
 
-**Dependency and CI reproducibility (`requirements.txt`, `requirements-lock.txt`, `Dockerfile`, `.github/workflows/ci.yml`):**
-- Issue: `requirements.txt` uses loose lower bounds, the lock is compiled for Python 3.11 only, and `Dockerfile` installs the loose file rather than the lock. CI runs only Ubuntu with Python 3.11. Primary Windows behavior is not exercised.
-- Impact: Docker and developer environments can resolve different versions from CI; a clean install may behave differently from a tested install.
-- Fix approach: install `requirements-lock.txt` in Docker, add a Windows CI job and a Python 3.12 job if supported, and refresh the lock deliberately.
+**Silent chat persistence failures:**
+- Issue: `_finish` wraps `append_chat_message` in `except Exception: pass` (`api/routers/chat.py:95-113`).
+- Impact: a locked/corrupt SQLite database silently loses conversation history with no log line.
+- Fix approach: log at `error` with the session/message ids and surface a non-fatal warning to the client.
 
-**Model naming mismatch (`setup.py`, `core/model_identity.py`, `start.py`):**
-- Issue: Setup downloads a Qwen2-VL checkpoint renamed to `models/qwen3-vl-2b-instruct-q4_k_m.gguf`; `core/model_identity.py` accepts both architectures, and `start.py` verifies GGUF metadata to catch mislabeled files.
-- Impact: the identity guard prevents a silent wrong-model launch, but filenames, UI labels, and docs imply Qwen3-VL. Operators may fetch a different Qwen3 checkpoint that passes the architecture check but differs from the tested model.
-- Fix approach: rename the artifact to match the actual checkpoint, or pin a true Qwen3-VL checkpoint and update registry, docs, and tests together.
+**Summary length vocabulary is inconsistent:**
+- Issue: `SummaryLength` accepts `concise|standard|detailed` (`api/schemas/summaries.py:8`), but `Summarizer` treats everything except `concise` as detailed (`core/summarizer.py:410-427`, `core/summarizer.py:504-510`), while the cache key includes the raw string (`core/summarizer.py:30-32`).
+- Impact: `standard` and `detailed` generate identical output but occupy different cache rows.
+- Fix approach: normalize length before hashing (`standard -> detailed`) or define three real prompt profiles.
 
-**UI composition is concentrated in `ui/views.py`:**
-- Issue: one 1,277-line module owns helper state, chat, summarizer, library, and settings rendering.
-- Impact: hard to test in isolation and easy to create session-state coupling across workspaces.
-- Fix approach: split by workspace into `ui/views/chat.py`, `ui/views/summarizer.py`, `ui/views/library.py`, `ui/views/settings.py`; keep shared helpers in `ui/state.py`.
+**Diagnostics log endpoint ignores its filter and reads the whole file:**
+- Issue: `level` is accepted but never used (`api/routers/system.py:178`), and `readlines()` loads the entire log before slicing (`api/routers/system.py:188-190`).
+- Impact: log requests are O(file size) and the level filter is a no-op.
 
-**Deprecation warnings are globally hidden (`pyproject.toml`):**
-- Issue: pytest filters `DeprecationWarning`, so facade and dependency deprecations are invisible.
-- Impact: removals become breaking surprises rather than gradual migrations.
-- Fix approach: narrow the filter to known third-party warnings; fix project deprecations before suppressing them.
+**Job state is process-local and unbounded:**
+- Issue: `JobManager._jobs` is a plain dict (`api/jobs.py:83`) and each `Job.events` list grows without trimming (`api/jobs.py:41`, `api/jobs.py:51`).
+- Impact: memory grows for the process lifetime and all job history is lost on restart; see also Scaling Limits.
 
 ## Known Bugs
 
-### [High · open] Token budgets disagree and can exceed the configured context window
+**P0 — Every ingestion aborts on `Document(status="indexing")`:**
+- Symptoms: upload is accepted, then the job fails with `Input should be 'pending', 'indexed' or 'failed'`; no document row is written and the library stays empty. Verified by constructing `Document(status="indexing")`, which raises `ValidationError`.
+- Files: `services/ingestion.py:248-257` (constructs `Document(status="indexing")` outside the persistence `try`), `core/models.py:130-132` (`Literal["pending", "indexed", "failed"]`), `services/lifecycle.py:147` (writes the same invalid value through raw SQL).
+- Trigger: upload any PDF and run the ingestion job.
+- Workaround: none through the API. The model must permit `indexing` (and `list_documents` must read it) or ingestion must start at `pending`.
 
-`core/prompt_budget.py:73-74` defaults to reserving `max_output_tokens=1536`. `core/local_llm.py:317-322` calls `assemble_grounded_messages()` without overriding that value, but `core/local_llm.py:339` then asks the provider for `max_tokens=2048`. Separately, `core/query_intent.py:109` computes the whole-document char budget assuming only `1024` output tokens; `core/local_llm.py:296` and `ui/views.py:714` use that default.
+**P0 — `POST /summaries` cannot start a summary:**
+- Symptoms: 500 before the job is queued. Three independent blockers on the same path: `p.text` does not exist on `Page`; `Summarizer(doc_store=..., ai_model=...)` uses a keyword the constructor does not accept; `summarize_document(raw_text=...)` is not in its signature.
+- Files: `api/routers/summaries.py:107` (`p.text`), `api/routers/summaries.py:111` (`core/summarizer.py:188` defines `__init__(provider, doc_store)`), `api/routers/summaries.py:112-113` (`core/summarizer.py:514-525` accepts `doc_id, sha256, pages, chunks...`).
+- Trigger: `POST /api/v1/summaries` for any document with stored pages.
+- Workaround: none. The endpoint must pass `provider=c.ai_model` and reconstruct pages from chunks via `get_chunks_for_doc`.
 
-Effect: input selection and generation reservation are based on three different output budgets (1024, 1536, 2048). With the configured `4096` context, prompt assembly plus generation can request roughly 4,600 tokens. llama.cpp will truncate or reject depending on server flags, so the “no silent truncation” guarantee is incomplete.
+**P0 — `GET /documents/{doc_id}/pages/{page_num}` always fails:**
+- Symptoms: `AttributeError: 'DocStore' object has no attribute 'get_page'`. Even with a `get_page` method, the response reads `page.page_number` and `page.text`, which do not exist on `Page`, and `page_text` is never persisted (see Tech Debt).
+- Files: `api/routers/documents.py:140`, `api/routers/documents.py:149-150`; `core/doc_store.py:597` (only `get_pages_for_doc` exists); `core/models.py:84-89` (`page_num`, `page_text`).
+- Trigger: any page-text request from the document reader.
+- Workaround: none. Implement `get_page` or filter `get_pages_for_doc`, and return `page_num` plus reconstructed text.
 
-The summarizer has the same class of bug: `core/summarizer.py:24-31` documents 1,500 output tokens for map/reduce, `FAST_PATH_TOKEN_LIMIT=2000`, but `core/summarizer.py:407` and `core/summarizer.py:461` both request `max_tokens=2500`. A single-pass summary can reach ~4,500 tokens; a 2,500-token reduce output leaves no room for its 2,500-token consolidation prompt.
+**P1 — `GET /chat/sessions/{id}` fails for any session containing an answer:**
+- Symptoms: 500 validation error; chat history disappears after reload or after the SSE stream refetches the session.
+- Files: `api/routers/chat.py:92` and `api/routers/chat.py:108` persist `GroundingReport.model_dump()` under the `grounding` column; `api/routers/chat.py:170-172` reconstructs `Grounding(**g_raw)`; the required fields are declared in `api/schemas/common.py:43-55` but absent from `core/models.py:226-269`.
+- Trigger: default `persist_chat=True`, send one message, then `GET /api/v1/chat/sessions/{id}`.
+- Workaround: `RAG_PERSIST_CHAT=0` avoids the failure but discards history.
 
-Fix approach: define one `MAX_OUTPUT_TOKENS` per model profile, pass it to `assemble_grounded_messages()`, `whole_document_char_budget()`, and every provider call, and assert `estimated_input + max_output_tokens <= context_window`. Add unit tests that exercise the maximum-evidence path, not only the small fixtures.
+**P1 — Grounding badge never renders on a live answer:**
+- Symptoms: the `final` SSE event sends the raw `GroundingReport` under `grounding` (`api/routers/chat.py:115-123`) with `verification_status`/string `scope` and no `status`/`caption`; `GroundingBadge` reads `grounding.status` (`frontend/src/components/chat/grounding-badge.tsx:15`). The chat page then discards the payload and refetches the broken session (`frontend/src/app/(shell)/chat/page.tsx:345-350`).
+- Trigger: any streamed answer.
+- Workaround: none; map the report to the UI schema before emitting.
 
-### [High · open] Whole-document questions silently stop at 500 chunks
+**P1 — Health endpoint always reports `unreachable`:**
+- Symptoms: `/api/v1/health` returns `unreachable` with `'AiModel' object has no attribute 'get_provider_status'`.
+- Files: `api/routers/system.py:38-53`; no `get_provider_status` exists in `core/local_llm.py` or `providers/`.
+- Trigger: every health check (also drives the Docker `HEALTHCHECK`, `Dockerfile:54-55`).
+- Workaround: none; implement the probe or derive health from `get_capabilities()`/`is_locked()`.
 
-`retrieval/hybrid_retriever.py:641` calls `fetch_document_chunks(..., limit=500)`. `core/query_intent.py:227` uses that method for whole-document retrieval. A 500-page document with normal chunk sizes commonly produces more than 500 chunks, so later pages are omitted before ranking.
+**P1 — Embedding constellation fallback raises `AttributeError`:**
+- Symptoms: when LanceDB export fails or is unavailable, the endpoint iterates `self._store`, an attribute that does not exist (the fallback is `self._fallback_store`), so `/visualize/embeddings` returns 500.
+- Files: `retrieval/hybrid_retriever.py:1145`; attributes are defined at `retrieval/hybrid_retriever.py:195-205`; caller at `api/routers/visualize.py:54-62`.
+- Trigger: no LanceDB installation or a failed LanceDB query.
+- Workaround: none.
 
-There is no warning or truncation flag for this cap, and no test uses more than 500 chunks. Answers over long reports can therefore be confidently incomplete while the citation validator still reports full validity for the sampled pages.
+**P1 — Evidence Lens page images always 404:**
+- Symptoms: the endpoint returns "Original PDF not stored" even when `RAG_STORE_ORIGINALS=1`; no upload, ingestion, or lifecycle code writes `data/originals/<sha256>.pdf`.
+- Files: `api/config.py:19` (flag only), `api/routers/documents.py:176-182` (only reader), no writer in `services/ingestion.py`; frontend URL in `frontend/src/components/chat/evidence-lens-modal.tsx:21`.
+- Trigger: opening Evidence Lens for any document.
+- Workaround: none.
 
-Fix approach: remove the fixed cap or paginate until all chunks are collected; derive the budget from `num_chunks`; return a `truncated`/`omitted_chunks` field through `RetrievalResult` and surface it in the chat evidence panel. Add a regression test with >500 chunks where the answer must cite the tail.
+**P1 — VLM figure/table analysis never runs from the web upload path:**
+- Symptoms: ingestion only runs VLM analysis when `vlm_provider` is supplied (`services/ingestion.py:59`, `services/ingestion.py:200-214`), but the sole caller omits it (`api/routers/documents.py:85-89`). Detected regions are discarded, so no evidence elements/captions are indexed from the UI.
+- Trigger: upload a PDF containing figures or tables through the API.
+- Workaround: none; pass `c.ai_model` (when local and vision-capable) into `ingest_pdf`.
 
-### [Medium · open] Full setup exits successfully after failed downloads or installs
+**P2 — `EMBEDDING_MAX_LENGTH` is documented but not applied:**
+- Symptoms: the docstring promises `max_length=EMBEDDING_MAX_LENGTH` (256), but `get_embeddings` calls `model.encode` without it (`retrieval/local_embedding.py:89-106`), so truncation follows the tokenizer default (often 512) and differs from the stated invariant.
+- Trigger: chunks or queries longer than the training boundary.
+- Workaround: pass `max_length=EMBEDDING_MAX_LENGTH` to `encode`.
 
-`setup.py:686-739` calls `download_all_models()` and `setup_llama_server()` without checking either return value, suppresses `pip install -e .` failures, and then prints “Setup Complete!” and returns `0`. `download_all_models()` also ignores the return values of `precache_embedding_model()` and `precache_ocr_model()` (`setup.py:400-401`).
-
-Effect: a first-run installer can tell the user it succeeded while models, llama-server, or the package are missing. The failure appears later as a launcher error.
-
-Fix approach: aggregate per-step booleans, return non-zero if any required step failed, report optional failures distinctly, and add tests that monkeypatch each failure path.
-
-### [Medium · open] OCR and visual-analysis caps silently drop evidence
-
-`ingestion/ocr_fallback.py:34-35` caps OCR at `MAX_OCR_PAGES_PER_DOC=200` and `MAX_OCR_SECONDS_PER_DOC=300`. `ui/ingestion_service.py` limits visual analysis to `max_regions=6` (the analyzer default is 20). Pages/regions beyond the caps are logged but not represented in `IngestionResult`.
-
-Impact: a 500-page scanned document can be indexed as successfully parsed while 300 pages remain un-OCR’d; diagrams after the first six are invisible to retrieval. Chat answers may omit evidence with no user-visible “partial extraction” state. `IngestionResult.fallback_used` exists but is not rendered, and there is no separate OCR/visual degradation flag.
-
-Fix approach: add structured warnings (`pages_ocr_skipped`, `visual_regions_skipped`, `time_budget_exceeded`) to `IngestionResult`, render them in the Library and document detail views, and avoid marking a document “fully indexed” when critical pages were skipped.
-
-### [Medium · open] Vector repair does not restore visual evidence
-
-`ui/hydration.py:135-144` repairs missing vectors using only `doc_store.get_chunks_for_doc()`. `ui/ingestion_service.py:115-127` performs the same text-only repair during deduplication. `ui/lifecycle_service.py:187-195` shows the intended full path: re-index text chunks and `evidence_elements` together.
-
-Impact: after LanceDB loss or a partial write, visual evidence can exist in SQLite but never be re-embedded, so chart/figure questions regress until a user manually reindexes the document. Hydration then marks the document healthy because text vectors retrieve successfully.
-
-Fix approach: centralize repair in one function that loads chunks and evidence for a document, embeds both, and verifies both retrieval pools. Add a test that deletes the vector index, hydrates, and asserts a visual-evidence query succeeds.
-
-### [Medium-High · open] Grounding validation proves rank existence, not evidential support
-
-`core/citation_validator.py:107-124` treats a citation as valid when its `[E#]` rank exists in the result set. Lexical `support_precision` is calculated but only used as a diagnostic/warning (`ui/views.py:100-105`, `:750-770`); responses with unsupported citations are displayed with a verification caption rather than withheld.
-
-Worse, `auto_attribute_citations()` (`core/citation_validator.py:456-510`) can append a citation to an uncited sentence when lexical overlap is at least `0.18`. The appended rank then passes `is_valid()`. This creates an appearance of grounding that the model did not produce.
-
-Impact: the stated “>=95% citation precision” target can be reported while sentences are only loosely related to the cited evidence. This is the most direct risk to the product’s core evidence claim.
-
-Fix approach: separate `citation_exists` from `evidence_supports_claim`; require a minimum semantic/lexical support score derived from the cited element, not the whole result set. Mark auto-attributed citations distinctly in the UI and never count them toward the precision target without review. Add tests with plausible-but-unsupported sentences.
-
-### [Medium · open] Prompt-injection detection is a phrase blocklist that can reject legitimate documents
-
-`core/citation_validator.py:303-353` detects injection via a list of phrases such as “ignore previous instructions” and “system prompt:”. The validator marks the response invalid, and the UI withdraws it (`ui/views.py:764-770`).
-
-Impact: a security report, policy document, or AI research paper quoting those phrases can trigger a blanket failure, including when the user asks about prompt injection itself. Conversely, paraphrased attacks are not detected. The design provides false assurance in both directions.
-
-Fix approach: treat detection as a warning/quarantine channel rather than a hard response failure; scope detection to instruction-like structure and document provenance; add benign adversarial-text fixtures and a user override that preserves citations.
-
-### [Low-Medium · open] Extraction degradation and skipped visual regions are not surfaced
-
-`ingestion/docling_reader.py:140` catches Docling failure during the probe and falls back to `pypdf`; `ui/ingestion_service.py:99-102` sets `fallback_used=True`, but the UI never displays it. Visual failures are often only logged (`ui/ingestion_service.py:167-178`).
-
-Impact: users cannot distinguish “the document contains no table” from “table extraction failed” or “the visual region was skipped”. This undermines trust in answers about complex layouts.
-
-Fix approach: render `fallback_used`, OCR counts, visual counts, and conversion method in the Library detail and chat source drawer; include them in the document manifest.
-
-### [Low · open] The fallback vector mirror is a read-modify-write JSON file without locking
-
-`retrieval/hybrid_retriever.py:277-286` writes atomically via a temp file, but `:312-347` merges by reading the current mirror and rewriting it. Concurrent uploads from two Streamlit sessions can interleave, and the last writer can drop the other document’s vectors. A multi-process deployment makes this more likely.
-
-Impact: fallback recovery can silently lose documents even though SQLite has them. The primary LanceDB index may still be correct, so the loss is only discovered when fallback is used.
-
-Fix approach: serialize mirror mutations with a file lock or a small SQLite table; derive the mirror from LanceDB instead of maintaining a second write path; add a concurrency test.
+**P2 — Summary cache can miss forever once multiple model versions exist:**
+- Symptoms: `get_summary` selects by `sha256` and `profile` only, without `model_version` in the SQL or an `ORDER BY` (`core/doc_store.py:812-824`), then rejects the returned row if its version differs. Schema V7 intentionally preserves older rows (`core/doc_store.py:169-200`), so the first row can remain stale and every request regenerates despite a fresh row existing.
+- Trigger: a model/prompt upgrade that changes `compute_summary_model_version`.
+- Workaround: add `model_version = ?` to the `WHERE` clause (falling back only when the caller passes `None`).
 
 ## Security Considerations
 
-### [High if network-exposed · open] No authentication or authorization
+**No authentication; the client header is not a security control:**
+- Risk: every indexed document, chat history, cloud settings page, and API-key configuration endpoint is readable by anyone who can reach the port. `require_client_header` only checks `X-RAG-Client: web` on mutating methods (`api/deps.py:15-25`); it is trivially spoofed and does not cover reads.
+- Files: `api/deps.py`, `api/main.py:74-79`, `api/routers/settings.py`.
+- Current mitigation: loopback bind default (`api/config.py:12`), launcher refusal for non-loopback (`start.py:77-105`), `TrustedHostMiddleware` (`api/main.py:61`), CORS restricted to localhost (`api/config.py:15`, `api/main.py:63-70`).
+- Recommendations: keep the loopback default; if remote access is ever supported, add real authentication; do not treat the header as authorization.
 
-No login, token, session identity, or access-control layer exists in `main.py`, `ui/`, or `.streamlit/config.toml`. Any client that can reach Streamlit can upload, read, summarize, re-index, and delete all documents.
+**Docker image bypasses the launcher's loopback guard:**
+- Risk: the container starts with `--host 0.0.0.0` (`Dockerfile:58`) and no authentication. `TrustedHostMiddleware` still rejects non-localhost `Host` headers by default (`api/config.py:16`), but `RAG_ALLOWED_HOSTS` is operator-configurable and the launcher safety check is never executed in this path.
+- Files: `Dockerfile:54-58`, `api/main.py:61`, `start.py:77-105`.
+- Recommendation: bind `127.0.0.1` in the container by default and require an explicit, documented override (or authentication) before publishing the port.
 
-Current mitigation: `.streamlit/config.toml:15` binds to loopback, `start.py:22` warns when a non-loopback host is configured, and `docker-compose.yml` publishes on `127.0.0.1`. These are deployment conventions, not application controls.
+**LanceDB filter built without escaping in `export_embeddings`:**
+- Risk: `doc_ids` from the query string are interpolated directly into `doc_id IN (...)` (`retrieval/hybrid_retriever.py:1122-1124`), unlike every other filter path, which uses `_escape_sql_literal`/`_doc_filter_clause` (`retrieval/hybrid_retriever.py:56-64`, `:663`, `:744`, `:843`, `:941`). A crafted value can rewrite the predicate and export embeddings scoped to other documents.
+- Files: `retrieval/hybrid_retriever.py:1107-1125`, `api/routers/visualize.py:55-62`.
+- Recommendation: replace the inline join with `_doc_filter_clause(doc_ids)`.
 
-Recommendation: keep loopback binding mandatory unless an explicit auth proxy is configured; document the threat model; add optional password/session auth before any LAN or reverse-proxy deployment.
+**Unhandled exceptions return internal details:**
+- Risk: the catch-all handler returns `str(exc)` in the RFC 9457 `detail` (`api/errors.py:126-132`), exposing file paths, SQL, and library internals to any local client.
+- Files: `api/errors.py:65-132`.
+- Recommendation: return a generic message with the `request_id`; keep the detail in the server log.
 
-### [High · open] Document content and metadata are unencrypted at rest
+**Upload body is read before the size limit is checked:**
+- Risk: `await file_obj.read()` buffers the entire request before `validate_pdf_bytes` enforces `MAX_FILE_MB=50` (`api/routers/documents.py:61-65`, `core/limits.py:4`). Multiple files per request and no server body cap allow memory exhaustion from a local client.
+- Recommendation: enforce `Content-Length`/streaming limits at the ASGI layer and reject oversized files before buffering.
 
-`data/documents.db` stores full chunk text and page text; `data/lancedb/` stores embeddings and FTS content; `data/logs/` can contain filenames and exception text. There is no encryption layer, key management, or secure-deletion guarantee beyond filesystem deletion/VACUUM.
-
-Impact: any local process or user with file access can read the entire document corpus; backups and disk snapshots inherit plaintext.
-
-Recommendation: document at-rest assumptions in the privacy model; offer optional OS keyring/SQLCipher or encrypted-volume guidance; ensure logs never include chunk bodies or API keys.
-
-### [Medium · open] Mutable container images and unpinned base image
-
-`docker-compose.yml:8` uses `ghcr.io/ggml-org/llama.cpp:server-cuda` (mutable tag), and `Dockerfile:2` uses `python:3.11-slim-bookworm` without a digest. A rebuild can change llama-server flags, CUDA compatibility, or Python dependency resolution.
-
-Impact: reproducible deployments and model compatibility are not guaranteed; a tag update can break `start.py` health checks.
-
-Recommendation: pin both images by digest, document the llama.cpp build/version, and add a scheduled image-update job with smoke tests.
-
-### [Medium · open] First-run model downloads create non-obvious network egress
-
-`ingestion/docling_reader.py:189-194` constructs `DocumentConverter`, which can download Docling/Hugging Face artifacts on first use. `setup.py:339-401` pre-caches the embedding and OCR models but not Docling, and ignores both pre-cache return values. `RAG_REQUIRE_CHECKSUMS` covers GGUF/llama archives, not these HF/RapidOCR downloads.
-
-Impact: the README’s “zero egress” claim holds only after all model caches are warm; a clean install can contact external hosts during ingestion with no checksum/fail-closed policy. A failed precache is not reported by the installer.
-
-Recommendation: pre-cache every model family in setup, verify cache completeness before launch, honor `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`, and fail with a clear offline-setup message. Add an opt-in network audit test.
-
-### [Medium · open] Regex sanitizer is the only defense for rendered document text
-
-`ui/sanitizer.py:14-21` uses regular expressions to strip tags and neutralize links; it is not an HTML parser/allowlist renderer. Chat rendering relies on Streamlit escaping any remaining HTML, which limits current impact, but future `unsafe_allow_html` use would expose bypasses. Cloud mode with `allow_external=True` intentionally permits external links/images, which can leak browser requests.
-
-Impact: crafted PDF text could affect layout, hide content, or cause egress if sanitization assumptions change. The code is fragile because safety depends on call-site behavior.
-
-Recommendation: render untrusted text with an explicit allowlist sanitizer or keep HTML disabled at every call site; add fuzz/property tests for malformed tags, Markdown link variants, and mixed encodings; make external navigation a per-click user action.
-
-### [Medium · open] API-key redaction is exact-string replacement
-
-`providers/litellm_provider.py:50-74` and `providers/groq_provider.py:50-68` scrub the configured key from error strings via `replace()`. Variants (URL-encoded, partially masked, wrapped by provider formatting, or logged before scrubbing) are not covered.
-
-Impact: a provider error could leak credentials into logs or UI error text.
-
-Recommendation: centralize redaction, redact recognized key prefixes and Authorization headers, never include raw provider exceptions in user-visible output, and add tests with realistic provider error payloads.
-
-### [Medium · open] Document text is treated as untrusted for prompting but not for resource use
-
-`core/prompt_budget.py` isolates context in XML tags and the system prompt says evidence is untrusted, but there is no defense against extremely repetitive text, pathological tables, or adversarial layouts beyond file/page limits.
-
-Impact: prompt injection is partially mitigated, while CPU/memory denial-of-service and citation flooding remain possible within the 50 MB / 500 page limits.
-
-Recommendation: cap chunks per page and total evidence elements, limit table cell sizes, and add decompression/zip-bomb checks for any future Office formats. Treat the 50 MB/page limits as the outer bound, not the only bound.
+**Cloud credential handling is otherwise sound:**
+- `CloudState._keys` is memory-only (`api/cloud_state.py:23`), keys are `SecretStr`, and `.env` is excluded from the Docker context (`.dockerignore`). The remaining exposure is transport: the settings POST sends keys over plain HTTP on loopback, which is acceptable only while the loopback-only deployment invariant holds.
 
 ## Performance Bottlenecks
 
-**Fallback mirror rewrites all vectors on every mutation:**
-- Problem: `retrieval/hybrid_retriever.py:277-286` serializes the full document/vector set, and `:312-347` reads and rewrites the entire JSON for each upsert.
-- Cause: a single JSON file is used as a durable mirror of LanceDB.
-- Impact: upload/delete time grows linearly with corpus size; 384-dimensional vectors make the file large. Each write also duplicates embedding data already in LanceDB.
-- Improvement path: store the mirror in SQLite with per-document rows, append incrementally, or rebuild it from LanceDB on demand; delete the mirror once fallback recovery is reliable.
+**Pure-Python BM25 loads and re-tokenizes every row per query:**
+- Problem: when LanceDB FTS is unavailable, `_bm25_candidate_docs` reads the entire table (or the entire in-memory mirror) and `_bm25_search_fallback` scores all documents on every search.
+- Files: `retrieval/hybrid_retriever.py:832-870`, `retrieval/hybrid_retriever.py:859-957`.
+- Cause: no persisted inverted index or cached term statistics.
+- Improvement path: build an FTS index at ingestion or cache document term frequencies between queries.
 
-**BM25 fallback loads every chunk into Python:**
-- Problem: `retrieval/hybrid_retriever.py:830-852` fetches all rows with BM25 scores and groups them by document.
-- Cause: document-level candidate selection is implemented by scanning the whole table.
-- Impact: memory and latency grow with corpus size; a large library can stall chat retrieval.
-- Improvement path: maintain a document-level BM25 table or aggregate at write time; cap candidate documents before loading chunks; benchmark at 10k+ chunks.
+**JSON fallback mirror is rewritten on every ingestion:**
+- Problem: `_mirror_upsert` reads the whole JSON file and rewrites it for each index call, which is O(N) I/O per document and grows with the corpus.
+- Files: `retrieval/hybrid_retriever.py:312-350`, `retrieval/hybrid_retriever.py:277-288`.
+- Cause: single-file durable mirror (acknowledged in the docstring).
+- Improvement path: per-document mirror files or an append-only log with compaction.
 
-**Hydration performs synchronous re-embedding:**
-- Problem: `ui/hydration.py:135-144` calls `local_embedding.get_embeddings()` and `retriever.index_chunks()` in the startup path, showing progress but blocking the session.
-- Cause: missing vectors are repaired inline on first load.
-- Impact: a large library or partial index loss can make startup feel hung, especially on CPU. There is no background job or resumable queue.
-- Improvement path: run repair in a background worker with persisted job state; bound repair per startup; show a “repair in progress” state and allow chat on already-indexed documents.
+**N+1 queries in the document library:**
+- Problem: `GET /documents` calls `retriever.has_document()` and `doc_store.get_evidence_for_doc()` once per document.
+- Files: `api/routers/documents.py:24-49`.
+- Cause: per-row enrichment in the request loop.
+- Improvement path: batch the vector-existence check and join/aggregate evidence counts in one query.
 
-**OCR is CPU-heavy and time-capped rather than adaptive:**
-- Problem: `ingestion/ocr_fallback.py:368-435` processes up to 200 pages/300 seconds with RapidOCR on CPU.
-- Cause: no page-level difficulty estimate beyond the low-character trigger; no concurrency budget or cancellation.
-- Impact: a scanned PDF can consume minutes before the user sees a partial result, and later pages are silently skipped.
-- Improvement path: estimate OCR cost from page raster size/text density, prioritize pages with retrieval value, expose a cancel action, and report skipped pages.
+**Blocking CPU/IO inside `async` handlers:**
+- Problem: `search_hybrid` runs inline (`api/routers/search.py:21`), `export_embeddings` + NumPy PCA run inline (`api/routers/visualize.py:54-62`), and PDF validation/parsing runs inline (`api/routers/documents.py:65`). Each stalls the event loop; with the single worker this delays every concurrent request.
+- Improvement path: move these calls to `starlette.concurrency.run_in_threadpool` or `asyncio.to_thread`.
 
-**Inference is serialized with a 60-second wait and no cancellation:**
-- Problem: `InferenceGate.acquire(timeout=60.0)` in `core/local_llm.py:328-332` serializes all LLM/VLM/summarizer work; `stream_text` has no user stop control.
-- Cause: one model must fit in 4 GB VRAM, so concurrency is intentionally excluded.
-- Impact: a long summary or visual pass blocks chat; a stuck generation holds the gate until the HTTP stream ends. The UI has no cancel-generation path.
-- Improvement path: add cooperative cancellation (close the httpx stream, release the gate), enforce a per-request deadline, and queue requests with visible positions rather than a generic busy message.
+**RapidOCR model is re-initialized per document:**
+- Problem: `apply_conditional_ocr` constructs `OcrEngine()` when no engine is passed (`ingestion/ocr_fallback.py:403`), and the constructor loads `RapidOCR()` (`ingestion/ocr_fallback.py:119-122`). `services/ingestion.py:183-190` never passes an engine.
+- Cause: no process-level OCR engine singleton.
+- Improvement path: build one engine in `AppContainer` and inject it into `IngestionService`.
+
+**Diagnostics reads the entire, non-rotating log:**
+- Problem: `logging.FileHandler` is used without rotation (`api/main.py:39`) and `/diagnostics/logs` calls `readlines()` before slicing (`api/routers/system.py:188-190`).
+- Improvement path: use `RotatingFileHandler` from `core/logging_setup` and read only the tail.
+
+**Unbounded job event history:**
+- Problem: every progress update appends `JobEvent` and neither the job dict nor its events are pruned (`api/jobs.py:41`, `:83`, `:91`).
+- Cause: jobs are retained indefinitely for polling.
+- Improvement path: cap `events` (ring buffer) and evict completed jobs after a TTL.
 
 ## Fragile Areas
 
-**Ingestion degradation matrix (`ui/ingestion_service.py`, `ingestion/*`):**
-- Why fragile: Docling fallback, OCR skip, visual extraction failure, and embedding failure are handled in separate branches with different logging and different effects on `IngestionResult`. Some failures leave a document “indexed” with partial content.
-- Safe modification: add a single `IngestionDiagnostics` object that every stage populates; make “indexed” depend on required stages only; test each failure combination.
-- Coverage gaps: no test asserts UI visibility of fallback/OCR/visual warnings.
+**Status is a stringly-typed contract split across four places:**
+- Files: `core/models.py:130` (`pending|indexed|failed`), `api/routers/documents.py:32-34` (accepts `indexing`), `core/doc_store.py:395-404` (`update_document_status` accepts any string), `services/lifecycle.py:147` (writes `indexing`).
+- Why fragile: `list_documents`/`get_document` validate every row with `Document.model_validate`; a single unvalidated status (including the one lifecycle intentionally writes) makes the entire library endpoint raise. A crash during reindex leaves the row permanently unreadable.
+- Safe modification: add a DB `CHECK` constraint, validate in `update_document_status`, and align the `Document` literal/DTO.
+- Test coverage: no test writes an invalid status and re-reads the catalog.
 
-**Retrieval consistency across SQLite, LanceDB, and JSON mirror (`core/doc_store.py`, `retrieval/hybrid_retriever.py`, `ui/*`):**
-- Why fragile: deletion and repair must touch three stores plus session state. `ui/lifecycle_service.py` is the only place that handles all of them correctly; hydration and dedup repair are narrower.
-- Safe modification: route all mutations through a single repository/service that owns the transaction boundary; add integrity checks that compare counts and hashes across stores.
-- Coverage gaps: no test for concurrent uploads, partial delete failure, or mirror/SQLite divergence.
+**`Page` rows are validated against `SELECT *`:**
+- Files: `core/doc_store.py:606-611`, `core/models.py:76-89`.
+- Why fragile: `Page` uses `extra="forbid"`, so adding any column to `pages` without updating the model breaks all page reads.
+- Safe modification: select explicit columns or relax the model for storage rows.
 
-**Grounding and citation pipeline (`core/citation_validator.py`, `core/local_llm.py`, `ui/views.py`):**
-- Why fragile: validity, support precision, auto-attribution, injection filtering, and UI warnings are separate knobs. Changing one can make a response “valid” while support remains low, or make a legitimate document unanswerable.
-- Safe modification: define a single `GroundingReport` with explicit fields (`citation_exists`, `support_score`, `auto_attributed`, `injection_suspected`); make UI policy a pure function of that report; test the combinations.
-- Coverage gaps: no end-to-end test with a plausible unsupported sentence; injection tests cover obvious phrases only.
+**Grounding serialization is triplicated:**
+- Files: `core/models.py:226-269`, `api/schemas/common.py:43-55`, `frontend/src/lib/api/types.ts:136-145`.
+- Why fragile: no shared schema or adapter; a change in one contract silently breaks the others. This is the root cause of the P1 chat/grounding bugs.
+- Safe modification: generate the frontend type from OpenAPI and add a contract test that round-trips a persisted message.
 
-**Setup/installer (`setup.py`, `start.py`):**
-- Why fragile: network downloads, archive extraction, venv creation, shell profile edits, model identity verification, and process launch are tightly coupled. Most functions return booleans that callers ignore.
-- Safe modification: aggregate exit status, isolate side effects, and add a dry-run mode; never report success without verifying required artifacts.
-- Coverage gaps: checksum tests are strong; failure propagation, extraction rollback, and launcher process cleanup are untested.
+**`InferenceGate` is process-global and cross-thread release is only logged:**
+- Files: `core/local_llm.py:35-88`.
+- Why fragile: `release()` from a thread that does not own the `RLock` is ignored with a warning (`core/local_llm.py:71-78`). Work scheduled on a different thread that acquires and releases on another leaves the gate permanently locked; `is_locked()` is derived from an acquisition counter, not an owner.
+- Safe modification: always use `InferenceGate.hold()` in the acquiring thread and assert balanced release; add a timeout/fail-safe path.
+- Test coverage: `tests/test_concurrency_lock.py` covers single-thread and foreign release, not nested or exception-path leaks.
 
-**Streamlit UI/session state (`main.py`, `ui/views.py`, `ui/components.py`):**
-- Why fragile: 1,277-line views module, many `st.session_state` keys, widget-key rotation for uploads, and cache-resource singletons. Behavior depends on rerun order.
-- Safe modification: centralize state keys and transitions; keep render functions free of service construction; add Streamlit `AppTest` coverage for upload -> index -> chat and delete -> purge.
-- Coverage gaps: `tests/test_ui_smoke.py` and `tests/test_main_ui.py` exercise helpers/contracts, not full view rendering.
+**PyMuPDF document handle is never closed in the page-image endpoint:**
+- Files: `api/routers/documents.py:184-193` (`doc_fitz = fitz.open(...)` with no `finally: doc_fitz.close()`).
+- Why fragile: on Windows the open handle keeps the PDF locked; repeated Evidence Lens requests leak file descriptors. Other call sites use `try/finally` (`ingestion/visual_analyzer.py:84-...`, `ingestion/ocr_fallback.py:155-...`), so this is an outlier.
+- Safe modification: wrap in `with fitz.open(orig_path) as doc_fitz:`.
 
-**Regex sanitizer (`ui/sanitizer.py`):**
-- Why fragile: safety depends on every caller keeping HTML escaping enabled and on regexes covering all Markdown/HTML forms. A new rendering path or an `unsafe_allow_html=True` call changes the threat model.
-- Safe modification: make the sanitizer return a typed “safe text” object, disallow raw HTML centrally, and add a lint/check for unsafe render calls.
-- Coverage gaps: no fuzz corpus for nested/malformed HTML and no explicit test for external image egress.
+**Chat persistence errors are swallowed:**
+- Files: `api/routers/chat.py:95-113`.
+- Why fragile: DB failures (locked, disk full, schema drift) are invisible and the API still reports success.
+
+**Summary cache lookup ignores the version in SQL:**
+- Files: `core/doc_store.py:792-824`, `core/doc_store.py:169-200`.
+- Why fragile: correctness depends on row order and on there being exactly one version per `(sha256, profile)`. Multiple versions are explicitly supported by the V7 schema.
 
 ## Scaling Limits
 
-| Resource | Current limit / behavior | Where it breaks |
-|---|---|---|
-| Upload size | 50 MB (`ingestion/upload_validation.py:18`) | Large scanned PDFs rejected; no streaming upload |
-| Page count | 500 pages (`ingestion/upload_validation.py:19`) | 500-page reports must be split |
-| OCR | 200 pages / 300 seconds (`ingestion/ocr_fallback.py:34-35`) | Later scanned pages silently skipped |
-| Visual analysis | 6 regions per document in UI (`ui/ingestion_service.py`) | Diagram-heavy documents lose evidence |
-| Whole-document retrieval | 500 chunks (`retrieval/hybrid_retriever.py:641`) | Long documents omit tail content |
-| Context | 4,096 tokens | Budget arithmetic can exceed it; map/reduce outputs too large |
-| Inference concurrency | One process-wide gate | Multi-process/Docker replica deployment breaks the invariant |
-| Fallback mirror | Full JSON rewrite per mutation | Slows and grows with corpus; no file lock |
-| BM25 fallback | Full-table row load per query | Latency/memory spike on large libraries |
+**Single-worker background pool:**
+- Current capacity: one job at a time (`api/jobs.py:82`, `ThreadPoolExecutor(max_workers=1)`).
+- Limit: one large PDF ingestion or summary blocks every queued upload/reindex/summary; the SSE progress for queued jobs shows no work.
+- Scaling path: separate bounded pools per job class, or a durable queue.
 
-**Scaling path:** define explicit per-document budgets (chunks, OCR pages, visual regions), move repair/indexing to background jobs, replace the JSON mirror with a row store, and publish a tested multi-process story or explicitly enforce single-process deployment.
+**One GPU inference at a time:**
+- Current capacity: process-wide `InferenceGate` (`core/local_llm.py:35-41`) designed for a 4 GB VRAM envelope.
+- Limit: concurrent chat/summary requests serialize; the second caller waits up to 60 seconds and then fails with `gpu_busy`.
+- Scaling path: intentional for the target hardware; document the limit and return queue position.
+
+**In-memory job registry:**
+- Current capacity: unbounded `_jobs` dict and per-job event list (`api/jobs.py:41`, `:83`).
+- Limit: memory grows with every upload/summary for the process lifetime; restart loses all job state and progress polling.
+- Scaling path: TTL eviction, capped event buffers, or persisted job records.
+
+**SQLite write serialization:**
+- Current capacity: per-operation connections, WAL, 5 s busy timeout (`core/doc_store.py:241-246`).
+- Limit: `record_ingestion` holds a single write transaction for the whole document (`core/doc_store.py:440-580`); concurrent writes retry and can fail after 5 seconds.
+- Scaling path: batch/queue writes or move to a server database if multi-user support is ever added.
+
+**Fallback search is linear:**
+- Current capacity: fancy indexing works for a handful of documents, but BM25 fallback reads every row (`retrieval/hybrid_retriever.py:846-848`) and the JSON mirror rewrites on each ingest.
+- Limit: corpus sizes in the tens of thousands of chunks make fallback searches and ingests noticeably slow.
+- Scaling path: require LanceDB with an FTS index, or add a persisted inverted index.
+
+**No pagination on list endpoints:**
+- Files: `core/doc_store.py:383-393` (`list_documents`), `api/routers/chat.py:127-140` (sessions), `api/routers/documents.py:24-49`.
+- Limit: responses grow with the library/history and the N+1 enrichment amplifies the cost.
 
 ## Dependencies at Risk
 
-**`ghcr.io/ggml-org/llama.cpp:server-cuda` (mutable tag):**
-- Risk: image contents and CLI behavior can change without a repo change.
-- Impact: `start.py` flags, `/health`, chat template handling, and GPU offload may break.
-- Migration plan: pin by digest, record the llama.cpp build number, and run a container smoke test before updating.
+**CI and Docker resolve different dependency sets:**
+- Risk: CI installs `requirements.txt` (`.github/workflows/ci.yml:30`), which uses broad floors (`docling>=2.0.0`, `lancedb>=0.17.0`, `litellm>=1.50.0`, `fastapi>=0.115.0`; `requirements.txt:3-27`), while the Docker image installs `requirements-lock.txt` (`Dockerfile:34-36`). A new major release can pass CI and fail in the locked image, or vice versa.
+- Impact: unreproducible test results and surprise production breakage.
+- Migration plan: install `requirements-lock.txt` in CI (or a hash-pinned lock generated from the same resolver).
 
-**`python:3.11-slim-bookworm` (unpinned base):**
-- Risk: base OS packages and Python patch level drift.
-- Impact: native wheel availability and ONNX/CUDA compatibility can change.
-- Migration plan: pin by digest; rebuild on a schedule with the lockfile.
+**PyMuPDF is capped below a major version:**
+- Risk: `pymupdf>=1.24.0,<2.0` with an explicit note that 2.x is not regression-tested against crop/rasterization (`requirements.txt:18-20`).
+- Impact: security and feature upgrades are blocked; multiple call sites depend on 1.x behavior (`ingestion/visual_analyzer.py`, `ingestion/ocr_fallback.py`, `api/routers/documents.py`).
+- Migration plan: add PyMuPDF 2.x to the test matrix, then widen the cap.
 
-**`requirements.txt` vs `requirements-lock.txt`:**
-- Risk: Docker resolves loose lower bounds while CI uses the lock.
-- Impact: an image can ship untested dependency versions.
-- Migration plan: install the lock in Docker and CI; regenerate the lock for each supported Python version.
+**OCR package changes across Python versions:**
+- Risk: `rapidocr-onnxruntime` for Python <3.13 and `rapidocr` for >=3.13 (`requirements.txt:16-17`) are different distributions with different result types; only Python 3.11 runs in CI (`.github/workflows/ci.yml:18-21`).
+- Impact: Python 3.13 installs are untested and the parser shims in `ingestion/ocr_fallback.py` may drift.
+- Migration plan: add a 3.13 CI job or pin a single OCR backend.
 
-**Hugging Face / RapidOCR model artifacts:**
-- Risk: runtime download availability, licensing changes, and no checksum pinning for these caches.
-- Impact: offline installs fail at first ingestion; model versions can drift.
-- Migration plan: vendor or pre-cache all artifacts in setup, record revisions, verify cache integrity, and fail closed in offline mode.
+**Heavy, model-downloading dependency chain:**
+- Risk: `docling` pulls `docling-ibm-models`, `torch`, and related packages (`requirements-lock.txt:82-92`, `:146`); `sentence-transformers==3.4.1` also requires torch and downloads weights on first use.
+- Impact: large installs, slow cold starts, and failures on offline hosts; hydration/ingestion can block on downloads.
+- Migration plan: document/prefetch model artifacts during setup (as `setup.py` already does for GGUF/OCR) and fail fast when absent.
 
-**Optional cloud adapters (`litellm`, `groq`):**
-- Risk: SDK/API changes, key handling, and provider-specific errors.
-- Impact: optional cloud fallback can fail or leak error text; local mode must remain untouched.
-- Migration plan: pin versions, wrap provider calls behind a strict error boundary, and test consent/key-scrubbing paths.
-
-**`pillow` is declared but unused in first-party code:**
-- Risk: unnecessary native dependency and CVE surface in lockfiles/images.
-- Impact: larger image and more upgrade work.
-- Migration plan: remove after confirming no transitive or test requirement depends on it.
+**Rapidly changing cloud SDKs:**
+- Risk: `groq==0.15.0` is pinned to an old client while `litellm>=1.50.0` floats; both are used by the cloud provider path (`providers/groq_provider.py`, `providers/litellm_provider.py`).
+- Impact: upstream API changes or transitive conflicts can break cloud mode independently of the local path.
+- Migration plan: pin both in the lock and exercise them in a scheduled compatibility job.
 
 ## Missing Critical Features
 
-**Authentication and access control:**
-- Problem: none exists; loopback is the only boundary.
-- Blocks: safe LAN, multi-user, or reverse-proxy deployment.
+**Original PDF retention:**
+- Problem: no code persists uploaded bytes, so page-image rendering and any "open the original" workflow cannot work even when `store_originals` is enabled. The flag is dead (`api/config.py:19`), and only the reader exists (`api/routers/documents.py:176`).
+- Blocks: Evidence Lens page images, visual verification, re-OCR/re-extraction after model upgrades without re-upload.
 
-**Encryption at rest and secure deletion:**
-- Problem: SQLite, LanceDB, and logs are plaintext; deletion is logical/VACUUM-based.
-- Blocks: compliance-sensitive use and shared-machine privacy guarantees.
+**Persisted page text:**
+- Problem: the `pages` table stores only counts/status (`core/doc_store.py:59-67`), so page-level reading and page-based summaries have no source of truth.
+- Blocks: `GET /documents/{id}/pages/{n}` and `POST /summaries` as designed; summaries must reconstruct from chunks.
 
-**End-to-end UI and live inference verification:**
-- Problem: no Streamlit `AppTest`, no live llama-server/GPU smoke test, no automated check of citation behavior under real generation.
-- Blocks: confidence that the tested unit graph matches the shipped app.
+**Provider health/status probe:**
+- Problem: `AiModel` exposes capabilities but no health/status method; `/health` calls a nonexistent API (`api/routers/system.py:38-53`).
+- Blocks: accurate readiness reporting, Docker health checks, and UI status.
 
-**Background indexing/repair and cancellation:**
-- Problem: ingestion/hydration repair blocks the session; generation cannot be stopped.
-- Blocks: responsive UX on large libraries and long documents.
+**Authentication/authorization:**
+- Problem: none exists; the design assumes a single trusted local user (`start.py:80-82`). The Docker path binds all interfaces without the launcher guard.
+- Blocks: safe multi-user or remote deployment.
 
-**Health auto-recovery and readiness:**
-- Problem: provider health is checked, but there is no supervised restart of llama-server, no queue drain on recovery, and no readiness gate for first-run model downloads.
-- Blocks: unattended local operation.
-
-**CI coverage for the primary platform:**
-- Problem: CI is Ubuntu/Python 3.11 only; Windows is the primary host.
-- Blocks: catching path, multiprocessing, and DLL/CUDA issues before release.
+**Request body limits:**
+- Problem: uploads are buffered before size validation (`api/routers/documents.py:61-65`), and no ASGI body limit is configured.
+- Blocks: robust operation under accidental or malicious large payloads.
 
 ## Test Coverage Gaps
 
-**Streamlit views and session transitions:**
-- What is not tested: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, upload widget rotation, delete/purge rerun paths.
-- Files: `ui/views.py`, `main.py`, `tests/test_ui_smoke.py`, `tests/test_main_ui.py`.
-- Risk: state-key and rerun regressions ship unnoticed.
+**Ingestion service has no end-to-end coverage:**
+- What's not tested: `IngestionService.ingest_pdf` from validation through persistence/indexing; no test imports the service.
+- Files: `tests/` (no `test_ingestion.py`), `services/ingestion.py`.
+- Risk: the P0 `status="indexing"` failure ships despite 485 passing tests.
 - Priority: High.
 
-**Token-budget invariants:**
-- What is not tested: `estimated_prompt_tokens + max_output_tokens <= context_window` for maximum evidence, every intent, and every summary profile.
-- Files: `core/prompt_budget.py`, `core/query_intent.py`, `core/local_llm.py`, `core/summarizer.py`.
-- Risk: silent truncation or provider rejection at the 4K boundary.
+**Summary generation path is untested:**
+- What's not tested: `POST /summaries` job creation and `Summarizer.summarize_document` through the API; `tests/test_summaries_api.py` only covers cache-hit, not-found, and clear.
+- Files: `tests/test_summaries_api.py:35-60`, `api/routers/summaries.py`.
+- Risk: three simultaneous signature/attribute errors go unnoticed.
 - Priority: High.
 
-**Whole-document retrieval beyond 500 chunks:**
-- What is not tested: tail content retrieval and truncation signaling on long documents.
-- Files: `retrieval/hybrid_retriever.py`, `core/query_intent.py`, `tests/test_whole_document_extraction.py`.
-- Risk: incomplete answers with valid-looking citations.
+**Document page endpoints are only checked for route existence:**
+- What's not tested: response shape and behavior of `GET /documents/{id}/pages/{n}` and `/image`.
+- Files: `tests/test_openapi_contract.py:19-21` lists paths only; `api/routers/documents.py:133-199`.
+- Risk: the missing `get_page`/wrong field names and permanent 404 for images are invisible.
 - Priority: High.
 
-**Citation support vs citation existence:**
-- What is not tested: plausible-but-unsupported sentences, auto-attributed citations counted as valid, cross-page evidence mismatch.
-- Files: `core/citation_validator.py`, `tests/test_citation_validator.py`, `tests/test_citation_and_result.py`.
-- Risk: the primary evidence guarantee is overstated.
+**Chat history serialization is untested after an answer:**
+- What's not tested: `GET /chat/sessions/{id}` after `_finish` persists a `GroundingReport`; `tests/test_chat_api_sse.py:44-82` streams then deletes without reading the session.
+- Files: `tests/test_chat_api_sse.py`, `api/routers/chat.py:92-172`.
+- Risk: every real session with history returns 500.
 - Priority: High.
 
-**Ingestion degradation and caps:**
-- What is not tested: OCR page cap, OCR time cap, visual-region cap, Docling fallback visibility, partial-index status.
-- Files: `ingestion/ocr_fallback.py`, `ingestion/docling_reader.py`, `ui/ingestion_service.py`, `tests/test_ocr_fallback.py`.
-- Risk: users trust incomplete documents.
-- Priority: High.
-
-**Installer failure propagation:**
-- What is not tested: `run_full_setup()` return code when model/server/package steps fail; ignored pre-cache results.
-- Files: `setup.py`, `tests/test_setup_checksums.py`, `tests/test_start_launcher.py`.
-- Risk: false “Setup Complete!” and confusing first-run failures.
+**Embedding export fallback is untested:**
+- What's not tested: `HybridRetriever.export_embeddings` when LanceDB is unavailable or a query fails.
+- Files: `retrieval/hybrid_retriever.py:1107-1160`, `api/routers/visualize.py`.
+- Risk: the `self._store` `AttributeError` is only seen at runtime.
 - Priority: Medium.
 
-**Live provider behavior:**
-- What is not tested: real llama-server SSE, multimodal image payloads, stop/cancel, 4 GB OOM handling, health recovery.
-- Files: `providers/llama_cpp_provider.py`, `core/local_llm.py`, `start.py`.
-- Risk: production-only failures in the core inference path.
-- Priority: High for release, not necessarily unit CI.
-
-**Sanitizer adversarial corpus:**
-- What is not tested: fuzzed/malformed HTML, nested Markdown links, external image egress, future `unsafe_allow_html` paths.
-- Files: `ui/sanitizer.py`, `tests/test_sanitizer.py`.
-- Risk: local-only/privacy regression if rendering assumptions change.
+**Health endpoint provider failure is untested:**
+- What's not tested: the exception path in `_build_health`.
+- Files: `api/routers/system.py:32-55`.
+- Risk: the endpoint has never reported a healthy provider.
 - Priority: Medium.
 
-**Concurrency and multi-store consistency:**
-- What is not tested: simultaneous uploads, mirror JSON races, partial delete failures, hydration while ingesting.
-- Files: `retrieval/hybrid_retriever.py`, `core/doc_store.py`, `ui/lifecycle_service.py`, `ui/ingestion_service.py`.
-- Risk: silent data loss or stale vectors.
+**Evidence Lens/originals retention is untested:**
+- What's not tested: whether any component writes `data/originals/<sha256>.pdf`; no test asserts the file exists after upload.
+- Files: `api/routers/documents.py:165-199`, `api/config.py:19`.
+- Risk: the feature is permanently broken with a 404 that looks like a configuration issue.
 - Priority: Medium.
+
+**Frontend has no automated tests:**
+- What's not tested: API client mapping, SSE event handling, grounding rendering, Evidence Lens behavior.
+- Files: `frontend/package.json:5-11` (no test script or test runner); CI only runs typecheck/build (`.github/workflows/ci.yml:79-84`).
+- Risk: schema drift (already present for grounding) is not caught until manual use.
+- Priority: Medium.
+
+**Test-count claim has drifted:**
+- What's not tested: nothing new, but the README badge says 479 passed (`README.md:10`) while the suite collects 485 tests.
+- Files: `README.md:10`, `tests/`.
+- Risk: low, but it undermines the badge as a signal.
+- Priority: Low.
 
 ---
 
-*Concerns audit: 2026-10-22*
+*Concerns audit: 2026-11-14*

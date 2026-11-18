@@ -1,0 +1,3191 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RAG Assistant API",
+    "version": "2.0.0"
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Health",
+        "description": "Retrieve system health status, mode, and model capabilities.",
+        "operationId": "get_health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/telemetry": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Telemetry",
+        "description": "Get instant system telemetry (GPU, RAM, and inference lock).",
+        "operationId": "get_telemetry_api_v1_telemetry_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Telemetry"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/telemetry/stream": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Stream Telemetry",
+        "description": "Stream live telemetry events over SSE.",
+        "operationId": "stream_telemetry_api_v1_telemetry_stream_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Diagnostics",
+        "description": "Inspect index integrity, tombstones, and startup hydration details.",
+        "operationId": "get_diagnostics_api_v1_diagnostics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Diagnostics"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/logs": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Logs",
+        "description": "Retrieve redacted recent application logs.",
+        "operationId": "get_logs_api_v1_diagnostics_logs_get",
+        "parameters": [
+          {
+            "name": "lines",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Lines"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "INFO",
+              "title": "Level"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LogEntry"
+                  },
+                  "title": "Response Get Logs Api V1 Diagnostics Logs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Settings",
+        "description": "Retrieve active system settings, limits, and cloud provider status.",
+        "operationId": "get_settings_api_v1_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppSettings"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/cloud": {
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Update Cloud Settings",
+        "description": "Update cloud provider settings, consent, and API key with build-first swap.",
+        "operationId": "update_cloud_settings_api_v1_settings_cloud_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCloudSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/cloud/credentials": {
+      "delete": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Revoke Cloud Credentials",
+        "description": "Clear in-memory cloud API keys, revoke consent, and revert to local engine.",
+        "operationId": "revoke_cloud_credentials_api_v1_settings_cloud_credentials_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppSettings"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/privacy/ledger": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Privacy Ledger",
+        "description": "Retrieve audit timeline of cloud inference requests.",
+        "operationId": "get_privacy_ledger_api_v1_privacy_ledger_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "type": "object",
+                  "title": "Response Get Privacy Ledger Api V1 Privacy Ledger Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "List Documents",
+        "description": "List all documents currently registered in the catalog.",
+        "operationId": "list_documents_api_v1_documents_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentSummary"
+                  },
+                  "title": "Response List Documents Api V1 Documents Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Upload Documents",
+        "description": "Upload one or more PDF files and queue asynchronous ingestion jobs.",
+        "operationId": "upload_documents_api_v1_documents_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_documents_api_v1_documents_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Purge All Documents",
+        "description": "Completely purge all documents, vectors, caches, and chat sessions.",
+        "operationId": "purge_all_documents_api_v1_documents_delete",
+        "parameters": [
+          {
+            "name": "confirm",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Must be 'PURGE'",
+              "title": "Confirm"
+            },
+            "description": "Must be 'PURGE'"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Purge All Documents Api V1 Documents Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_id}": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Get Document",
+        "description": "Retrieve document details, chunks, and evidence elements.",
+        "operationId": "get_document_api_v1_documents__doc_id__get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Delete Document",
+        "description": "Delete a document across SQLite, LanceDB, and disk cache.",
+        "operationId": "delete_document_api_v1_documents__doc_id__delete",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Delete Document Api V1 Documents  Doc Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_id}/pages/{page_num}": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Get Document Page",
+        "description": "Retrieve text content for a specific page.",
+        "operationId": "get_document_page_api_v1_documents__doc_id__pages__page_num__get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "page_num",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Num"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Document Page Api V1 Documents  Doc Id  Pages  Page Num  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_id}/evidence": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Get Document Evidence",
+        "description": "Retrieve visual evidence elements (figures, tables) for a document.",
+        "operationId": "get_document_evidence_api_v1_documents__doc_id__evidence_get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Get Document Evidence Api V1 Documents  Doc Id  Evidence Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_id}/pages/{page_num}/image": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Get Page Image",
+        "description": "Render page image for Evidence Lens if original PDF is available.",
+        "operationId": "get_page_image_api_v1_documents__doc_id__pages__page_num__image_get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "page_num",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Num"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_id}/reindex": {
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Reindex Document",
+        "description": "Trigger background re-indexing of an existing document.",
+        "operationId": "reindex_document_api_v1_documents__doc_id__reindex_post",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "List Jobs",
+        "description": "List recent background jobs and their current status.",
+        "operationId": "list_jobs_api_v1_jobs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/JobResponse"
+                  },
+                  "type": "array",
+                  "title": "Response List Jobs Api V1 Jobs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Job",
+        "description": "Retrieve details and progress of a specific job.",
+        "operationId": "get_job_api_v1_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{job_id}/events": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Stream Job Events",
+        "description": "Stream live progress and completion events for a background job over SSE.",
+        "operationId": "stream_job_events_api_v1_jobs__job_id__events_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{job_id}/cancel": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Cancel Job",
+        "description": "Request cooperative cancellation of a running or queued job.",
+        "operationId": "cancel_job_api_v1_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Cancel Job Api V1 Jobs  Job Id  Cancel Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/sessions": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "List Sessions",
+        "description": "List all persisted chat sessions.",
+        "operationId": "list_sessions_api_v1_chat_sessions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ChatSessionResponse"
+                  },
+                  "type": "array",
+                  "title": "Response List Sessions Api V1 Chat Sessions Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Create Session",
+        "description": "Create a new chat session.",
+        "operationId": "create_session_api_v1_chat_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSessionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Get Session",
+        "description": "Get chat session details and message history.",
+        "operationId": "get_session_api_v1_chat_sessions__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Update Session",
+        "description": "Update chat session title or document scope.",
+        "operationId": "update_session_api_v1_chat_sessions__session_id__patch",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSessionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Delete Session",
+        "description": "Delete a chat session and its messages.",
+        "operationId": "delete_session_api_v1_chat_sessions__session_id__delete",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Delete Session Api V1 Chat Sessions  Session Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/export": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Export Session",
+        "description": "Export conversation history as markdown.",
+        "operationId": "export_session_api_v1_chat_sessions__session_id__export_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "md",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/messages/stream": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Stream Message",
+        "description": "Stream an answer to a chat message over SSE with grounding metadata.",
+        "operationId": "stream_message_api_v1_chat_sessions__session_id__messages_stream_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/stop": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Stop Generation",
+        "description": "Cancel an active generation for a session.",
+        "operationId": "stop_generation_api_v1_chat_sessions__session_id__stop_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Stop Generation Api V1 Chat Sessions  Session Id  Stop Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/summaries": {
+      "get": {
+        "tags": [
+          "summaries"
+        ],
+        "summary": "Get Summary Query",
+        "description": "Retrieve cached summary for a document and profile.",
+        "operationId": "get_summary_query_api_v1_summaries_get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "overview",
+              "title": "Profile"
+            }
+          },
+          {
+            "name": "length",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "standard",
+              "title": "Length"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "summaries"
+        ],
+        "summary": "Create Summary",
+        "description": "Generate or retrieve a cached document summary asynchronously.",
+        "operationId": "create_summary_api_v1_summaries_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SummaryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/summaries/{doc_id}/{profile}": {
+      "get": {
+        "tags": [
+          "summaries"
+        ],
+        "summary": "Get Summary By Path",
+        "description": "Retrieve cached summary for a document and profile.",
+        "operationId": "get_summary_by_path_api_v1_summaries__doc_id___profile__get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile"
+            }
+          },
+          {
+            "name": "length",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "standard",
+              "title": "Length"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/summaries/{doc_id}/{profile}/export": {
+      "get": {
+        "tags": [
+          "summaries"
+        ],
+        "summary": "Export Summary",
+        "description": "Export document summary as markdown.",
+        "operationId": "export_summary_api_v1_summaries__doc_id___profile__export_get",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Profile"
+            }
+          },
+          {
+            "name": "length",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "standard",
+              "title": "Length"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "md",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/summaries/{doc_id}": {
+      "delete": {
+        "tags": [
+          "summaries"
+        ],
+        "summary": "Clear Document Summaries",
+        "description": "Delete all cached summaries for a document.",
+        "operationId": "clear_document_summaries_api_v1_summaries__doc_id__delete",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Clear Document Summaries Api V1 Summaries  Doc Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Search Endpoint",
+        "description": "Execute hybrid retrieval across documents with optional X-Ray ranking breakdown.",
+        "operationId": "search_endpoint_api_v1_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/visualize/embeddings": {
+      "get": {
+        "tags": [
+          "visualize"
+        ],
+        "summary": "Get Embeddings Constellation",
+        "description": "Export 3D-projected chunk embeddings for the Document Constellation.",
+        "operationId": "get_embeddings_constellation_api_v1_visualize_embeddings_get",
+        "parameters": [
+          {
+            "name": "doc_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Doc Ids"
+            }
+          },
+          {
+            "name": "dims",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 3,
+              "minimum": 2,
+              "default": 3,
+              "title": "Dims"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 5000,
+              "minimum": 10,
+              "default": 3000,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/visualize/query-trace": {
+      "post": {
+        "tags": [
+          "visualize"
+        ],
+        "summary": "Trace Query",
+        "description": "Project query into constellation coordinates and trace retrieved chunk candidates.",
+        "operationId": "trace_query_api_v1_visualize_query_trace_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryTraceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryTraceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AppSettings": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "local",
+              "cloud"
+            ],
+            "title": "Mode"
+          },
+          "egress_policy": {
+            "type": "string",
+            "enum": [
+              "local",
+              "cloud"
+            ],
+            "title": "Egress Policy"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/LimitsSettings"
+          },
+          "cloud": {
+            "$ref": "#/components/schemas/CloudSettings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "egress_policy",
+          "limits",
+          "cloud"
+        ],
+        "title": "AppSettings",
+        "description": "Application configuration payload."
+      },
+      "Body_upload_documents_api_v1_documents_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "contentMediaType": "application/octet-stream"
+            },
+            "type": "array",
+            "title": "Files"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "Body_upload_documents_api_v1_documents_post"
+      },
+      "ChatMessageResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "grounding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Grounding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Source"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sources"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatMessageUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "title": "ChatMessageResponse",
+        "description": "A chat message record."
+      },
+      "ChatMessageUsage": {
+        "properties": {
+          "ttft_ms": {
+            "type": "number",
+            "title": "Ttft Ms",
+            "default": 0.0
+          },
+          "tokens": {
+            "type": "integer",
+            "title": "Tokens",
+            "default": 0
+          },
+          "duration_ms": {
+            "type": "number",
+            "title": "Duration Ms",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "title": "ChatMessageUsage",
+        "description": "Timing and token metrics for a chat completion."
+      },
+      "ChatSessionCreate": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": "New Chat"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          }
+        },
+        "type": "object",
+        "title": "ChatSessionCreate",
+        "description": "Payload to start a new chat session."
+      },
+      "ChatSessionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessageResponse"
+            },
+            "type": "array",
+            "title": "Messages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "scope",
+          "updated_at"
+        ],
+        "title": "ChatSessionResponse",
+        "description": "Chat session header and message history."
+      },
+      "ChatSessionUpdate": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ChatSessionUpdate",
+        "description": "Payload to update an existing chat session."
+      },
+      "CloudSettings": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "groq",
+              "openai",
+              "anthropic"
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "consented": {
+            "type": "boolean",
+            "title": "Consented"
+          },
+          "has_key": {
+            "type": "boolean",
+            "title": "Has Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "provider",
+          "model",
+          "consented",
+          "has_key"
+        ],
+        "title": "CloudSettings",
+        "description": "Cloud provider configuration status."
+      },
+      "Diagnostics": {
+        "properties": {
+          "health": {
+            "$ref": "#/components/schemas/Health"
+          },
+          "tombstones": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tombstones"
+          },
+          "degraded_documents": {
+            "items": {
+              "$ref": "#/components/schemas/IndexIntegrityItem"
+            },
+            "type": "array",
+            "title": "Degraded Documents"
+          },
+          "hydration": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hydration"
+          }
+        },
+        "type": "object",
+        "required": [
+          "health"
+        ],
+        "title": "Diagnostics",
+        "description": "Detailed system diagnostic status."
+      },
+      "DocumentDetail": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "num_pages": {
+            "type": "integer",
+            "title": "Num Pages"
+          },
+          "num_chunks": {
+            "type": "integer",
+            "title": "Num Chunks"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "upload_time": {
+            "type": "string",
+            "title": "Upload Time"
+          },
+          "chunks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Chunks"
+          },
+          "evidence": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Evidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "filename",
+          "sha256",
+          "status",
+          "num_pages",
+          "num_chunks",
+          "size_bytes",
+          "upload_time"
+        ],
+        "title": "DocumentDetail",
+        "description": "Full document detail with chunk sample and evidence count."
+      },
+      "DocumentJobItem": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "duplicate": {
+            "type": "boolean",
+            "title": "Duplicate",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "filename",
+          "doc_id"
+        ],
+        "title": "DocumentJobItem",
+        "description": "Ingestion job metadata per uploaded file."
+      },
+      "DocumentSummary": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "indexing",
+              "indexed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "pages": {
+            "type": "integer",
+            "title": "Pages"
+          },
+          "chunks": {
+            "type": "integer",
+            "title": "Chunks"
+          },
+          "evidence_elements": {
+            "type": "integer",
+            "title": "Evidence Elements",
+            "default": 0
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "has_vectors": {
+            "type": "boolean",
+            "title": "Has Vectors",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "filename",
+          "sha256",
+          "status",
+          "pages",
+          "chunks",
+          "size_bytes",
+          "created_at"
+        ],
+        "title": "DocumentSummary",
+        "description": "Document catalog item."
+      },
+      "DocumentUploadResponse": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentJobItem"
+            },
+            "type": "array",
+            "title": "Jobs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "title": "DocumentUploadResponse",
+        "description": "Response payload for multi-file upload."
+      },
+      "EmbeddingPoint": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "point": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Point"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "preview": {
+            "type": "string",
+            "title": "Preview",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "doc_id",
+          "filename",
+          "point"
+        ],
+        "title": "EmbeddingPoint",
+        "description": "3D point representing an embedded chunk."
+      },
+      "EmbeddingsResponse": {
+        "properties": {
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/EmbeddingPoint"
+            },
+            "type": "array",
+            "title": "Points"
+          },
+          "dims": {
+            "type": "integer",
+            "title": "Dims",
+            "default": 3
+          },
+          "total_points": {
+            "type": "integer",
+            "title": "Total Points"
+          }
+        },
+        "type": "object",
+        "required": [
+          "points",
+          "total_points"
+        ],
+        "title": "EmbeddingsResponse",
+        "description": "3D point cloud for the document constellation."
+      },
+      "ExplanationItem": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "dense_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dense Rank"
+          },
+          "dense_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dense Score"
+          },
+          "fts_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fts Rank"
+          },
+          "fts_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fts Score"
+          },
+          "rrf_score": {
+            "type": "number",
+            "title": "Rrf Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "doc_id",
+          "rrf_score"
+        ],
+        "title": "ExplanationItem",
+        "description": "Retrieval rank breakdown across dense and BM25 pools."
+      },
+      "GpuTelemetry": {
+        "properties": {
+          "total_mb": {
+            "type": "number",
+            "title": "Total Mb"
+          },
+          "used_mb": {
+            "type": "number",
+            "title": "Used Mb"
+          },
+          "free_mb": {
+            "type": "number",
+            "title": "Free Mb"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_mb",
+          "used_mb",
+          "free_mb"
+        ],
+        "title": "GpuTelemetry",
+        "description": "GPU memory metrics in megabytes."
+      },
+      "Grounding": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "grounded",
+              "partial",
+              "unsupported",
+              "rank_only",
+              "abstained",
+              "unverified"
+            ],
+            "title": "Status"
+          },
+          "caption": {
+            "type": "string",
+            "title": "Caption"
+          },
+          "citations": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Citations"
+          },
+          "uncited_claim_count": {
+            "type": "integer",
+            "title": "Uncited Claim Count",
+            "default": 0
+          },
+          "incomplete_context": {
+            "type": "boolean",
+            "title": "Incomplete Context",
+            "default": false
+          },
+          "truncation_warning": {
+            "type": "boolean",
+            "title": "Truncation Warning",
+            "default": false
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "sentence_support": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sentence Support"
+          },
+          "injection_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Injection Flags"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "caption",
+          "request_id",
+          "scope"
+        ],
+        "title": "Grounding",
+        "description": "Verification and grounding report for generated answers."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "loading",
+              "unreachable",
+              "offline"
+            ],
+            "title": "Status"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "ready": {
+            "type": "boolean",
+            "title": "Ready"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "local",
+              "cloud"
+            ],
+            "title": "Mode"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/HealthCapabilities"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/HealthRuntime"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "message",
+          "ready",
+          "mode",
+          "provider",
+          "model",
+          "capabilities",
+          "runtime"
+        ],
+        "title": "Health",
+        "description": "Health check response."
+      },
+      "HealthCapabilities": {
+        "properties": {
+          "context_window": {
+            "type": "integer",
+            "title": "Context Window",
+            "default": 16384
+          },
+          "supports_vision": {
+            "type": "boolean",
+            "title": "Supports Vision",
+            "default": false
+          },
+          "supports_streaming": {
+            "type": "boolean",
+            "title": "Supports Streaming",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "HealthCapabilities",
+        "description": "Runtime LLM capabilities."
+      },
+      "HealthRuntime": {
+        "properties": {
+          "llama_server_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llama Server Version"
+          },
+          "build": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build"
+          }
+        },
+        "type": "object",
+        "title": "HealthRuntime",
+        "description": "Runtime binary/process build information."
+      },
+      "IndexIntegrityItem": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "missing_vectors": {
+            "type": "boolean",
+            "title": "Missing Vectors"
+          },
+          "num_chunks": {
+            "type": "integer",
+            "title": "Num Chunks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "filename",
+          "status",
+          "missing_vectors",
+          "num_chunks"
+        ],
+        "title": "IndexIntegrityItem",
+        "description": "Document integrity item."
+      },
+      "InferenceTelemetry": {
+        "properties": {
+          "busy": {
+            "type": "boolean",
+            "title": "Busy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "busy"
+        ],
+        "title": "InferenceTelemetry",
+        "description": "Inference lock status."
+      },
+      "JobResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pct"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Problem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "kind",
+          "status",
+          "stage"
+        ],
+        "title": "JobResponse",
+        "description": "Job status response."
+      },
+      "LimitsSettings": {
+        "properties": {
+          "max_file_mb": {
+            "type": "integer",
+            "title": "Max File Mb"
+          },
+          "max_pages": {
+            "type": "integer",
+            "title": "Max Pages"
+          },
+          "max_chat_turns": {
+            "type": "integer",
+            "title": "Max Chat Turns"
+          }
+        },
+        "type": "object",
+        "required": [
+          "max_file_mb",
+          "max_pages",
+          "max_chat_turns"
+        ],
+        "title": "LimitsSettings",
+        "description": "System ingestion and conversation limits."
+      },
+      "LogEntry": {
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "level": {
+            "type": "string",
+            "title": "Level"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "level",
+          "message"
+        ],
+        "title": "LogEntry",
+        "description": "Redacted log entry."
+      },
+      "Problem": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "integer",
+            "title": "Status"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "detail"
+        ],
+        "title": "Problem",
+        "description": "RFC 9457 Problem Details schema."
+      },
+      "ProcessTelemetry": {
+        "properties": {
+          "rss_mb": {
+            "type": "number",
+            "title": "Rss Mb"
+          },
+          "vms_mb": {
+            "type": "number",
+            "title": "Vms Mb"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rss_mb",
+          "vms_mb"
+        ],
+        "title": "ProcessTelemetry",
+        "description": "Process memory footprint."
+      },
+      "QueryTraceRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "doc_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Ids"
+          },
+          "k": {
+            "type": "integer",
+            "title": "K",
+            "default": 5
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "QueryTraceRequest",
+        "description": "Payload to project a query and trace retrieved candidates."
+      },
+      "QueryTraceResponse": {
+        "properties": {
+          "point": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Point"
+          },
+          "retrieved_chunk_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Retrieved Chunk Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "point",
+          "retrieved_chunk_ids"
+        ],
+        "title": "QueryTraceResponse",
+        "description": "Projected query coordinate and target chunk IDs."
+      },
+      "Scope": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "all",
+              "documents"
+            ],
+            "title": "Type",
+            "default": "all"
+          },
+          "doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Doc Ids"
+          }
+        },
+        "type": "object",
+        "title": "Scope",
+        "description": "Document search scope."
+      },
+      "SearchRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "doc_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Ids"
+          },
+          "k": {
+            "type": "integer",
+            "title": "K",
+            "default": 5
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "dense",
+              "fts"
+            ],
+            "title": "Mode",
+            "default": "hybrid"
+          },
+          "explain": {
+            "type": "boolean",
+            "title": "Explain",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "description": "Payload to perform hybrid search with optional explanation."
+      },
+      "SearchResponse": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "explanations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExplanationItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explanations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "sources"
+        ],
+        "title": "SearchResponse",
+        "description": "Hybrid search results with sources and optional X-ray breakdown."
+      },
+      "SendMessage": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "SendMessage",
+        "description": "Payload to post a message into a chat session."
+      },
+      "Source": {
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "title": "Rank"
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "preview": {
+            "type": "string",
+            "title": "Preview"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "cited": {
+            "type": "boolean",
+            "title": "Cited",
+            "default": false
+          },
+          "supported": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supported"
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rank",
+          "doc_id",
+          "filename",
+          "preview"
+        ],
+        "title": "Source",
+        "description": "Evidence snippet source attribution."
+      },
+      "SummaryRequest": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "overview",
+              "detailed",
+              "study_notes",
+              "tables_figures",
+              "findings"
+            ],
+            "title": "Profile",
+            "default": "overview"
+          },
+          "length": {
+            "type": "string",
+            "enum": [
+              "concise",
+              "standard",
+              "detailed"
+            ],
+            "title": "Length",
+            "default": "standard"
+          },
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id"
+        ],
+        "title": "SummaryRequest",
+        "description": "Payload to generate a document summary."
+      },
+      "SummaryResponse": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "profile": {
+            "type": "string",
+            "title": "Profile"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "model_version": {
+            "type": "string",
+            "title": "Model Version"
+          },
+          "cached": {
+            "type": "boolean",
+            "title": "Cached",
+            "default": false
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "profile",
+          "summary",
+          "model_version"
+        ],
+        "title": "SummaryResponse",
+        "description": "Generated or cached document summary."
+      },
+      "Telemetry": {
+        "properties": {
+          "gpu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GpuTelemetry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "process": {
+            "$ref": "#/components/schemas/ProcessTelemetry"
+          },
+          "inference": {
+            "$ref": "#/components/schemas/InferenceTelemetry"
+          },
+          "ts": {
+            "type": "string",
+            "title": "Ts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "process",
+          "inference",
+          "ts"
+        ],
+        "title": "Telemetry",
+        "description": "System resource telemetry."
+      },
+      "UpdateCloudSettings": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "groq",
+              "openai",
+              "anthropic"
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "consent": {
+            "type": "boolean",
+            "title": "Consent"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "provider",
+          "model",
+          "consent"
+        ],
+        "title": "UpdateCloudSettings",
+        "description": "Payload for updating cloud settings and consent."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

@@ -9,6 +9,7 @@ import pytest
 from providers.groq_provider import GroqProvider
 from providers.llama_cpp_provider import LlamaCppProvider
 from core.local_llm import AiModel
+from core.models import EvidenceSnippet, RetrievalResult
 from providers.model_provider import HealthStatus
 
 
@@ -24,8 +25,20 @@ def test_ai_model_prompt_assembly(mock_llama_provider) -> None:
     """Verify grounded prompt formatting, XML isolation, and history delegation."""
     model = AiModel(provider=mock_llama_provider)
 
-    mock_embedding = MagicMock()
-    mock_embedding.get_context.return_value = "Retrieved document text context line."
+    retrieval_result = RetrievalResult(
+        query="What is the latency target?",
+        snippets=[
+            EvidenceSnippet(
+                content="Retrieved document text context line.",
+                doc_id="doc_test",
+                filename="test.pdf",
+                page=1,
+                chunk_id="chk_1",
+                score=0.9,
+                rank=1,
+            )
+        ],
+    )
 
     chat_history = [
         {"role": "user", "content": "What is the project name?"},
@@ -36,13 +49,12 @@ def test_ai_model_prompt_assembly(mock_llama_provider) -> None:
         model.ask_a_question_from_pdf_stream(
             pdf_path="",
             prompt="What is the latency target?",
-            local_embedding=mock_embedding,
+            retrieval_result=retrieval_result,
             chat_history=chat_history,
         )
     )
 
     assert len(tokens) > 0
-    mock_embedding.get_context.assert_called_once()
 
     # Check delegated call to provider
     assert len(mock_llama_provider.stream_calls) == 1
@@ -60,13 +72,25 @@ def test_ai_model_streaming_yield(mock_llama_provider) -> None:
     """Verify the generator yields stream tokens one by one."""
     model = AiModel(provider=mock_llama_provider)
 
-    mock_embedding = MagicMock()
-    mock_embedding.get_context.return_value = "Sample context."
+    retrieval_result = RetrievalResult(
+        query="Tell me about the architecture",
+        snippets=[
+            EvidenceSnippet(
+                content="Sample context.",
+                doc_id="doc_test",
+                filename="test.pdf",
+                page=1,
+                chunk_id="chk_1",
+                score=0.9,
+                rank=1,
+            )
+        ],
+    )
 
     generator = model.ask_a_question_from_pdf_stream(
         pdf_path="",
         prompt="Tell me about the architecture",
-        local_embedding=mock_embedding,
+        retrieval_result=retrieval_result,
     )
 
     tokens = list(generator)
@@ -80,7 +104,6 @@ def test_ai_model_non_crashing_when_offline(monkeypatch) -> None:
     Resolves Risk #1 in CONCERNS.md with structured HealthStatus feedback.
     """
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
 
     unreachable_status = HealthStatus(
         status="unreachable",
@@ -148,7 +171,6 @@ def test_ai_model_local_mode_does_not_silently_fallback_to_groq(monkeypatch) -> 
 def test_groq_provider_capabilities_and_health_unconfigured(monkeypatch) -> None:
     """Verify GroqProvider reports unreachable when GROQ_API_KEY is not configured."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
 
     provider = GroqProvider()
     caps = provider.get_capabilities()
@@ -164,7 +186,6 @@ def test_groq_provider_capabilities_and_health_unconfigured(monkeypatch) -> None
 def test_ai_model_dynamic_self_healing(monkeypatch) -> None:
     """Verify AiModel recovers dynamically when llama-server becomes healthy after initial failure."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.setattr("streamlit.secrets", {}, raising=False)
 
     server_running = False
 
@@ -249,9 +270,7 @@ def test_direct_pdf_path_without_retriever_raises_error(mock_llama_provider) -> 
     """Verify calling ask_a_question_from_pdf_stream with unindexed pdf_path raises ValueError."""
     model = AiModel(provider=mock_llama_provider)
 
-    with pytest.raises(
-        ValueError, match="Direct unindexed PDF ingestion in ask_a_question_from_pdf_stream has been removed"
-    ):
+    with pytest.raises(ValueError, match="retrieval_result is required in ask_a_question_from_pdf_stream"):
         list(
             model.ask_a_question_from_pdf_stream(
                 pdf_path="some_file.pdf",

@@ -1,5 +1,14 @@
-# Multi-stage / clean Dockerfile for Local-First Multimodal PDF Intelligence System
-# Standardized on Python 3.11 Debian Bookworm for 100% reproducible environments
+# Stage 1: Build Next.js static frontend
+FROM node:20-bookworm-slim AS frontend-builder
+WORKDIR /app/frontend
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN corepack enable && corepack prepare pnpm@latest --activate
+COPY frontend/package.json frontend/pnpm-lock.yaml* ./
+RUN pnpm install || pnpm install --no-frozen-lockfile
+COPY frontend/ ./
+RUN pnpm build
+
+# Stage 2: Python runtime
 FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
@@ -22,25 +31,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install dependencies first for Docker layer caching
-COPY requirements.txt requirements-lock.txt ./
+COPY requirements-lock.txt ./
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r requirements-lock.txt
 
-# Copy source code and documentation
+# Copy backend source code
 COPY . .
 
+# Copy static frontend export from build stage
+COPY --from=frontend-builder /app/frontend/out ./frontend/out
+
 # Register application package in editable/local mode
-RUN pip install -e .
+RUN pip install -e . --no-deps
 
 # Create persistence and cache directories
-RUN mkdir -p data models .cache
+RUN mkdir -p data models .cache tools
 
-# Expose Streamlit frontend port
-EXPOSE 8501
+# Expose API and web application port
+EXPOSE 8000
 
-# Healthcheck
+# Healthcheck targeting RFC 9457 compliant system health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+    CMD curl -f http://localhost:8000/api/v1/health || exit 1
 
-# Launch Streamlit
-CMD ["streamlit", "run", "main.py", "--server.port=8501", "--server.address=0.0.0.0", "--browser.gatherUsageStats=false"]
+# Launch FastAPI with Uvicorn
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -7,11 +7,12 @@ providing strict validation, serialization, and backward compatibility with lega
 
 from pathlib import Path
 import re
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Configuration version for chunking and extraction policy
 CONFIG_VERSION: str = "docling-1000-200-v1"
+PROMPT_VERSION: str = "summary-v1"
 
 
 def cache_dir_for(base: Path, sha256: str) -> Path:
@@ -126,8 +127,8 @@ class Document(BaseModel):
     sha256: str = Field(..., pattern=r"^[0-9a-f]{64}$", description="64-character lowercase SHA-256 hex digest.")
     size_bytes: int = Field(..., ge=0, description="Total file size in bytes.")
     num_pages: int = Field(..., ge=0, description="Total number of pages in the PDF.")
-    status: Literal["pending", "indexed", "failed"] = Field(
-        default="pending", description="Processing status: 'pending', 'indexed', or 'failed'."
+    status: Literal["pending", "indexing", "indexed", "failed"] = Field(
+        default="pending", description="Processing status: 'pending', 'indexing', 'indexed', or 'failed'."
     )
     upload_time: str = Field(..., description="ISO 8601 UTC timestamp of upload.")
     num_chunks: int = Field(default=0, ge=0, description="Total number of indexable chunks generated.")
@@ -156,6 +157,8 @@ class EvidenceSnippet(BaseModel):
     rank: int = Field(..., ge=1, description="1-based composite rank ([E1], [E2], ...).")
     dense_rank: int | None = Field(default=None, description="1-based rank from vector search.")
     fts_rank: int | None = Field(default=None, description="1-based rank from full-text keyword search.")
+    dense_score: float | None = Field(default=None, description="Raw score from vector search.")
+    fts_score: float | None = Field(default=None, description="Raw score from BM25 full-text search.")
     extraction: str = Field(default="docling", description="Extraction backend used (docling, ocr, pypdf).")
     char_start: int | None = Field(default=None, description="Starting character offset on page.")
     char_end: int | None = Field(default=None, description="Ending character offset on page.")
@@ -192,6 +195,10 @@ class RetrievalResult(BaseModel):
         default=False,
         description="True when fetch_document_chunks truncated results at the safety cap — tail pages may be missing.",
     )
+    explanation: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Candidate rank and score breakdown for Retrieval X-Ray.",
+    )
 
     def formatted_evidence(self) -> str:
         """Render numbered evidence blocks ([E1], [E2], ...) for the LLM prompt context."""
@@ -214,6 +221,52 @@ class RetrievalResult(BaseModel):
                 seen.add(lbl)
                 labels.append(lbl)
         return labels
+
+
+class GroundingReport(BaseModel):
+    """Single request/result contract carried from preparation through rendering.
+
+    The report keeps the request identity, the resolved document scope, the exact
+    evidence that was sent to the model, the citation outcome, and the verification
+    verdict together. The UI renders sources and grounding labels from this object
+    only, so it cannot pair an answer with evidence from a different retrieval.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    request_id: str = Field(..., min_length=1, description="Unique identifier for this chat/summary request.")
+    mode: Literal["qa", "summary"] = Field(..., description="Which pipeline answered the request.")
+    scope: Literal["document", "all_documents", "none"] = Field(..., description="Resolved retrieval scope.")
+    document_ids: list[str] = Field(default_factory=list, description="Document IDs allowed for this request.")
+    evidence_count: int = Field(default=0, ge=0, description="Number of evidence snippets supplied to the model.")
+    cited_ranks: list[int] = Field(default_factory=list, description="Citation ranks present in the answer.")
+    verification_status: Literal[
+        "grounded",
+        "partial",
+        "unsupported",
+        "abstained",
+        "ungrounded",
+        "invalid_citation",
+        "rank_only",
+    ] = Field(default="ungrounded", description="Computed grounding verdict; never inferred from citation IDs alone.")
+    verification_reason: str = Field(default="", description="Human-readable reason for the verdict.")
+    unsupported_ranks: list[int] = Field(
+        default_factory=list, description="Citation ranks whose cited text did not support the claim."
+    )
+    auto_attributed_count: int = Field(default=0, ge=0, description="Citations appended by lexical auto-attribution.")
+    incomplete_context: bool = Field(
+        default=False,
+        description="True when the evidence supplied to the model was truncated or capped, so coverage is partial.",
+    )
+    regeneration_attempted: bool = Field(
+        default=False, description="True when the bounded single corrective regeneration was used."
+    )
+    sentence_support: list[dict[str, Any]] = Field(
+        default_factory=list, description="Per-sentence lexical support evaluation for Grounding Heatmap."
+    )
+    injection_flags: list[str] = Field(
+        default_factory=list, description="Adversarial prompt injection pattern hits detected in query or text."
+    )
 
 
 SummaryProfile = Literal["overview", "detailed", "study_notes", "tables_figures", "findings"]

@@ -1,291 +1,281 @@
+---
+last_mapped_commit: 6acbd27a48dddbd1b122277663ebab42d9f83f7e
+last_mapped_at: 2026-11-14
+---
 # Codebase Structure
 
-**Analysis Date:** 2026-10-22
+**Analysis Date:** 2026-11-14
 
 ## Directory Layout
 
 ```text
 RAG/
-├── main.py                  # Streamlit composition root and workspace router
-├── start.py                 # Launcher: loopback guard, llama-server probe/spawn, Streamlit subprocess
-├── setup.py                 # Packaging + checksum-pinned model/llama-server installer CLI
-├── core/                    # Domain models, persistence, inference facade, summarization, prompting
-│   ├── models.py            # Pydantic v2 canonical schemas
-│   ├── doc_store.py         # SQLite store, migrations v1–v4, atomic ingestion writes
-│   ├── local_llm.py         # InferenceGate + AiModel facade
-│   ├── summarizer.py        # Five-profile single-pass / map-reduce summarizer
-│   ├── query_intent.py      # Follow-up rewrite, whole-document detection, evidence selection
-│   ├── prompt_budget.py     # Context budgeting and XML isolation
-│   ├── citation_validator.py# Rank/support validation, abstention, injection, auto-attribution
-│   ├── model_identity.py    # GGUF metadata parsing and model-pair verification
-│   ├── resource_telemetry.py# nvidia-smi/psutil telemetry and latency tracking
-│   └── logging_setup.py     # Idempotent logging + watcher-noise filter
-├── ui/                      # Presentation and Streamlit orchestration services
-│   ├── views.py             # Chat, Summarizer, Library, Settings renderers
-│   ├── components.py        # SVG icons, cards, status pills, citation chips
-│   ├── theme.py             # AMOLED CSS injection
-│   ├── sanitizer.py         # Markdown/HTML sanitization for local rendering
-│   ├── session_state.py     # Shared in-memory reset
-│   ├── ingestion_service.py # End-to-end ingestion orchestration
-│   ├── lifecycle_service.py # Delete / purge / re-index orchestration
-│   └── hydration.py         # Startup catalog and vector repair
-├── ingestion/               # Untrusted PDF → pages/chunks/visual evidence
-│   ├── upload_validation.py # Magic bytes, caps, SHA-256, doc_id
-│   ├── docling_reader.py    # Docling layout/tables with pypdf fallback
-│   ├── pdf_reader.py        # pypdf extraction and chunking
-│   ├── ocr_fallback.py      # Conditional RapidOCR with raster/time budgets
-│   └── visual_analyzer.py   # Visual region detection, crops, VLM analysis
-├── retrieval/               # Embeddings and hybrid retrieval
-│   ├── local_embedding.py   # CPU-pinned all-MiniLM-L6-v2, shared process cache
-│   ├── hybrid_retriever.py  # LanceDB dense+FTS, RRF, durable mirror, whole-doc fetch
-│   ├── vector_index.py      # Pure-Python fallback vector store
-│   └── data/                # Legacy package-relative LanceDB location (migration source only)
-├── providers/               # Inference provider adapters
-│   ├── model_provider.py    # BaseModelProvider ABC + capability/health schemas
-│   ├── llama_cpp_provider.py# Local llama-server HTTP/SSE + VLM
-│   ├── litellm_provider.py  # Consent-gated cloud adapter
-│   └── groq_provider.py     # Direct Groq adapter
-├── tests/                   # Pytest suite, shared fixtures, synthetic corpus
-│   ├── conftest.py          # Offline fixtures (mock providers, embeddings, env keys)
-│   ├── test_*.py            # 30+ suites covering each module
-│   └── data/corpus/         # Generated PDFs and generator script
-├── scripts/                 # Benchmarking, profiling, icon generation
-├── docs/                    # Runbook, audit, evaluation, traceability docs
-├── assets/icons/            # Local monochrome SVGs (no external assets)
-├── application_screenshots/ # Reference screenshots
-├── data/                    # Runtime state (gitignored): documents.db, lancedb/, logs/
-├── models/                  # GGUF weights (gitignored)
-├── tools/llama-server/      # Native llama-server binaries (gitignored)
-├── .cache/                  # Legacy cache directory (gitignored)
-├── .streamlit/config.toml   # Dark theme, loopback bind, upload cap, CORS/XSRF
-├── .github/workflows/ci.yml # Ruff + corpus generation + pytest on Python 3.11
-├── pyproject.toml           # Ruff and pytest configuration
-├── requirements.txt         # Runtime dependencies
-├── requirements-lock.txt    # uv-compiled universal lockfile
-├── requirements-test.txt    # Test-only dependencies
-├── Dockerfile               # python:3.11-slim-bookworm runtime image
-├── docker-compose.yml       # App + optional CUDA llama-server profile
-├── CLAUDE.md                # Project context and stack/convention summaries
-├── README.md                # Product overview and setup instructions
-└── LICENSE                  # MIT
+├── api/                      # FastAPI application: app factory, routers, schemas, SSE bridge, jobs, errors
+│   ├── routers/              # One module per resource; all mounted under /api/v1
+│   ├── schemas/              # Pydantic request/response models, one module per resource
+│   ├── main.py               # create_app(), lifespan, middleware, router registration
+│   ├── container.py          # AppContainer composition root (singletons)
+│   ├── deps.py               # get_container(), require_client_header()
+│   ├── errors.py             # RFC 9457 problem+json mapping
+│   ├── streaming.py          # worker-thread → asyncio → SSE bridge
+│   ├── jobs.py               # Single-worker JobManager
+│   ├── cloud_state.py        # Consent, in-memory keys, provider swap, egress ledger
+│   ├── config.py             # pydantic-settings (RAG_ prefix)
+│   └── export_openapi.py     # `python -m api.export_openapi [--check]`
+├── services/                 # Orchestration: chat turns, ingestion, lifecycle, hydration
+├── core/                     # Domain logic: models, SQLite store, LLM facade/gate, summarizer, citations
+├── retrieval/                # Hybrid retriever, embeddings, pure-Python vector index
+├── ingestion/                # PDF validation, Docling/pypdf readers, OCR, visual analysis
+├── providers/                # BaseModelProvider ABC + llama.cpp / LiteLLM / Groq adapters
+├── frontend/                 # Next.js 15 static-export UI (pnpm workspace)
+│   └── src/
+│       ├── app/              # App Router: root layout, redirect page, (shell) route group
+│       ├── components/       # shell/, chat/, motion/ presentational components
+│       ├── lib/              # api/ (client, sse, queries, types, mocks), store/ (zustand)
+│       └── styles/           # globals.css (Tailwind v4)
+├── tests/                    # pytest suite (43 test modules) + synthetic corpus
+│   └── data/corpus/          # Generated + committed PDF fixtures and generator
+├── scripts/                  # Offline benchmarks, resource profiling, icon generation
+├── docs/                     # Runbook, evaluation, dependency audit, traceability (partly stale)
+├── assets/                   # Brand mark and monochrome SVG icons (legacy Streamlit-era assets)
+├── data/                     # Runtime state (gitignored): documents.db, lancedb/, .cache/, logs/
+├── application_screenshots/  # README/demo images
+├── .github/workflows/ci.yml  # Backend lint/openapi/tests + frontend typecheck/build
+├── .devcontainer/            # Dev container definition
+├── start.py                  # One-command launcher (preflight + optional llama-server + uvicorn)
+├── setup.py                  # Packaging + dependency/model provisioning CLI
+├── pyproject.toml            # Ruff + pytest configuration
+├── requirements.txt          # Runtime deps
+├── requirements-lock.txt     # uv-compiled lockfile (Python 3.11)
+├── requirements-test.txt     # Test-only deps
+├── openapi.json             # Committed OpenAPI export (CI drift check)
+├── Dockerfile                # Multi-stage: Next build → Python runtime, exposes 8000
+├── docker-compose.yml        # app + optional CUDA llama-server profile
+└── .env.example              # Documented environment names (no secrets)
 ```
 
 ## Directory Purposes
 
+**`api/`:**
+- Purpose: HTTP transport and composition.
+- Contains: App factory, settings, dependency providers, error mapping, SSE bridge, job manager, cloud state, routers, schemas.
+- Key files: `api/main.py`, `api/container.py`, `api/routers/chat.py`, `api/routers/documents.py`, `api/streaming.py`, `api/jobs.py`, `api/errors.py`.
+
+**`api/routers/`:**
+- Purpose: One router per resource, thin handlers that delegate to container services.
+- Contains: `system.py` (health/telemetry/diagnostics/logs), `settings.py` (settings + cloud + privacy ledger), `documents.py` (upload/list/detail/page image/reindex/delete/purge), `jobs.py` (list/detail/events/cancel), `chat.py` (sessions + SSE message stream + stop), `summaries.py` (cached/generate/export/delete), `search.py` (hybrid search + X-Ray), `visualize.py` (constellation + query trace).
+- Key files: `api/routers/chat.py` and `api/routers/documents.py` hold most orchestration logic.
+
+**`api/schemas/`:**
+- Purpose: Wire contracts, kept separate from domain models so HTTP shapes can evolve independently.
+- Contains: `common.py` (Scope, Source, Grounding, Problem), `chat.py`, `documents.py`, `jobs.py`, `search.py`, `settings.py`, `summaries.py`, `system.py`, `visualize.py`.
+- Key files: `api/schemas/common.py` is imported by several routers.
+
+**`services/`:**
+- Purpose: Multi-resource workflows that must not live in routers.
+- Contains: `chat_turn.py` (scope → retrieval → verification → result), `ingestion.py` (staged pipeline), `lifecycle.py` (delete/purge/reindex across tiers), `hydration.py` (startup repair + tombstones).
+- Key files: `services/chat_turn.py`, `services/ingestion.py`.
+
 **`core/`:**
-- Purpose: Provider-independent domain logic and durable metadata.
-- Contains: Pydantic schemas, SQLite store, `AiModel`, `InferenceGate`, `Summarizer`, query intent, prompt budgeting, citation validation, GGUF identity, telemetry, logging.
-- Key files: `core/local_llm.py`, `core/doc_store.py`, `core/models.py`, `core/query_intent.py`, `core/citation_validator.py`.
-
-**`ui/`:**
-- Purpose: All Streamlit rendering plus the orchestration services that perform multi-tier side effects.
-- Contains: four view renderers, reusable components/theme/sanitizer, session reset, ingestion/lifecycle/hydration services.
-- Key files: `ui/views.py`, `ui/ingestion_service.py`, `ui/lifecycle_service.py`, `ui/hydration.py`.
-
-**`ingestion/`:**
-- Purpose: Transform untrusted PDF bytes into validated, page-attributed text/chunk/evidence records.
-- Contains: upload validation, Docling reader, pypdf fallback, OCR engine, visual analyzer.
-- Key files: `ingestion/upload_validation.py`, `ingestion/docling_reader.py`, `ingestion/ocr_fallback.py`, `ingestion/visual_analyzer.py`.
+- Purpose: Domain rules and persistence independent of HTTP.
+- Contains: `models.py` (canonical Pydantic schemas), `doc_store.py` (SQLite), `local_llm.py` (AiModel + InferenceGate), `summarizer.py`, `citation_validator.py`, `prompt_budget.py`, `query_intent.py`, `sanitizer.py`, `redaction.py`, `resource_telemetry.py`, `runtime_info.py`, `model_identity.py`, `logging_setup.py`, `limits.py`.
+- Key files: `core/models.py`, `core/local_llm.py`, `core/doc_store.py`.
 
 **`retrieval/`:**
-- Purpose: Embeddings, persistent hybrid index, fallback mirror, whole-document reads.
-- Contains: `LocalEmbedding`, `HybridRetriever`, pure-Python `VectorIndex`.
-- Key files: `retrieval/hybrid_retriever.py`, `retrieval/local_embedding.py`, `retrieval/vector_index.py`.
+- Purpose: Query-time evidence retrieval and indexing.
+- Contains: `hybrid_retriever.py` (LanceDB dense + BM25 FTS + RRF, document fetch, embedding export), `local_embedding.py` (MiniLM wrapper + process cache), `vector_index.py` (stdlib fallback).
+- Key files: `retrieval/hybrid_retriever.py:169` (`HybridRetriever`).
+
+**`ingestion/`:**
+- Purpose: PDF-to-structured-evidence primitives.
+- Contains: `upload_validation.py`, `docling_reader.py`, `pdf_reader.py`, `ocr_fallback.py`, `visual_analyzer.py`.
+- Key files: `ingestion/upload_validation.py:118` (`validate_pdf_bytes`), `ingestion/visual_analyzer.py:41` (`VisualAnalyzer`).
 
 **`providers/`:**
-- Purpose: Normalize local and cloud inference behind one contract.
-- Contains: provider ABC/schemas and three adapters.
-- Key files: `providers/model_provider.py`, `providers/llama_cpp_provider.py`, `providers/litellm_provider.py`.
+- Purpose: Inference adapters behind a single ABC.
+- Contains: `model_provider.py` (ABC + capability/health models), `llama_cpp_provider.py`, `litellm_provider.py`, `groq_provider.py`.
+- Key files: `providers/model_provider.py:64`, `providers/llama_cpp_provider.py:68`.
+
+**`frontend/src/app/`:**
+- Purpose: Next.js App Router pages (static export).
+- Contains: `layout.tsx` (QueryClient + global overlays), `page.tsx` (redirect to `/chat`), `(shell)/layout.tsx` (sidebar + topbar + aurora background), and route pages `chat`, `library`, `summarizer`, `constellation`, `settings`, `diagnostics`.
+- Key files: `frontend/src/app/(shell)/chat/page.tsx` (largest surface, SSE streaming), `frontend/src/app/(shell)/library/page.tsx`, `frontend/src/app/(shell)/summarizer/page.tsx`.
+
+**`frontend/src/components/`:**
+- Purpose: Presentational and interaction components grouped by surface.
+- Contains: `shell/` (sidebar, topbar, command palette, jobs tray, aurora background), `chat/` (message bubble, citation pill, evidence drawer, evidence lens modal, grounding badge, grounding heatmap, retrieval X-Ray drawer), `motion/` (blur text, count up, magnet, shiny text, spotlight card).
+- Key files: `frontend/src/components/shell/sidebar.tsx` (nav registry), `frontend/src/components/chat/message-bubble.tsx`.
+
+**`frontend/src/lib/`:**
+- Purpose: Non-visual client infrastructure.
+- Contains: `api/client.ts` (fetch wrapper + `ApiError`), `api/sse.ts` (POST/fetch SSE parser), `api/queries.ts` (TanStack Query hooks), `api/types.ts` (hand-maintained TS mirrors of API schemas), `api/mocks.ts` (mock mode), `store/use-app-store.ts` (zustand), `utils.ts` (`cn`).
+- Key files: `frontend/src/lib/api/client.ts`, `frontend/src/lib/api/queries.ts`, `frontend/src/lib/api/sse.ts`.
 
 **`tests/`:**
-- Purpose: Offline unit/integration coverage with mocked GPU and network boundaries.
-- Contains: `conftest.py`, per-module suites, synthetic corpus PDFs and generator.
-- Key files: `tests/conftest.py`, `tests/test_hybrid_retriever.py`, `tests/test_whole_document_extraction.py`, `tests/test_concurrency_lock.py`, `tests/data/corpus/generate_corpus.py`.
+- Purpose: Offline pytest suite with GPU/network seams mocked.
+- Contains: 43 `test_*.py` modules covering API contracts, streaming bridge, chat controller, retrieval, ingestion readers, providers, setup/launcher, redaction, openapi, cloud privacy.
+- Key files: `tests/conftest.py` (fixtures: mock Groq client, mock SentenceTransformer, env keys), `tests/test_chat_api_sse.py`, `tests/test_openapi_contract.py`.
+
+**`tests/data/corpus/`:**
+- Purpose: Deterministic PDF fixtures for extraction/OCR tests.
+- Contains: `generate_corpus.py` (reportlab generator) and generated PDFs (`clean_digital.pdf`, `scanned_sample.pdf`, `dense_table.pdf`, `chart_diagram.pdf`, `multi_column.pdf`, `corrupt_invalid.pdf`).
+- Key files: `tests/data/corpus/generate_corpus.py` (run in CI before pytest).
 
 **`scripts/`:**
-- Purpose: Developer/benchmark utilities outside the app runtime.
-- Contains: `profile_resources.py`, `benchmark_baseline.py`, `benchmark_multimodal.py`, `generate_icons.py`.
+- Purpose: Offline evaluation and dev utilities, not imported by the app.
+- Contains: `benchmark_baseline.py`, `benchmark_multimodal.py`, `profile_resources.py`, `generate_icons.py`.
+- Key files: `scripts/profile_resources.py`.
+
+**`data/`:**
+- Purpose: Runtime persistence root (gitignored).
+- Contains: `documents.db` (SQLite), `lancedb/` (vector + FTS), `.cache/<sha256>/<CONFIG_VERSION>/`, `logs/rag.log`, optional `originals/<sha256>.pdf`.
+- Key files: paths are computed from `Settings.data_dir` (`api/config.py:20`) and `core/models.py:cache_dir_for`.
 
 **`docs/`:**
 - Purpose: Operational and audit documentation.
-- Contains: `RUNBOOK.md`, `LOCAL_INFERENCE.md`, `EVALUATION.md`, `AUDIT_SUMMARY.md`, `FILE_CALLER_TEST_MAP.md`, traceability and test-result reports.
-
-**`assets/icons/`:**
-- Purpose: Local SVG iconography for the AMOLED UI.
-- Contains: monochrome icons consumed by `ui/components.py:14`.
+- Contains: runbook, evaluation, dependency audit, code-quality report, endpoint integration matrix, requirements traceability, local inference tuning, repair log, test results.
+- Key files: `docs/RUNBOOK.md`, `docs/LOCAL_INFERENCE.md`. Note: several docs still describe the removed Streamlit UI.
 
 ## Key File Locations
 
 **Entry Points:**
-- `main.py`: Streamlit composition root, session defaults, hydration, provider sync, workspace routing.
-- `start.py`: `main()` launcher; `--start-llama`, `--host`, `--port`, `--ctx`, `--ngl`.
-- `setup.py`: `main_cli()`, `download_models_cli()`, `setup_llama_server_cli()`; setuptools commands `download_models`, `setup_llama_server`.
-- `ui/views.py`: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents`.
+- `api/main.py`: FastAPI app factory, lifespan, router mounting, static frontend mount.
+- `api/main.py:90`: `run()` used by the `rag-api` console script.
+- `start.py:354`: `launch_server()` — preflight + uvicorn launch.
+- `setup.py:1257`: console scripts (`rag-api`).
+- `frontend/src/app/page.tsx`: client redirect to `/chat`.
 
 **Configuration:**
-- `pyproject.toml`: Ruff (`line-length = 120`, `target-version = "py311"`) and pytest (`testpaths = ["tests"]`).
-- `.streamlit/config.toml`: dark theme, `address = "127.0.0.1"`, `maxUploadSize = 50`, CORS/XSRF, telemetry off.
-- `requirements.txt`, `requirements-lock.txt`, `requirements-test.txt`: dependency pins.
-- `Dockerfile`, `docker-compose.yml`: container runtime and optional CUDA llama-server profile.
-- `.github/workflows/ci.yml`: Ruff check/format, corpus generation, pytest.
-- `.gitignore`: excludes `.env*`, `data/`, `.cache/`, `models/`, `tools/`, binaries, logs.
+- `api/config.py`: all runtime settings (`RAG_*` env vars).
+- `pyproject.toml`: Ruff (line length 120, py311) and pytest config.
+- `frontend/next.config.mjs`: `output: "export"`, unoptimized images, trailing slashes.
+- `frontend/tsconfig.json`: `@/*` path alias to `src/*`.
+- `Dockerfile`, `docker-compose.yml`: container build and runtime topology.
+- `.github/workflows/ci.yml`: lint, OpenAPI drift check, corpus generation, pytest, frontend typecheck/build.
 
 **Core Logic:**
-- `core/local_llm.py`: `InferenceGate` and `AiModel`.
-- `core/doc_store.py`: SQLite source of truth and migrations.
-- `core/query_intent.py`: shared retrieval intent/whole-document extraction.
-- `core/summarizer.py`: summary profiles and map-reduce.
-- `retrieval/hybrid_retriever.py`: dense/FTS/RRF, mirror, scoped search, `fts_status()`.
-- `ui/ingestion_service.py`: ingestion transaction.
-- `ui/lifecycle_service.py`: delete/purge/re-index ordering.
-- `setup.py`: checksum-pinned downloads and safe extraction.
+- `services/chat_turn.py`: retrieval scope, evidence preparation, citation verification/regeneration/abstention.
+- `services/ingestion.py`: staged PDF ingestion transaction.
+- `core/local_llm.py`: provider routing, prompt assembly, `InferenceGate`.
+- `core/citation_validator.py`: `[E#]` precision and claim-support rules.
+- `core/doc_store.py`: SQLite schema and all persistence methods.
+- `retrieval/hybrid_retriever.py`: dense+lexical retrieval and indexing.
+- `api/streaming.py`: the only correct way to stream generation to a client.
 
 **Testing:**
-- `tests/conftest.py`: mocked provider, SentenceTransformer, Groq client, corpus path.
-- `tests/data/corpus/generate_corpus.py`: reportlab-generated PDF corpus.
-- Per-module suites: `tests/test_local_llm.py`, `tests/test_hybrid_retriever.py`, `tests/test_summarizer.py`, `tests/test_doc_store.py`, `tests/test_ocr_fallback.py`, `tests/test_visual_analyzer.py`, `tests/test_setup_checksums.py`.
-
-**Persistence / Runtime State:**
-- `data/documents.db`: SQLite catalog (runtime, gitignored).
-- `data/lancedb/chunks.lance`: LanceDB table directory.
-- `data/lancedb/fallback_store.json`: durable fallback mirror.
-- `data/lancedb_bench/`: benchmark index output.
-- `data/logs/app.log`: rotating application log.
-- `models/qwen3-vl-2b-instruct-q4_k_m.gguf` and `models/mmproj-f16.gguf`: local VLM pair (legacy filenames verified by GGUF metadata).
-- `tools/llama-server/llama-server.exe`: native server binary.
+- `tests/conftest.py`: shared offline fixtures.
+- `tests/test_chat_api_sse.py`: end-to-end SSE behavior with a stubbed container.
+- `tests/test_openapi_contract.py`: route/contract coverage.
+- `tests/data/corpus/generate_corpus.py`: fixture generation.
 
 ## Naming Conventions
 
-**Files:**
-- `snake_case.py` by responsibility: `hybrid_retriever.py`, `citation_validator.py`, `lifecycle_service.py`.
-- Tests: `tests/test_<module_or_feature>.py`.
-- No `__main__` entry in library modules; root scripts `main.py`, `start.py`, `setup.py` are the exceptions.
-- Package `__init__.py` files carry a one-line docstring and `__version__` (except `ui`, which exports `sanitize_markdown_for_local`).
+**Files (Python):**
+- Modules: `snake_case.py`; one concern per module (`chat_turn.py`, `hybrid_retriever.py`).
+- Routers mirror resources: `api/routers/<resource>.py`.
+- Schemas mirror routers: `api/schemas/<resource>.py`.
+- Tests: `tests/test_<module_or_feature>.py` (e.g., `test_cloud_state.py`, `test_chat_api_sse.py`).
+
+**Files (Frontend):**
+- Components: kebab-case files exporting PascalCase components (`message-bubble.tsx` → `MessageBubble`).
+- Route pages: lowercase directory + `page.tsx` (`app/(shell)/library/page.tsx`).
+- Client modules: lowercase (`client.ts`, `sse.ts`, `queries.ts`, `types.ts`).
+- Store hooks: `use-<thing>.ts` exporting `use<Thing>` (`use-app-store.ts` → `useAppStore`).
 
 **Directories:**
-- Lowercase, single-word responsibility groups: `core`, `ui`, `ingestion`, `retrieval`, `providers`, `tests`, `scripts`, `docs`, `assets`.
+- Python packages are responsibility-based, not layer-suffix-based: `core/`, `retrieval/`, `ingestion/`, `providers/`, `services/`, `api/`.
+- Frontend groups by surface: `components/shell`, `components/chat`, `components/motion`; infrastructure under `lib/api`, `lib/store`.
 
-**Classes:**
-- `PascalCase`, noun-oriented: `AiModel`, `InferenceGate`, `HybridRetriever`, `DocStore`, `IngestionService`, `LifecycleService`, `VisualAnalyzer`, `Summarizer`.
-- Pydantic models are nouns: `Document`, `Page`, `Chunk`, `EvidenceElement`, `EvidenceSnippet`, `RetrievalResult`, `SummaryResult`, `ProviderCapabilities`, `HealthStatus`.
-- Dataclasses for internal results: `IngestionResult`, `ValidatedUpload`, `ModelIdentity`, `LatencyTracker`.
+**Classes / Functions:**
+- Classes: `PascalCase` (`ChatTurnService`, `HybridRetriever`, `InferenceGate`, `DocStore`).
+- Functions/methods: `snake_case`, verb-first (`ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`).
+- Router handlers: verb + resource (`list_documents`, `upload_documents`, `stream_message`, `stop_generation`).
+- React components: `PascalCase`; hooks: `useXxx`.
+- Constants: `UPPER_SNAKE_CASE` (`MAX_FILE_MB`, `DEFAULT_MAX_OUTPUT_TOKENS`, `SSE_HEADERS`).
 
-**Functions / methods:**
-- `snake_case`, verb-first: `ingest_pdf`, `delete_document`, `purge_all`, `reindex_document`, `hydrate_startup_state`, `resolve_retrieval`, `fetch_document_chunks`, `assemble_grounded_messages`.
-- UI renderers are `render_<area>` and return `None`: `render_chat_view`, `render_summarizer_view`, `render_library_view`, `render_settings_view`, `render_sidebar_documents`.
-- Private helpers are `_leading_underscore`: `_mirror_upsert`, `_load_fallback_store`, `_doc_filter_clause`, `_bounded_zoom`, `_lifecycle_preflight`.
-- Booleans read as predicates: `is_whole_document_query`, `should_ocr_page`, `has_document`, `is_persistent`, `fts_status`.
-
-**Constants:**
-- `UPPER_SNAKE_CASE`: `DEFAULT_DB_URI`, `DEFAULT_RRF_K`, `MAX_FILE_MB`, `MAX_PAGES`, `MAX_OCR_PAGES_PER_DOC`, `FAST_PATH_TOKEN_LIMIT`, `CONFIG_VERSION`, `SCHEMA_V1_DDL`.
-- Env-var names are string constants or inline lookups: `RAG_LOG_LEVEL`, `RAG_REQUIRE_CHECKSUMS`, `RAG_ALLOW_NON_LOOPBACK`, `LLAMA_SERVER_URL`.
-
-**Session state keys:**
-- Public state keys are plain: `doc_ids`, `chat_history`, `hybrid_retriever`, `active_workspace`.
-- Internal/transient keys are underscore-prefixed: `_startup_hydrated`, `_health_snapshot`, `_health_probe_ts`, `_cached_cloud_model`, `_cached_cloud_key`, `_queued_prompt`, `_show_consent_dialog`.
-- Summary cache keys: `summary_<doc_id>_<profile>_<model_version>` (`ui/views.py:39`).
-- Per-widget uploader keys: `pdf_uploader_<suffix>_<counter>`, `uploader_key_<suffix>`.
-
-**Identifiers:**
-- Documents: `doc_<sha16>` (`ingestion/upload_validation.py:90`).
-- Visual elements: `elem_<doc_id>_p<page>_<kind>_<index>` (`ingestion/visual_analyzer.py:273`).
-- Summaries: `summ_<uuid16>` (`core/summarizer.py:576`).
+**Identifiers in data:**
+- Documents: `doc_<sha16>` (`ingestion/upload_validation.py:88`).
+- Chat messages: `msg_<hex16>`; summaries: `summ_*`; requests: `req_<hex16>`.
+- Citation tokens: `[E1]`, `[E2]` matching `EvidenceSnippet.rank`.
 
 ## Where to Add New Code
 
-**New feature (UI-facing):**
-- Primary code: add a `render_<name>_view` in `ui/views.py` and register it in the workspace router in `main.py:383` / `main.py:443`.
-- Session defaults: add keys to the initialization list in `main.py:101`.
-- Reusable widgets: `ui/components.py`; styling tokens: `ui/theme.py`.
-- Tests: `tests/test_main_ui.py` or a new `tests/test_<feature>.py`.
+**New API endpoint:**
+- Request/response models: `api/schemas/<resource>.py` (reuse `api/schemas/common.py`).
+- Handler: add to the existing router in `api/routers/<resource>.py`; use `c: AppContainer = Depends(get_container)` and raise `ApiError` for failures.
+- New resource: create `api/routers/<resource>.py` and register it in the tuple in `api/main.py:74`.
+- Regenerate the contract: `python -m api.export_openapi` and commit `openapi.json` (CI checks drift).
+- Tests: `tests/test_<resource>_api.py` using `TestClient(app)` and dependency overrides like `tests/test_chat_api_sse.py`.
+
+**New orchestration workflow:**
+- Implementation: new module in `services/`, constructed in `AppContainer.build()` (`api/container.py:45`) and exposed as a dataclass field.
+- Keep it framework-free (no FastAPI imports); accept collaborators via the constructor.
+- Long-running work: submit through `JobManager.submit(kind, fn)` and report via `JobHandle.progress` (`api/jobs.py:86`).
+
+**New ingestion/extraction capability:**
+- Primitive: `ingestion/<capability>.py` returning `Page`/`Chunk`/`EvidenceElement` from `core/models.py`.
+- Wire it into the staged sequence in `services/ingestion.py` with a `_report(stage, pct)` call.
+- Update `services/lifecycle.py:reindex_document` if the capability affects stored vectors.
 
 **New inference provider:**
-- Implementation: `providers/<name>_provider.py`, subclass `BaseModelProvider` from `providers/model_provider.py`.
-- Contract: implement `generate_text`, `stream_text`, `analyze_image`, `check_health`, `get_capabilities`; set `ProviderCapabilities.is_local` accurately.
-- Wiring: `AiModel._detect_provider` / `set_cloud_mode` in `core/local_llm.py:178`; cloud adapters must accept `user_consented` and assert it before transmission.
-- Tests: add to `tests/test_model_provider.py` and a provider-specific suite; keep network mocked.
+- Implement `BaseModelProvider` (`providers/model_provider.py:64`): `generate_text`, `stream_text`, `analyze_image`, `check_health`, `get_capabilities`.
+- Register selection in `core/local_llm.py` (`_detect_provider`, `swap_provider`) and, for cloud, in `api/cloud_state.py` plus the provider literal in `api/schemas/settings.py`.
+- Tests: `tests/test_<provider>_provider.py` with mocked HTTP/SDK clients.
 
-**New ingestion source or extractor:**
-- Implementation: `ingestion/<name>_reader.py`, returning `list[dict]` chunks and `list[Page]` records compatible with `core/models.py`.
-- Wiring: `IngestionService.ingest_pdf` extraction stage (`ui/ingestion_service.py:141`); preserve the Docling → pypdf fallback chain.
-- Validation/caps: reuse `ingestion/upload_validation.py`; do not add unbounded rasterization (`ingestion/ocr_fallback.py:38` shows the bounded-zoom pattern).
+**New retrieval behavior:**
+- Extend `HybridRetriever.search_hybrid` / `fetch_document_chunks` rather than adding a parallel search path (see `retrieval/hybrid_retriever.py:959`, `641`).
+- Keep the return type `RetrievalResult` and populate `explanation` if the UI must show it.
 
-**New retrieval backend or ranking stage:**
-- Implementation: extend `retrieval/hybrid_retriever.py` (`search_dense`, `search_fts`, `search_hybrid`, `compute_rrf`) rather than bypassing it.
-- Fallback parity: any new write path must also update the durable mirror (`_mirror_upsert`, `_mirror_delete_document`) or explicitly document why not.
-- Scoped search: push `doc_id` filters into the backend before limits and keep the defense-in-depth filter (`retrieval/hybrid_retriever.py:1000`).
-- Tests: `tests/test_hybrid_retriever.py`; include a LanceDB-unavailable path.
+**New frontend page:**
+- Page: `frontend/src/app/(shell)/<name>/page.tsx` (`"use client"`).
+- Navigation: add an entry to `NAV_ITEMS` in `frontend/src/components/shell/sidebar.tsx:21`.
+- Data: add hooks to `frontend/src/lib/api/queries.ts` and types to `frontend/src/lib/api/types.ts`.
+- New backend-driven component: place it under `frontend/src/components/chat/` or `components/shell/` depending on scope.
 
-**New domain rule (intent, budgeting, citations):**
-- Intent / whole-document logic: `core/query_intent.py` (shared by UI and `AiModel`).
-- Token budgeting / XML isolation: `core/prompt_budget.py`.
-- Citation/support/abstention: `core/citation_validator.py`.
-- Keep provider-agnostic code free of `streamlit` imports.
+**Shared helper:**
+- Python: `core/` for domain-agnostic helpers (e.g., `redaction.py`, `limits.py`), not in routers.
+- Frontend: `frontend/src/lib/utils.ts` for generic helpers; `lib/api/` for transport concerns.
 
-**New lifecycle operation:**
-- Implementation: add a method to `ui/lifecycle_service.py` and a preflight-gated wrapper in `ui/views.py` (`_delete_document`, `_reindex_document`, `_purge_all` are the patterns).
-- Ordering rule: vectors first, then SQLite, then legacy cache, then session state.
-
-**New background/CPU work:**
-- Prefer CPU-bound preprocessing in `ingestion/` or `retrieval/`; do not acquire `InferenceGate` for CPU work.
-- Any GPU model call must use `InferenceGate.hold(...)` or go through `AiModel`.
-
-**Utilities:**
-- Shared helpers: `core/` if domain-related; `ui/components.py` if presentation-only; avoid a catch-all `utils.py`.
-- Cross-cutting logging: `core/logging_setup.py`.
-
-**Tests:**
-- Add `tests/test_<module>.py`; use fixtures from `tests/conftest.py` (`mock_llama_provider`, `mock_sentence_transformer`, `mock_groq_client`, `sample_pdf_path`).
-- Keep tests offline: no live llama-server, GPU, or network calls.
-- For PDF fixtures, extend `tests/data/corpus/generate_corpus.py` rather than committing new binaries.
+**Tests for a bug fix:**
+- Add a focused module matching the touched area (`tests/test_<area>.py`) and follow the offline fixture style in `tests/conftest.py`.
 
 ## Special Directories
 
 **`data/`:**
-- Purpose: Runtime persistence: `documents.db`, `lancedb/`, `lancedb_bench/`, `logs/`.
-- Generated: Yes.
+- Purpose: SQLite DB, LanceDB index, extraction cache, logs, optional originals.
+- Generated: Yes (at runtime).
 - Committed: No (`.gitignore` excludes `data/`).
 
-**`.cache/`:**
-- Purpose: Legacy extraction-cache root. Ingestion does not write here; lifecycle and Settings remove legacy directories.
-- Generated: Historically; retained for cleanup compatibility.
-- Committed: No.
+**`frontend/node_modules/`, `frontend/.next/`, `frontend/out/`:**
+- Purpose: Dependencies, dev build cache, static export consumed by FastAPI.
+- Generated: Yes.
+- Committed: No (`node_modules/`, `.next/`, `out/` are ignored).
 
-**`models/`:**
-- Purpose: GGUF language model and multimodal projector weights.
-- Generated: No (downloaded by `setup.py download_models`).
-- Committed: No (`.gitignore` excludes `models/`, `*.gguf`).
-
-**`tools/llama-server/`:**
-- Purpose: Native llama-server binaries and CUDA runtime DLLs.
-- Generated: No (downloaded/extracted by `setup.py setup_llama_server`).
-- Committed: No (`.gitignore` excludes `tools/`).
-
-**`retrieval/data/lancedb/`:**
-- Purpose: Legacy package-relative LanceDB location. `_migrate_legacy_index` copies it to `data/lancedb` on first default-URI use and leaves the source intact.
-- Generated: Legacy runtime artifact.
+**`__pycache__/`, `.pytest_cache/`:**
+- Purpose: Python/pytest caches.
+- Generated: Yes.
 - Committed: No.
 
 **`tests/data/corpus/`:**
-- Purpose: Synthetic PDFs for extraction/OCR/retrieval tests.
-- Generated: Yes, by `tests/data/corpus/generate_corpus.py` (CI generates before pytest).
-- Committed: Corpus PDFs are present in the working tree; the generator is the source of truth.
-
-**`.planning/`:**
-- Purpose: GSD planning artifacts, codebase maps, debug sessions, phases, research.
-- Generated: Yes, by planning commands.
-- Committed: Selectively; debug scripts are gitignored (`*.py` under `.planning/debug/`).
-
-**`assets/icons/`:**
-- Purpose: Local SVG icon set used by `ui/components.py`.
-- Generated: `scripts/generate_icons.py` can regenerate them.
+- Purpose: Deterministic PDF fixtures.
+- Generated: Yes, by `generate_corpus.py`, but the PDFs are present in the repo and regenerated in CI.
 - Committed: Yes.
+
+**`assets/`:**
+- Purpose: Brand mark and monochrome SVG icon set.
+- Generated: Partly (`scripts/generate_icons.py`).
+- Committed: Yes. Note: current UI uses `lucide-react`; `assets/icons` is a legacy Streamlit-era set.
 
 **`application_screenshots/`:**
-- Purpose: UI reference captures.
-- Generated: Yes.
+- Purpose: Demo images referenced by README.
+- Generated: No.
 - Committed: Yes.
+
+**`.planning/`:**
+- Purpose: GSD planning artifacts (project, roadmap, phases, debug notes).
+- Generated: Yes, by GSD workflows.
+- Committed: Yes (GSD-managed).
 
 ---
 
-*Structure analysis: 2026-10-22*
+*Structure analysis: 2026-11-14*
